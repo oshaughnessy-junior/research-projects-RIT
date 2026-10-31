@@ -214,7 +214,9 @@ def test_fake_ile_existing_run_cli(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert not list(tmp_path.glob("posterior_samples-*.dat"))
     assert not list(tmp_path.glob("overlap-grid-*"))
+    ini.write_text(ini.read_text()+"build-diagnostics = true\n")
     result = run(ini, tmp_path)
+    assert not list((tmp_path/"auto_fit").glob("*/diagnostics"))
     assert result["status"] == "complete", result
     for target in ("aligned_distance", "precessing_source_redshift"):
         loaded = CompressedFit.load(tmp_path/"auto_fit"/target/"model.json")
@@ -235,6 +237,44 @@ def test_fake_ile_existing_run_cli(tmp_path):
         capture_output=True, text=True, env=env, timeout=120)
     assert proc.returncode == 0, proc.stdout+proc.stderr
     assert json.loads((tmp_path/"standalone/manifest.json").read_text())["status"] == "complete"
+    from compression.diagnostics import compare
+    from compression.config import file_hash
+    for target in result["settings"]["targets"]:
+        directory = tmp_path/"auto_fit"/target/"diagnostics"
+        samples = directory/"posterior_samples.dat"
+        proc = subprocess.run([sys.executable, str(CODE/"bin/util_RIFT_sample_compressed.py"),
+            "--model", str(directory.parent/"model.json"), "--output", str(samples),
+            "--n-samples", "5000"], capture_output=True, text=True, env=env, timeout=120)
+        assert proc.returncode == 0, proc.stdout+proc.stderr
+        proc = subprocess.run([sys.executable, str(CODE/"bin/util_RIFT_compare_compressed.py"),
+            "--fit-directory", str(directory.parent.parent), "--target", target, "--samples", str(samples),
+            "--output", str(directory/"js.json"), "--bins", "32"],
+            capture_output=True, text=True, env=env, timeout=120)
+        assert proc.returncode == 0, proc.stdout+proc.stderr
+        report = json.loads((directory/"js.json").read_text())
+        assert report["maximum_js_bits"] < .04, report
+        assert report["reference_rows"] < 18000
+        assert report["posterior_rows"] == 5000
+        data_columns = np.genfromtxt(samples, names=True).dtype.names
+        assert {"a1z", "a2z", "chi_eff", "distance"} <= set(data_columns)
+        assert {"mc", "eta", "xi", "dist", "mc_source", "redshift"} <= report["parameters"].keys()
+        assert ("chi1_perp" in report["parameters"]) == (target == "precessing_source_redshift")
+        assert (directory/"js.tsv").is_file()
+        with pytest.raises(FileExistsError):
+            compare(directory.parent.parent, target, samples, directory/"js.json")
+        # A distorted source-mass marginal must be visible, even if file hashes agree.
+        data = np.genfromtxt(samples, names=True)
+        data["mc_source"] *= 3
+        np.savetxt(samples, np.column_stack([data[k] for k in data.dtype.names]),
+                   header=" ".join(data.dtype.names), comments="")
+        with pytest.raises(ValueError, match="hashes"):
+            compare(directory.parent.parent, target, samples, directory/"bad_hash.json")
+        metadata_path = Path(str(samples)+".json")
+        metadata = json.loads(metadata_path.read_text())
+        metadata["samples_sha256"] = file_hash(samples)
+        metadata_path.write_text(json.dumps(metadata))
+        bad = compare(directory.parent.parent, target, samples, directory/"distorted.json", bins=32)
+        assert bad["parameters"]["mc_source"]["js_bits"] > .8
     with pytest.raises(FileExistsError):
         run(ini, tmp_path)
     # An already exported redshift from a different cosmology must not be trusted.
@@ -348,11 +388,14 @@ def test_reverse_spin_caps_respect_native_cartesian_clip(tmp_path):
     assert resolve(ini, tmp_path)[1]["cuts"]["s2z"] == [-.5,.5]
 
 
-def test_real_pseudo_pipe_terminal_job(tmp_path):
+@pytest.mark.parametrize("diagnostics", [False, True])
+def test_real_pseudo_pipe_terminal_job(tmp_path, diagnostics):
     pytest.importorskip("lal")
     from test_rf_transverse_pipeline_build import _build, _opt_in_ini
     ini = _opt_in_ini(tmp_path)
     ini.write_text(ini.read_text()+"\n[rift-auto-fit]\nenabled = true\ncomponent_counts = 1,2\n")
+    if diagnostics:
+        ini.write_text(ini.read_text()+"build-diagnostics = true\n")
     proc, rundir = _build(tmp_path, ini)
     assert proc.returncode == 0, proc.stdout[-6000:]
     submit = (rundir/"AUTO_FIT.sub").read_text()
@@ -368,6 +411,17 @@ def test_real_pseudo_pipe_terminal_job(tmp_path):
     lines = dag.splitlines()
     job = next(line.split()[1] for line in lines if line.startswith("JOB ") and "AUTO_FIT.sub" in line)
     assert any(line.startswith("PARENT ") and " CHILD "+job in line for line in lines)
+    if diagnostics:
+        for category, stem in (("AUTO_FIT_SAMPLE", "auto_fit_sample"), ("AUTO_FIT_COMPARE", "auto_fit_compare")):
+            child = next(line.split()[1] for line in lines if line.startswith("JOB ") and category+".sub" in line)
+            assert any(line == "PARENT "+job+" CHILD "+child for line in lines)
+            assert "universe = local" in (rundir/(category+".sub")).read_text().lower()
+            assert "util_RIFT_compress_posterior.py" not in (rundir/(stem+".sh")).read_text()
+            job = child
+    else:
+        assert "AUTO_FIT_SAMPLE.sub" not in dag
+        assert "AUTO_FIT_COMPARE.sub" not in dag
+
 
 
 @pytest.mark.parametrize("aligned,flags", [
@@ -398,3 +452,50 @@ def test_nonprecessing_override_conflict_refused(tmp_path):
     ini.write_text(ini.read_text().replace("assume-precessing = True", "assume-nonprecessing = True"))
     with pytest.raises(ValueError, match="nonprecession choice conflicts"):
         resolve(ini, tmp_path)
+
+
+def test_js_weighted_and_degenerate_marginals():
+    from compression.diagnostics import histogram_js
+    edges = np.arange(5.)
+    assert histogram_js([.5, 1.5], [1, 3], [.5, 1.5, 1.5, 1.5], [1]*4, edges) == 0
+    assert histogram_js([.5]*3, [1]*3, [3.5]*3, [1]*3, edges) == pytest.approx(1.)
+    with pytest.raises(ValueError, match="lost probability"):
+        histogram_js([-.5], [1], [.5], [1], edges)
+
+
+def test_diagnostic_parameter_conventions():
+    from compression.diagnostics import standard_parameters
+    class Context:
+        def redshift(self, d):
+            return np.full(len(d), .5)
+    # m1=40,m2=20, chi1_perp=.3, chi2_perp=.4.
+    eta = 2/9
+    points = np.array([[60*eta**.6, eta, .3, 0, .2, 0, .4, -.1, 1000.]])
+    values = standard_parameters(points, Context())
+    assert values["m1"][0] == pytest.approx(40)
+    assert values["q"][0] == pytest.approx(.5)
+    assert values["xi"][0] == pytest.approx(.1)
+    assert values["m1_source"][0] == pytest.approx(40/1.5)
+    assert values["chi_p"][0] == pytest.approx(.3)
+    assert values["phi2"][0] == pytest.approx(np.pi/2)
+
+
+def test_diagnostic_relative_azimuth_convention():
+    from compression.diagnostics import standard_parameters
+    class Context:
+        def redshift(self, d):
+            return np.zeros(len(d))
+    points = np.array([[30., .2, 0., .3, .2, .4, 0., -.1, 1000.],
+                       [30., .2, 0., 0., .2, 0., .4, -.1, 1000.],
+                       [30., .2, 0., 0., 0., 0., .4, -.1, 1000.]])
+    fields = standard_parameters(points, Context())
+    np.testing.assert_allclose(fields['phi12'], [1.5*np.pi, 0., 0.])
+    assert np.isnan(fields['theta1'][-1])
+    np.testing.assert_allclose(fields['cos_theta2'], -.1/np.hypot(.4, .1))
+
+
+def test_diagnostic_output_suffix_checked_before_writing(tmp_path):
+    from compression.diagnostics import compare
+    with pytest.raises(ValueError, match="end in .json"):
+        compare(tmp_path/'missing', 'aligned_distance', tmp_path/'missing.dat', tmp_path/'results.tsv')
+    assert not (tmp_path/'results.tsv').exists()

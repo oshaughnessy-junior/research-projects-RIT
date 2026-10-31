@@ -92,7 +92,7 @@ def run(config, rundir, posterior=None, output=None):
         for name, expected in (("redshift", z), ("mc_source", aligned[:, 0]/(1+z))):
             if name in columns and not np.allclose(columns[name], expected, rtol=2e-4, atol=1e-7):
                 raise ValueError("Existing source columns disagree with resolved cosmology: " + name)
-        reports = {}
+        reports, model_hashes = {}, {}
         for target in settings["targets"]:
             if target == "precessing_source_redshift":
                 if full is None or not contract["precessing"]:
@@ -105,9 +105,10 @@ def run(config, rundir, posterior=None, output=None):
             directory = output/target
             directory.mkdir()
             write_json(directory/"model.json", model.artifact)
+            model_hashes[target] = file_hash(directory/"model.json")
             write_json(directory/"validation.json", report)
             reports[target] = report
-        manifest.update(status="complete" if all(r["status"] == "pass_native_recovery" for r in reports.values()) else "failed_validation", reports=reports)
+        manifest.update(status="complete" if all(r["status"] == "pass_native_recovery" for r in reports.values()) else "failed_validation", reports=reports, model_sha256=model_hashes)
         write_json(output/"manifest.json", manifest)
         return manifest
     except Exception as error:

@@ -10,6 +10,10 @@ util_RIFT_compress_posterior.py --config /path/production.ini \
     --rundir /path/completed_run
 ```
 
+Enable the pipeline option `build-diagnostics = true` for separate posterior
+draw and JS-comparison jobs. The standalone tools are
+`util_RIFT_sample_compressed.py` and `util_RIFT_compare_compressed.py`.
+
 See [the RST documentation](../../../../docs/source/posterior_compression.rst)
 for the INI block, workflow integration, existing-run inputs, cosmology inheritance,
 validation scope and cached evaluation/integration API.

@@ -27,19 +27,52 @@ def attach(dag, pipeline, config, rundir, parent, posterior, runtime_prefix=""):
         shutil.copyfile(source, copy)
     cfg = read_ini(copy)
     settings = cfg["rift-auto-fit"]
-    executable = shutil.which("util_RIFT_compress_posterior.py")
-    if executable is None:
-        raise ValueError("util_RIFT_compress_posterior.py is not installed/on PATH")
-    wrapper = run/"auto_fit.sh"
-    wrapper.write_text("#!/bin/bash\nset -eu\n"+runtime_prefix+"\nexec "+shlex.quote(executable)+
-        " --config "+shlex.quote(str(copy))+" --rundir "+shlex.quote(str(run))+
-        " --posterior "+shlex.quote(str(posterior))+"\n")
+    _, _, resolved = resolve(copy, run)
+    diagnostic = settings.getboolean("build-diagnostics", fallback=False)
+    samples = settings.getint("diagnostic_samples", fallback=20000)
+    bins = settings.getint("diagnostic_bins", fallback=64)
+    if diagnostic and (not 100 <= samples <= 1000000 or not 8 <= bins <= 512):
+        raise ValueError("Diagnostics require 100..1000000 samples and 8..512 bins")
+    def command(name, arguments):
+        executable = shutil.which(name)
+        if executable is None:
+            raise ValueError(name+" is not installed/on PATH")
+        return shlex.join([executable]+[str(a) for a in arguments])+"\n"
+    fit_command = command("util_RIFT_compress_posterior.py", [
+        "--config", copy, "--rundir", run, "--posterior", posterior])
+    sample_commands, compare_commands = "", ""
+    if diagnostic:
+        output = Path(resolved["output"])
+        if not output.is_absolute():
+            output = run/output
+        for target in resolved["targets"]:
+            directory = output/target/"diagnostics"
+            draws = directory/"posterior_samples.dat"
+            sample_commands += command("util_RIFT_sample_compressed.py", [
+                "--model", output/target/"model.json", "--output", draws,
+                "--n-samples", samples, "--seed", resolved["seed"]+2000])
+            compare_commands += command("util_RIFT_compare_compressed.py", [
+                "--fit-directory", output, "--target", target, "--samples", draws,
+                "--output", directory/"js.json", "--bins", bins])
+    node = _attach_job(dag, pipeline, run, parent, settings, runtime_prefix,
+                       "AUTO_FIT", "auto_fit", fit_command)
+    if diagnostic:
+        node = _attach_job(dag, pipeline, run, node, settings, runtime_prefix,
+                           "AUTO_FIT_SAMPLE", "auto_fit_sample", sample_commands)
+        node = _attach_job(dag, pipeline, run, node, settings, runtime_prefix,
+                           "AUTO_FIT_COMPARE", "auto_fit_compare", compare_commands)
+    return node
+
+
+def _attach_job(dag, pipeline, run, parent, settings, runtime_prefix, category, stem, commands):
+    wrapper = run/(stem+".sh")
+    wrapper.write_text("#!/bin/bash\nset -eu\n"+runtime_prefix+"\n"+commands)
     wrapper.chmod(0o755)
     job = pipeline.CondorDAGJob(universe="local", executable=str(wrapper))
-    job.set_sub_file(str(run/"AUTO_FIT.sub"))
-    job.set_log_file(str(run/"auto_fit.log"))
-    job.set_stdout_file(str(run/"auto_fit.out"))
-    job.set_stderr_file(str(run/"auto_fit.err"))
+    job.set_sub_file(str(run/(category+".sub")))
+    job.set_log_file(str(run/(stem+".log")))
+    job.set_stdout_file(str(run/(stem+".out")))
+    job.set_stderr_file(str(run/(stem+".err")))
     job.add_condor_cmd("initialdir", str(run))
     job.add_condor_cmd("getenv", "True")
     for option, default in (("request_cpus", 1), ("request_memory", 4096), ("request_disk", 2048)):
@@ -55,7 +88,7 @@ def attach(dag, pipeline, config, rundir, parent, posterior, runtime_prefix=""):
     job.add_condor_cmd("periodic_remove", "JobStatus == 2 && (CurrentTime-JobStartDate) > "+str(seconds))
     job.write_sub_file()
     node = pipeline.CondorDAGNode(job)
-    node.set_category("AUTO_FIT")
+    node.set_category(category)
     node.set_retry(0)
     node.add_parent(parent)
     dag.add_node(node)

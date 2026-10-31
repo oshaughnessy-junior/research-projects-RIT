@@ -29,6 +29,13 @@ def weighted_ks(a, wa, b, wb):
                             cb[np.searchsorted(b[ib], grid, side="right")])))
 
 
+def split_groups(groups, seed):
+    """Reproduce disjoint original-group training, tuning and audit partitions."""
+    ids = np.random.default_rng(seed).permutation(np.unique(groups))
+    train, tune, held = [np.isin(groups, g) for g in np.split(ids, [int(.6*len(ids)), int(.8*len(ids))])]
+    return ids, train, tune, held
+
+
 def fit_mixture(x, w, k, seed, maxiter):
     """Weighted EM; row multiplicity never replaces original information weights."""
     w = normalized(w)
@@ -297,10 +304,9 @@ def fit_posterior(points, weights, groups, contract, target, *, components=(1, 2
     x, physical, _ = guard._native(points, "detector", "luminosity_distance", None)
     if not np.all(physical & guard.support(x)):
         raise ValueError("Posterior rows violate declared physical analysis support")
-    ids = np.random.default_rng(seed).permutation(np.unique(groups))
+    ids, train, tune, held = split_groups(groups, seed)
     if len(ids) < 100:
         raise ValueError("At least 100 original intrinsic groups are required")
-    train, tune, held = [np.isin(groups, g) for g in np.split(ids, [int(.6*len(ids)), int(.8*len(ids))])]
     candidates, best = [], None
     for k in components:
         if train.sum() < 10*k*points.shape[1]:

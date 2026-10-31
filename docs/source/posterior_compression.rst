@@ -90,6 +90,73 @@ for a new attempt. Missing distance columns, unresolved/custom priors and
 unsupported post-reweighting contracts fail explicitly. Do not substitute
 distance-slice likelihood rows or independent mass and distance marginals.
 
+Optional pipeline diagnostics
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Add the pipeline option to the production INI:
+
+.. code-block:: ini
+
+   [rift-auto-fit]
+   enabled = true
+   build-diagnostics = true
+
+This adds two separate terminal jobs after fitting: draw a posterior from each
+saved fit, then compare it with the original joint extrinsic posterior.
+The fit executable does not run these jobs itself. Each job uses the existing
+one-CPU resource and runtime settings. Optional ``diagnostic_samples = 20000``
+and ``diagnostic_bins = 64`` set the draw count and histogram resolution.
+
+The sampler draws the fitted likelihood times its recorded native retained
+prior. This is the supported fitted posterior, so mixture sampling replaces
+another numerical CIP integration. It preserves the final CIP spin prior and
+ILE distance prior/cosmology. It does not apply a new population prior or
+reconstruct omitted nuisance parameters. The aligned product therefore reports
+only retained-spin diagnostics, even when generated from a precessing run.
+
+For each target, ``diagnostics/posterior_samples.dat`` contains equal-weight
+draws and standard derived coordinates. ``diagnostics/js.json`` and ``js.tsv``
+compare those draws against the held-out original extrinsic groups, excluded
+from training and tuning. Original posterior weights are preserved. Parameters
+include detector chirp/component masses, eta, q, effective spin ``xi``, both
+aligned spins, distance, source masses and redshift. Full-spin fits additionally
+include Cartesian spins, magnitudes, transverse spins, ``chi_p``, tilts and
+azimuths. Undefined zero-spin reference tilts are listed as unavailable.
+``phi12`` follows RIFT's L-frame range of zero to two pi, with zero returned
+when either transverse spin vanishes.
+
+JS is the squared base-2 Jensen-Shannon distance, reported in bits from zero
+to one. The estimator uses weighted histograms with common edges covering both
+distributions, and fixed circular domains for azimuths. It shares RIFT's base-2
+convention but differs from the convergence script's KDE estimator. Each
+parameter also reports one same-fit null comparison with matching row counts
+and weights. This estimates histogram sampling noise; it ignores correlations
+within original intrinsic groups. The report includes reference group ESS.
+No fixed JS acceptance threshold is imposed. Small 1D divergences do not certify
+joint correlations, arbitrary-prior tails or population integrals.
+
+Standalone sampling and comparison
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The two tools can also be run independently after building a fit:
+
+.. code-block:: console
+
+   util_RIFT_sample_compressed.py \
+       --model /run/auto_fit/aligned_distance/model.json \
+       --output /run/auto_fit/aligned_distance/diagnostics/posterior_samples.dat
+
+   util_RIFT_compare_compressed.py \
+       --fit-directory /run/auto_fit --target aligned_distance \
+       --samples /run/auto_fit/aligned_distance/diagnostics/posterior_samples.dat \
+       --output /run/auto_fit/aligned_distance/diagnostics/js.json
+
+Sampling accepts ``--n-samples`` and ``--seed``; comparison accepts ``--bins``.
+Comparison outputs must end in ``.json``; the companion table uses ``.tsv``.
+Existing outputs are preserved. Comparison checks the fit manifest and hashes
+of the saved model, original posterior and generated samples. Retain the
+original posterior and fit manifest when moving products to another host.
+
 Cosmology and likelihood interpretation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
