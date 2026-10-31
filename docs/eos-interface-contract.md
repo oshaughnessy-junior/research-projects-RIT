@@ -23,6 +23,11 @@ Batched evaluation must preserve valid neighboring samples when one evaluation
 fails.
 
 A rejected proposed EOS emits log evidence `-inf` and relative error `0`.
+A proposed EOS whose actual conversions reject every draw records zero evidence
+after the sampler exhausts its existing retry budget. The first invalid batch
+does not end those retries; later valid draws remain usable. Unrelated sampler
+errors retain their existing behavior.
+
 Repeated estimates combined by an average or sum retain successful replicas;
 all failed replicas retain zero evidence. A product over events retains every
 event, so a zero-evidence event makes the product zero.

@@ -466,8 +466,6 @@ def _construct_eos_proposal(factory, *args, **kwargs):
         if all(value is not None for value in limits) and limits[0] >= limits[1]:
             raise ValueError("EOS stellar mass limits are not increasing")
         return eos
-    except (OSError, ImportError):
-        raise  # a missing input file/dependency is not an EOS proposal
     except Exception as error:
         raise _RejectedEOSProposal(str(error)) from error
 
@@ -482,6 +480,17 @@ def _write_rejected_eos_proposal(error):
     print(" Rejecting proposed EOS row {}: {}".format(opts.using_eos_index, error))
     np.savetxt(opts.fname_output_integral+"+annotation.dat", [row], header=header)
     np.savetxt(opts.fname_output_integral+".dat", [-np.inf])
+
+
+def _exhausted_rejected_eos_proposal(error):
+    """Recognize only the base sampler's exhausted zero-contribution signal."""
+    counts = globals().get('_eos_sampling_status')
+    return (type(error) is Exception and
+            str(error) == "mcsampler: Too many iterations with no contribution to integral, hard fail" and
+            opts.sampler_method == 'adaptive_cartesian' and
+            opts.using_eos is not None and opts.using_eos.startswith('file:') and
+            opts.using_eos_index is not None and counts is not None and
+            counts['seen'] > 0 and counts['all_rejected'])
 
 
 def _eos_from_grid_row(eos_name, dat):
@@ -2514,8 +2523,13 @@ if not opts.using_eos:
             source_redshift=source_redshift, enforce_kerr=opts.downselect_enforce_kerr)
     return lalsimutils.convert_waveform_coordinates(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr,fref=opts.fref)
 else:
+ _eos_sampling_status = None
  def convert_coords(x_in):
     x_out = lalsimutils.convert_waveform_coordinates_with_eos(x_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,no_matter1=opts.no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr,fref=opts.fref)
+    if _eos_sampling_status is not None:
+        rows = np.atleast_2d(x_out)
+        _eos_sampling_status['seen'] += len(rows)
+        _eos_sampling_status['all_rejected'] &= bool(np.isneginf(rows).all())
     return x_out
 
  # Fixed EOS failures are rejected even when a generic predictor uses a finite floor.
@@ -3058,7 +3072,15 @@ if sampler_oracle:  # NON-PORTFOLIO SCENARIO TARGET
 
     
 
-res, var, neff, dict_return = sampler.integrate(fn_passed, *sampling_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=tempering_adapt, floor_level=1e-3,igrand_threshold_p=1e-3,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True, **extra_args)  # weight ecponent needs better choice. We are using arbitrary-name functions
+# Count only the actual sampling attempt, not training/oracle conversions.
+_eos_sampling_status = dict(seen=0, all_rejected=True) if (opts.using_eos) else None
+try:
+    res, var, neff, dict_return = sampler.integrate(fn_passed, *sampling_coord_names,  verbose=True,nmax=int(opts.n_max),n=n_step,neff=opts.n_eff, save_intg=True,tempering_adapt=tempering_adapt, floor_level=1e-3,igrand_threshold_p=1e-3,convergence_tests=test_converged,tempering_exp=my_exp,no_protect_names=True, **extra_args)  # weight ecponent needs better choice. We are using arbitrary-name functions
+except Exception as error:
+    if not _exhausted_rejected_eos_proposal(error):
+        raise
+    _write_rejected_eos_proposal(error)
+    sys.exit(0)
 # result value:  be careful, if return lnL, then must not take log twice!
 ln_integrand_value =  None
 if opts.internal_use_lnL:  # eg, AV integrator, etc
@@ -3154,7 +3176,7 @@ if opts.using_eos and not(opts.using_eos.startswith('file:')):
         annotation_header += "gamma1 gamma2 gamma3 gamma4 p0 epsilon0 xmax"
 elif opts.using_eos and opts.using_eos.startswith('file:'):
     fname = opts.using_eos.replace('file:','')
-    params_here = np.loadtxt(fname)[opts.using_eos_index][2:]
+    params_here = np.atleast_2d(np.loadtxt(fname))[opts.using_eos_index][2:]
     linefirst =''
     with open(fname) as f:
         linefirst = f.readline()
