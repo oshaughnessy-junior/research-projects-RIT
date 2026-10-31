@@ -159,3 +159,10 @@ def test_multiapprox_without_a_second_model_is_refused():
     text = PSEUDO.read_text()
     assert re.search(r"use_multiapprox and not opts\.approx_extra", text), (
         "pseudo_pipe does not check that the multi builder has >1 model")
+
+
+def test_auto_fit_config_refused_by_unsupported_sibling(tmp_path):
+    result = subprocess.run([sys.executable, str(MULTI), '--auto-fit-config', 'production.ini'],
+        cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert '--auto-fit-config' in result.stdout and 'NOT implement' in result.stdout

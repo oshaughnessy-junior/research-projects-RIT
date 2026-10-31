@@ -329,6 +329,7 @@ def test_final_cip_spin_prior_not_early_iteration_prior(tmp_path):
     args = tmp_path/"args_cip_list.txt"
     final = args.read_text()
     args.write_text("2 X --parameter mc --parameter eta --transverse-prior taper-down\n"+final)
+    (tmp_path/"CIP_prior.sub").write_text('arguments = "'+final.strip()+'"\n')
     assert resolve(ini, tmp_path)[1]["spin_prior"] == "volumetric"
 
 
@@ -401,6 +402,8 @@ def test_real_pseudo_pipe_terminal_job(tmp_path, diagnostics):
     submit = (rundir/"AUTO_FIT.sub").read_text()
     assert "universe = local" in submit.lower()
     assert "auto_fit.sh" in submit
+    assert "request_disk = 2097152" in submit.lower()
+    assert (rundir/"auto_fit.final_cip_args.json").is_file()
     assert (rundir/"auto_fit.production.ini").read_text() == ini.read_text()
     wrapper = (rundir/"auto_fit.sh").read_text()
     assert "--posterior extrinsic_posterior_samples.dat" in wrapper
@@ -499,3 +502,114 @@ def test_diagnostic_output_suffix_checked_before_writing(tmp_path):
     with pytest.raises(ValueError, match="end in .json"):
         compare(tmp_path/'missing', 'aligned_distance', tmp_path/'missing.dat', tmp_path/'results.tsv')
     assert not (tmp_path/'results.tsv').exists()
+
+
+def test_constant_heldout_coordinate_cannot_false_pass(tmp_path):
+    from compression.model import split_groups, weighted_ks
+    _, contract, _ = resolve(configuration(tmp_path), tmp_path)
+    rng = np.random.default_rng(31)
+    n = 5000
+    points = np.column_stack([rng.normal(30, 1, n), rng.normal(.19, .005, n),
+        np.full(n, .25), rng.normal(.1, .02, n), rng.normal(1000, 20, n)])
+    groups = np.arange(n)
+    _, train, _, held = split_groups(groups, 31)
+    points[np.flatnonzero(train)[0], 2] = .375
+    model, report = fit_posterior(points, np.ones(n), groups, contract, 'aligned_distance',
+        components=[1], seed=31, maxiter=100)
+    assert np.std(points[held, 2]) == 0
+    assert report['status'] == 'failed_validation'
+    assert report['maximum_ks'] > .4
+    assert weighted_ks(points[held, 2], np.ones(held.sum()), model.sample_native(10000)[:, 2], np.ones(10000)) > .4
+    with pytest.raises(ValueError, match='finite'):
+        weighted_ks([np.nan], [1], [1], [1])
+
+
+def test_native_projected_prior_zero_and_clamp(tmp_path):
+    _, contract, _ = resolve(configuration(tmp_path), tmp_path)
+    def model(prior, prec, cuts):
+        return CompressedFit(dict(schema='rift-posterior-compression-v1', target='aligned_distance',
+            contract=dict(contract, spin_prior=prior, precessing=prec, cuts=cuts),
+            cosmology_yaml=c.CosmologyContext('Planck15', 2500).serialized,
+            mixture=dict(weights=[1.], means=[np.zeros(5).tolist()], covariances=[np.eye(5).tolist()])))
+    points = np.array([[30., .5, 0., .2, 1000.], [30., .5, 1e-12, .2, 1000.], [30., .5, 1e-8, .2, 1000.]])
+    aligned = model('zprior_aligned', False, {})
+    values = aligned.log_native_prior_chart(points)
+    assert np.isfinite(values).all()
+    np.testing.assert_allclose(values, values[0], atol=1e-12)
+    shell = model('uniform_mag_prec', True, dict(chi1=[.2,.5], chi2=[.1,.5]))
+    assert np.isfinite(shell.log_native_prior_chart(points[:1])).all()
+    cusp = model('uniform_mag_prec', True, {})
+    with pytest.raises(ValueError, match='cusp'):
+        cusp.log_native_prior_chart(points[:1])
+
+
+def test_unsupported_spin_support_changes_refused(tmp_path):
+    ini = configuration(tmp_path)
+    path = tmp_path/'args_cip_list.txt'
+    original = path.read_text()
+    path.write_text(original+' --chi-max .5 --downselect-parameter chi1 --downselect-parameter-range [0,.8]')
+    with pytest.raises(ValueError, match='cube-clipped'):
+        resolve(ini, tmp_path)
+    path.write_text('1 X --parameter m1 --parameter m2 --parameter s1z --parameter s2z --chi-max .9 --chi-small-max .1')
+    with pytest.raises(ValueError, match='component-swap'):
+        resolve(ini, tmp_path)
+
+
+def test_effective_final_cip_snapshot_and_legacy_override(tmp_path):
+    from compression.config import file_hash
+    ini = configuration(tmp_path)
+    args = (tmp_path/'args_cip_list.txt').read_text()
+    path = tmp_path/'args_cip_list.txt'
+    path.write_text(args+'\n'+args+' --transverse-prior taper-down\n')
+    ini.write_text(ini.read_text().replace('assume-precessing = True',
+        'assume-precessing = True\ninternal-force-iterations = 1'))
+    with pytest.raises(ValueError, match='Ambiguous legacy'):
+        resolve(ini, tmp_path)
+    snapshot = tmp_path/'auto_fit.final_cip_args.json'
+    snapshot.write_text(json.dumps(dict(arguments=args, cip_list_sha256=file_hash(path))))
+    assert resolve(ini, tmp_path)[1]['spin_prior'] == 'volumetric'
+    path.write_text(path.read_text()+'\n')
+    with pytest.raises(ValueError, match='snapshot differs'):
+        resolve(ini, tmp_path)
+    final = tmp_path/'confirmed-final.txt'
+    final.write_text(args)
+    ini.write_text(ini.read_text()+'final_cip_args = confirmed-final.txt\n')
+    with pytest.raises(ValueError, match='Remove legacy'):
+        resolve(ini, tmp_path)
+    snapshot.unlink()
+    contract = resolve(ini, tmp_path)[1]
+    assert contract['spin_prior'] == 'volumetric'
+    assert contract['input_hashes']['confirmed-final.txt'] == file_hash(final)
+
+
+def test_legacy_multistage_requires_terminal_execution_record(tmp_path):
+    ini = configuration(tmp_path)
+    path = tmp_path/'args_cip_list.txt'
+    actual = path.read_text()
+    path.write_text(actual+'\n'+actual+' --transverse-prior taper-down')
+    with pytest.raises(ValueError, match='Ambiguous legacy'):
+        resolve(ini, tmp_path)
+    (tmp_path/'CIP_prior.sub').write_text('arguments = "'+actual+' --integrate-prior"\n')
+    assert resolve(ini, tmp_path)[1]['spin_prior'] == 'volumetric'
+
+
+def test_truncated_pipeline_records_actual_stage_before_prior_check(tmp_path):
+    import configparser
+    from test_rf_transverse_pipeline_build import _build, _opt_in_ini
+    ini = _opt_in_ini(tmp_path)
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read(ini)
+    cfg.set('rift-pseudo-pipe', 'internal-force-iterations', '1')
+    cfg.set('rift-pseudo-pipe', 'internal-propose-converge-last-stage', 'False')
+    cfg.add_section('rift-auto-fit')
+    cfg.set('rift-auto-fit', 'enabled', 'true')
+    with ini.open('w') as stream:
+        cfg.write(stream)
+    result, rundir = _build(tmp_path, ini)
+    # This early RF stage lacks the final uniform-magnitude prior correction.
+    # Refuse its unsupported prior instead of substituting the unexecuted stage.
+    assert result.returncode != 0
+    selected = json.loads((rundir/'auto_fit.final_cip_args.json').read_text())
+    assert '--prior-in-integrand-correction' not in selected['arguments']
+    assert 'uniform_over_rbar_singular' in (rundir/'args_cip_list.txt').read_text().splitlines()[-1]
+    assert 'Cylindrical spin chart requires' in result.stdout

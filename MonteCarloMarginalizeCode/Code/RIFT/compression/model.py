@@ -21,6 +21,11 @@ def normalized(weights):
 
 
 def weighted_ks(a, wa, b, wb):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if a.ndim != 1 or b.ndim != 1 or not len(a) or not len(b) or not np.isfinite(a).all() or not np.isfinite(b).all():
+        raise ValueError("KS samples must be nonempty finite one-dimensional arrays")
+    if len(a) != len(wa) or len(b) != len(wb):
+        raise ValueError("KS sample/weight lengths differ")
     ia, ib = np.argsort(a), np.argsort(b)
     grid = np.sort(np.r_[a, b])
     ca = np.r_[0., np.cumsum(normalized(wa)[ia])]
@@ -202,10 +207,12 @@ class CompressedFit:
                     raise ValueError("Invalid native spin-shell support")
             if prior == "volumetric":
                 density = radial[:, 1]**2-np.maximum(sz**2, radial[:, 0]**2)
-            elif prior in ("uniform_mag_prec", "zprior_aligned"):
-                if np.any(sz == 0):
+            elif prior == "uniform_mag_prec":
+                if np.any((sz == 0) & (radial[:, 0] == 0)):
                     raise ValueError("Exact projected-spin prior cusp is uncertified")
-                density = np.log(radial[:, 1]/np.maximum(abs(sz), radial[:, 0])) if self.contract["precessing"] else np.log(np.asarray(caps)/abs(sz))
+                density = np.log(radial[:, 1]/np.maximum(abs(sz), radial[:, 0]))
+            elif prior == "zprior_aligned":
+                density = -np.log(np.maximum(abs(sz)/np.asarray(caps), 1e-7))
             elif prior == "uniform_aligned":
                 density = np.ones_like(sz)
             else:
@@ -324,6 +331,7 @@ def fit_posterior(points, weights, groups, contract, target, *, components=(1, 2
     reference = points[held]
     rng = np.random.default_rng(seed+1001)
     scale = np.std(reference, axis=0)
+    scale = np.where(scale > 0, scale, 1.)
     projections = np.r_[np.eye(points.shape[1]), rng.normal(size=(16, points.shape[1]))]
     scores = [weighted_ks((reference/scale)@v, weights[held], (draw/scale)@v, np.ones(len(draw))) for v in projections]
     group_weights = np.array([weights[held & (groups == group)].sum() for group in ids[int(.8*len(ids)):]])

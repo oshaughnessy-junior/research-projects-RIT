@@ -2,6 +2,7 @@
 import ast
 import configparser
 import hashlib
+import json
 from pathlib import Path
 import re
 import shlex
@@ -68,7 +69,34 @@ def resolve(config, rundir):
     if not ilepath.is_file() or not cippath.is_file():
         raise ValueError("Existing run requires executed args_ile.txt and args_cip_list.txt; an INI alone cannot establish the native prior")
     ile = options(ilepath.read_text())
-    ciptext = cippath.read_text().strip().splitlines()[-1]
+    priorpath = None
+    if (run/"auto_fit.final_cip_args.json").is_file():
+        priorpath = run/"auto_fit.final_cip_args.json"
+        if "final_cip_args" in auto:
+            raise ValueError("Remove legacy final_cip_args override when the workflow records its actual terminal stage")
+        selected = json.loads(priorpath.read_text())
+        if selected.get("cip_list_sha256") != file_hash(cippath):
+            raise ValueError("Final CIP snapshot differs from the run's stage list")
+        ciptext = selected.get("arguments")
+        if not isinstance(ciptext, str) or not ciptext.strip():
+            raise ValueError("Final CIP snapshot lacks science arguments")
+    elif "final_cip_args" in auto:
+        priorpath = Path(auto["final_cip_args"])
+        if not priorpath.is_absolute():
+            priorpath = run/priorpath
+        ciptext = priorpath.read_text()
+    elif (run/"CIP_prior.sub").is_file():
+        # BasicIteration's terminal L=1 job uses the actual selected CIP stage.
+        priorpath = run/"CIP_prior.sub"
+        arguments = re.findall(r'^\s*arguments\s*=\s*"(.*)"\s*$', priorpath.read_text(), re.MULTILINE)
+        if len(arguments) != 1 or '""' in arguments[0]:
+            raise ValueError("Unsupported terminal prior submit syntax; provide confirmed final_cip_args")
+        ciptext = arguments[0]
+    else:
+        stages = [line for line in cippath.read_text().splitlines() if line.strip()]
+        if len(stages) != 1:
+            raise ValueError("Ambiguous legacy run requires confirmed final_cip_args; the last listed stage may not have run")
+        ciptext = stages[0]
     cip = options(ciptext)
     if any(k in cip for k in ("trust-sample-parameter-box", "no-downselect", "using-eos", "using-eos-index", "using-eos-for-prior")):
         raise ValueError("Data-dependent or EOS/downselection prior support needs an explicit adapter")
@@ -115,6 +143,8 @@ def resolve(config, rundir):
         bounds["mc"] = [.9*2**(-.2), 1000*2**(-.2)]
     elif massset == {"mc", "delta_mc"} and "eta-range" not in cip:
         bounds["eta"] = [(1-.9**2)/4, .25]
+    if massset == {"m1", "m2"} and (spin_caps[0] != spin_caps[1] or "downselect-parameter" in cip):
+        raise ValueError("Unordered m1/m2 sampling with asymmetric caps/cuts needs a component-swap prior adapter")
     if bounds["mc"][0] <= 0 or bounds["eta"][0] <= 0 or bounds["eta"][1] > .25:
         raise ValueError("Unphysical native mass support")
     cartesian = {"s1x", "s1y", "s1z", "s2x", "s2y", "s2z"} <= paramset
@@ -187,6 +217,8 @@ def resolve(config, rundir):
         # CIP overwrites requested eta and Cartesian-spin downselection windows.
         if name not in ("eta", "s1x", "s1y", "s1z", "s2x", "s2y", "s2z"):
             limits = interval(value)
+            if cartesian and name in ("chi1", "chi2") and limits[1] > spin_caps[int(name[-1])-1]:
+                raise ValueError("Widened Cartesian spin-radius cut needs a cube-clipped prior adapter")
             if name in cuts:
                 limits = [max(limits[0], cuts[name][0]), min(limits[1], cuts[name][1])]
             cuts[name] = interval(str(limits))
@@ -209,7 +241,7 @@ def resolve(config, rundir):
                     mass_prior="uniform_detector_component_masses", precessing=precessing,
                     fref=float(last(ile, "reference-freq", 100)),
                     nuisance_prior="Generating run conditional extrinsic and omitted-intrinsic priors",
-                    input_hashes={str(p.name): file_hash(p) for p in (Path(config), ilepath, cippath) if p.exists()})
+                    input_hashes={str(p.name): file_hash(p) for p in (Path(config), ilepath, cippath, priorpath) if p is not None and p.exists()})
     return cfg, contract, dict(targets=targets, components=components,
         seed=int(auto.get("seed", 711)), maxiter=int(auto.get("max_iterations", 200)),
         tolerance=float(auto.get("validation_ks", .08)),

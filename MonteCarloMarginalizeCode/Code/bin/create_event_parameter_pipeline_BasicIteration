@@ -374,6 +374,8 @@ opts=  parser.parse_args()
 from RIFT.compression.workflow import preflight as auto_fit_preflight
 auto_fit_settings = auto_fit_preflight(opts.auto_fit_config, opts.working_directory,
     extrinsic=opts.last_iteration_extrinsic, distance_reweighting=opts.comov_distance_reweighting)
+if auto_fit_settings is not None and opts.n_iterations < 1:
+    parser.error("auto-fit requires at least one CIP iteration")
 if not 0 <= opts.clean_ile_intrinsic_digits <= 15:
     parser.error("--clean-ile-intrinsic-digits must be between 0 and 15")
 
@@ -2763,7 +2765,9 @@ if auto_fit_settings is not None:
     # Fit the joint extrinsic posterior, including its paired distances.
     final_posterior = "extrinsic_posterior_samples.dat"
     last_node = attach_auto_fit(dag, pipeline, opts.auto_fit_config,
-        opts.working_directory, last_node, final_posterior, runtime_prefix=extra_text)
+        opts.working_directory, last_node, final_posterior, runtime_prefix=extra_text,
+        final_cip_args=(cip_args_for_iteration[opts.n_iterations-1] or
+            cip_args_lines[cip_stage_for_iteration[opts.n_iterations-1]]))
 
 # Create final node for overall plots.  (Note: default setup is designed to enable plots of the last two iterations *at each step* but this seems like overkill)
 if plot_args:

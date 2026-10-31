@@ -2,7 +2,9 @@
 from pathlib import Path
 import shlex
 import shutil
-from .config import enabled, read_ini, resolve
+from .config import enabled, file_hash, read_ini, resolve
+from .cli import write_json
+import json
 
 
 def preflight(config, rundir, *, extrinsic, distance_reweighting=False):
@@ -12,11 +14,10 @@ def preflight(config, rundir, *, extrinsic, distance_reweighting=False):
         raise ValueError("auto-fit requires final paired extrinsic posterior export")
     if distance_reweighting:
         raise ValueError("auto-fit with comoving-distance post-reweighting requires a resolved final-prior adapter; use the original posterior standalone")
-    cfg, contract, settings = resolve(config, rundir)
-    return cfg, contract, settings
+    return read_ini(config)
 
 
-def attach(dag, pipeline, config, rundir, parent, posterior, runtime_prefix=""):
+def attach(dag, pipeline, config, rundir, parent, posterior, runtime_prefix="", final_cip_args=None):
     """The local-universe job uses products already returned to the submit host."""
     run = Path(rundir).resolve()
     source = Path(config).resolve()
@@ -25,6 +26,12 @@ def attach(dag, pipeline, config, rundir, parent, posterior, runtime_prefix=""):
         raise ValueError("Existing auto-fit INI snapshot differs; preserve the previous workflow")
     if source != copy:
         shutil.copyfile(source, copy)
+    if final_cip_args is not None:
+        priorpath = run/"auto_fit.final_cip_args.json"
+        selected = dict(arguments=final_cip_args, cip_list_sha256=file_hash(run/"args_cip_list.txt"))
+        if priorpath.exists() and json.loads(priorpath.read_text()) != selected:
+            raise ValueError("Existing final CIP snapshot differs; preserve the previous workflow")
+        write_json(priorpath, selected)
     cfg = read_ini(copy)
     settings = cfg["rift-auto-fit"]
     _, _, resolved = resolve(copy, run)
@@ -80,7 +87,7 @@ def _attach_job(dag, pipeline, run, parent, settings, runtime_prefix, category, 
         value = settings.getint(key, fallback=default)
         if value <= 0 or (option == "request_cpus" and value != 1):
             raise ValueError("auto-fit currently requires one CPU and positive memory/disk budgets")
-        job.add_condor_cmd(option, str(value))
+        job.add_condor_cmd(option, str(value*1024 if option == "request_disk" else value))
     seconds = settings.getint("max_runtime_seconds", fallback=1800)
     if seconds <= 0:
         raise ValueError("max_runtime_seconds must be positive")

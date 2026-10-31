@@ -11,7 +11,10 @@ Earlier CIP stages can use different spin priors to explore the likelihood;
 those exploratory priors must not be divided out of the final posterior.
 The distance prior comes from the ILE/extrinsic configuration. These priors
 are resolved from the production INI and checked against ``args_ile.txt`` and
-the final entry of ``args_cip_list.txt``.
+the executed final stage selected by BasicIteration. New workflows save this
+selection in ``auto_fit.final_cip_args.json``, bound to the stage-list hash.
+An iteration limit can stop before the last listed CIP stage; that unexecuted
+stage must not supply the prior.
 
 A CIP posterior table does not supply the paired distances needed by these
 fits. Compression does not read CIP posterior rows, join them to the extrinsic
@@ -76,6 +79,12 @@ directory. ``--posterior FILE`` selects another joint posterior table;
 under ``--rundir``. No new waveform calls or posterior sampling are performed.
 The run's resolved argument files are needed to check the final prior and
 automatically selected support; no CIP posterior sample file is required.
+Legacy runs use the terminal ``CIP_prior.sub`` science arguments when available.
+For a multistage legacy run without a saved terminal execution record, set ``final_cip_args = confirmed-final-args.txt`` in the auto-fit
+section. This file must contain the science arguments of the actual terminal
+CIP stage, confirmed from the generated workflow. Its hash is recorded. A
+single-stage legacy run can use its sole listed stage. Remove legacy overrides
+when a new workflow records its terminal stage automatically.
 
 Fairdraw posterior rows have equal weights. For a weighted table, set
 ``weight_column`` in ``[rift-auto-fit]`` to its posterior-weight column.
@@ -87,7 +96,9 @@ importance weights again to fairdraw rows.
 Existing output directories are preserved. A failed fit saves its candidate
 and validation report and returns nonzero. Choose another output directory
 for a new attempt. Missing distance columns, unresolved/custom priors and
-unsupported post-reweighting contracts fail explicitly. Do not substitute
+unsupported post-reweighting contracts fail explicitly. Widened Cartesian
+spin-radius cuts and unordered component-mass sampling with asymmetric
+spin caps or cuts require separate prior adapters and are refused. Do not substitute
 distance-slice likelihood rows or independent mass and distance marginals.
 
 Optional pipeline diagnostics
@@ -104,7 +115,8 @@ Add the pipeline option to the production INI:
 This adds two separate terminal jobs after fitting: draw a posterior from each
 saved fit, then compare it with the original joint extrinsic posterior.
 The fit executable does not run these jobs itself. Each job uses the existing
-one-CPU resource and runtime settings. Optional ``diagnostic_samples = 20000``
+one-CPU resource and runtime settings. Local-universe memory/disk requests
+are advisory; thread and runtime controls bound execution. Optional ``diagnostic_samples = 20000``
 and ``diagnostic_bins = 64`` set the draw count and histogram resolution.
 
 The sampler draws the fitted likelihood times its recorded native retained
