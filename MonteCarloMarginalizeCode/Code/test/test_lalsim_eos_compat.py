@@ -10,6 +10,7 @@ import pytest
 from RIFT.physics.lalsim_eos_compat import (
     AmbiguousFamilyBranchError,
     LALSimNeutronStarFamilyAdapter,
+    NonFiniteFamilyObservableError,
     mass_in_eos_support,
     validate_fixed_eos_branch_request,
 )
@@ -335,7 +336,13 @@ def test_kedia_parametric_eos_scalar_interfaces_remain_compatible():
     )
 
     assert np.isfinite(spectral.lambda_from_m(1.4))
-    assert np.isfinite(piecewise.lambda_from_m(1.4))
+    native_k2 = EOSManager.lalsim.SimNeutronStarLoveNumberK2(1.4 * lal.MSUN_SI, piecewise.eos_fam)
+    if np.isfinite(native_k2):
+        assert np.isfinite(piecewise.lambda_from_m(1.4))
+    else:
+        # A native solver failure must raise, never enter a posterior as NaN.
+        with pytest.raises(NonFiniteFamilyObservableError, match="Love number k2"):
+            piecewise.lambda_from_m(1.4)
 
 
 def test_selected_branch_view_preserves_legacy_scalar_consumer_api(monkeypatch):
@@ -840,3 +847,127 @@ def test_released_lalsimulation_family_publishes_both_mass_bounds(monkeypatch):
     assert eos.mMinMsun == pytest.approx(1.0 / lal.MSUN_SI)
     assert eos.mMaxMsun == pytest.approx(3.0 / lal.MSUN_SI)
     assert legacy.create_calls  # legacy one-argument family API was used
+
+
+class ReleasedMultibranchLALSimulation(LegacyLALSimulation):
+    """Released family ABI uses family-before-branch arguments."""
+    bounds = ((1.0, 2.0), (1.5, 3.0))
+
+    def CreateSimNeutronStarFamily(self, eos, min_fam):
+        self.create_calls.append((eos, min_fam))
+        return "released-family"
+
+    def CreateSimNeutronStarFamilyWithPcmin(self, eos, min_fam, logPcmin):
+        self.create_calls.append((eos, min_fam, logPcmin))
+        return "released-family"
+
+    def SimNeutronStarFamNumberOfBranches(self, family):
+        assert family == "released-family"
+        return len(self.bounds)
+
+    def SimNeutronStarFamMinMassPerBranch(self, family, branch_id):
+        assert family == "released-family"
+        return self.bounds[branch_id][0]
+
+    def SimNeutronStarFamMaxMassPerBranch(self, family, branch_id):
+        assert family == "released-family"
+        return self.bounds[branch_id][1]
+
+    def SimNeutronStarFamRadiusOfMassPerBranch(self, mass, family, branch_id):
+        assert family == "released-family"
+        return mass + 10.0 * branch_id
+
+    def SimNeutronStarFamLoveNumberK2OfMassPerBranch(self, mass, family, branch_id):
+        assert family == "released-family"
+        return .1 * mass + branch_id
+
+    def SimNeutronStarFamCentralPressureOfMassPerBranch(self, mass, family, branch_id):
+        assert family == "released-family"
+        return 100.0 * mass + branch_id
+
+    def SimNeutronStarRadius(self, mass, family):
+        raise AssertionError("released multibranch family used a legacy scalar accessor")
+
+    SimNeutronStarLoveNumberK2 = SimNeutronStarRadius
+    SimNeutronStarCentralPressure = SimNeutronStarRadius
+
+
+@pytest.mark.parametrize("minimal", [False, True])
+def test_released_multibranch_family_preserves_branch_semantics(minimal):
+    lalsim = ReleasedMultibranchLALSimulation()
+    family = LALSimNeutronStarFamilyAdapter("eos", minimal=minimal, lalsim_module=lalsim)
+    assert lalsim.create_calls == [("eos", int(minimal))]
+    assert family.number_of_branches == 2
+    assert family.minimum_mass() == 1.0
+    assert family.maximum_mass() == 3.0
+    assert family.branches_for_mass(1.75) == [0, 1]
+    with pytest.raises(AmbiguousFamilyBranchError):
+        family.radius(1.75)
+    assert family.radius(1.75, branch_id=1) == 11.75
+    assert family.love_number_k2(1.75, branch_id=1) == pytest.approx(1.175)
+    assert family.central_pressure(1.75, branch_id=1) == 176.0
+    assert family.radius(1.25) == 1.25
+    with pytest.raises(ValueError, match="outside stable branch"):
+        family.radius(1.25, branch_id=1)
+
+
+def test_released_multibranch_existing_family_and_pressure_floor():
+    lalsim = ReleasedMultibranchLALSimulation()
+    family = LALSimNeutronStarFamilyAdapter.from_family("released-family", lalsim_module=lalsim)
+    assert lalsim.create_calls == []
+    assert family.number_of_branches == 2
+    assert family.radius(1.75, branch_id=1) == 11.75
+    LALSimNeutronStarFamilyAdapter("eos", minimal=False, log_pressure_min=75.5, lalsim_module=lalsim)
+    assert lalsim.create_calls == [("eos", 0, 75.5)]
+    with pytest.raises(ValueError, match="finite"):
+        LALSimNeutronStarFamilyAdapter("eos", log_pressure_min=float('nan'), lalsim_module=lalsim)
+
+
+def test_partial_released_multibranch_api_is_not_treated_as_legacy(monkeypatch):
+    lalsim = ReleasedMultibranchLALSimulation()
+    monkeypatch.delattr(ReleasedMultibranchLALSimulation, "SimNeutronStarFamMaxMassPerBranch")
+    with pytest.raises(RuntimeError, match="released.*incomplete.*MaxMassPerBranch"):
+        LALSimNeutronStarFamilyAdapter("eos", lalsim_module=lalsim)
+    assert lalsim.create_calls == []
+
+
+def test_released_constructor_domain_error_is_not_retried():
+    class InvalidEOS(ReleasedMultibranchLALSimulation):
+        def CreateSimNeutronStarFamily(self, *args):
+            self.create_calls.append(args)
+            raise TypeError("invalid EOS domain")
+    lalsim = InvalidEOS()
+    with pytest.raises(TypeError, match="invalid EOS domain"):
+        LALSimNeutronStarFamilyAdapter("eos", lalsim_module=lalsim)
+    assert lalsim.create_calls == [("eos", 1)]
+
+
+@pytest.mark.parametrize("api", ["legacy", "reviewed", "released"])
+def test_nonfinite_native_observables_fail_explicitly(monkeypatch, api):
+    implementations = dict(legacy=LegacyLALSimulation, reviewed=MultibranchLALSimulation,
+                           released=ReleasedMultibranchLALSimulation)
+    lalsim = implementations[api]()
+    family = LALSimNeutronStarFamilyAdapter("eos", multipart=api == "reviewed", lalsim_module=lalsim)
+    names = dict(
+        legacy=("SimNeutronStarRadius", "SimNeutronStarLoveNumberK2", "SimNeutronStarCentralPressure"),
+        reviewed=("SimNeutronStarFamBranchRadius", "SimNeutronStarFamBranchLoveNumberK2", "SimNeutronStarFamBranchCentralPressure"),
+        released=("SimNeutronStarFamRadiusOfMassPerBranch", "SimNeutronStarFamLoveNumberK2OfMassPerBranch", "SimNeutronStarFamCentralPressureOfMassPerBranch"))
+    for accessor, method in zip(names[api], (family.radius, family.love_number_k2, family.central_pressure)):
+        for bad in (float('nan'), float('inf')):
+            monkeypatch.setattr(lalsim, accessor, lambda *args, result=bad: result)
+            with pytest.raises(NonFiniteFamilyObservableError, match="nonfinite"):
+                method(1.25, branch_id=0)
+
+
+def test_nonfinite_k2_propagates_through_branch_view_and_vector_conversion(monkeypatch):
+    from RIFT import lalsimutils
+    view = _twin_star_branch(monkeypatch, 1)
+    native = view.source._get_lalsim_family_adapter().lalsim
+    monkeypatch.setattr(native, "SimNeutronStarFamBranchLoveNumberK2", lambda *args: float('nan'))
+    with pytest.raises(NonFiniteFamilyObservableError):
+        view.lambda_from_m(1.75)
+    with pytest.raises(NonFiniteFamilyObservableError):
+        lalsimutils.convert_waveform_coordinates_with_eos(
+            np.array([[1.75, 1.4]]), coord_names=['lambda1', 'lambda2'],
+            low_level_coord_names=['m1', 'm2'], eos_class=view)
+    assert view.lambda_from_m(1.1) == -np.inf
