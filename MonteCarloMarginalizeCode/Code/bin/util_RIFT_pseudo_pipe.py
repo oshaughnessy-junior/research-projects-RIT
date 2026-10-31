@@ -2669,6 +2669,12 @@ elif opts.ile_exe:
 else:
     resolved_ile_exe = "`which integrate_likelihood_extrinsic_batchmode`"
 cmd =cepp+ "  --ile-n-events-to-analyze {} --input-grid proposed-grid.{} --ile-exe  {}   --ile-args `pwd`/args_ile.txt --cip-args-list args_cip_list.txt --test-args args_test.txt --request-memory-CIP {} --request-memory-ILE {} --n-samples-per-job ".format(n_jobs_per_worker,grid_suffix_pp,resolved_ile_exe,cip_mem,ile_mem) + str(npts_it) + " --working-directory `pwd` --n-iterations " + str(n_iterations) + ("" if use_multiapprox else " --n-iterations-subdag-max {} ".format(opts.internal_n_iterations_subdag_max)) + "  --n-copies {} ".format(opts.ile_copies) + "   --ile-retries "+ str(opts.ile_retries) + " --general-retries " + str(opts.general_retries)
+if opts.use_ini:
+    from RIFT.compression.config import enabled as auto_fit_enabled
+    if auto_fit_enabled(opts.use_ini):
+        if cepp != "create_event_parameter_pipeline_BasicIteration":
+            raise ValueError("auto-fit is currently supported by BasicIteration; use the standalone executable for other generators")
+        cmd += " --auto-fit-config " + shlex.quote(os.path.abspath(opts.use_ini))
 if use_multiapprox:
     # Every model on the SAME grid.  --approx is the primary; --approx-extra the
     # rest.  The builder marginalizes over them point by point in the loop and
