@@ -232,24 +232,47 @@ if os.environ.get("CIP_ROWTEST_CONSTRUCTOR"):
     class Model:
         mMinMsun = .1
         mMaxMsun = 1000.
+        calls = 0
+        evaluation = None
         def lambda_from_m(self, mass):
+            self.calls += 1
+            if self.evaluation == "lambda_nan" or (self.evaluation == "late_valid" and self.calls <= 100):
+                return np.nan
             return 0.
         def lambda_from_m_vector(self, masses):
+            order = np.arange(self.calls+1, self.calls+np.size(masses)+1)
+            self.calls += np.size(masses)
+            if self.evaluation == "lambda_nan":
+                return np.full_like(masses, np.nan, dtype=float)
+            if self.evaluation == "late_valid":
+                return np.where(order <= 100, np.nan, 0.).reshape(np.shape(masses))
             return np.zeros_like(masses, dtype=float)
     def construct(name=None, spec_params=None, **kwargs):
         invalid = os.environ.get("CIP_ROWTEST_BAD_EOS") == "all" or spec_params["gamma1"] == 2.
         mode = os.environ.get("CIP_ROWTEST_BAD_EOS")
         if invalid and mode == "raise":
             raise RuntimeError("synthetic proposed EOS constructor failure")
+        if invalid and mode == "oserror":
+            raise OSError("synthetic proposed EOS I/O failure")
+        if invalid and mode == "importerror":
+            raise ImportError("synthetic proposed EOS implementation failure")
         if invalid and mode == "all":
             raise RuntimeError("synthetic proposed EOS constructor failure")
         model = Model()
+        if invalid and mode in ("lambda_nan", "late_valid"):
+            model.evaluation = mode
         if invalid and mode == "nanmax":
             model.mMaxMsun = float("nan")
         if invalid and mode == "nanmin":
             model.mMinMsun = float("nan")
         return model
     manager.EOSLindblomSpectral = construct
+    if os.environ.get("CIP_ROWTEST_SAMPLER_ERROR"):
+        import RIFT.integrators.mcsampler as sampler_module
+        def fail_sampler(self, function, *args, **kwargs):
+            function(np.array([30.]), np.array([.5]))
+            raise Exception("synthetic unrelated sampler failure")
+        sampler_module.MCSampler.integrate = fail_sampler
 '''
 
 
@@ -263,7 +286,7 @@ def _constructor_args(workdir, count=3):
             "--fname-output-samples", "MARG-0-0", "--save-hyperfile-only"]
 
 
-@pytest.mark.parametrize("mode", ["raise", "nanmax", "nanmin"])
+@pytest.mark.parametrize("mode", ["raise", "nanmax", "nanmin", "oserror", "importerror"])
 def test_proposed_eos_constructor_failure_rejects_only_its_row(workdir, mode):
     args = _constructor_args(workdir)
     _, run_dir = _run(workdir, "eos_constructor_"+mode, args,
@@ -457,3 +480,76 @@ def test_incomplete_native_family_api_is_configuration_error():
     exec(compile(ast.Module(body=nodes, type_ignores=[]), DRIVER, 'exec'), namespace)
     with pytest.raises(RuntimeError, match='API is incomplete'):
         namespace['_eos_from_grid_row']('file:proposal.dat', np.array([0., 0., 1., 0.]))
+
+
+@pytest.mark.parametrize('error_type', [OSError, ImportError])
+def test_proposed_factory_exception_types_are_sample_local(error_type):
+    import ast
+    tree = ast.parse(open(DRIVER).read())
+    nodes = [node for node in tree.body if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+             and node.name in {'_RejectedEOSProposal', '_construct_eos_proposal'}]
+    namespace = dict(np=np)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), DRIVER, 'exec'), namespace)
+    def factory():
+        raise error_type('failure inside proposed EOS factory')
+    with pytest.raises(namespace['_RejectedEOSProposal'], match='inside proposed EOS factory'):
+        namespace['_construct_eos_proposal'](factory)
+
+
+@pytest.mark.parametrize('missing', ['grid', 'plugin'])
+def test_static_eos_inputs_are_not_rejected_proposals(workdir, missing):
+    args = _grid_args(workdir, 0, 1, 'MARG-0-0') + ['--save-hyperfile-only']
+    if missing == 'grid':
+        args[args.index('file:'+str(workdir/'grid.dat'))] = 'file:'+str(workdir/'missing-grid.dat')
+    else:
+        args[args.index('cip_rowtest_plugin')] = 'missing_cip_eos_test_plugin'
+    result, run_dir = _run(workdir, 'static_missing_'+missing, args, expect_ok=False)
+    assert result.returncode != 0
+    assert not list(run_dir.glob('*annotation.dat'))
+
+
+@pytest.mark.parametrize('evaluation', ['lambda_nan', 'late_valid'])
+def test_eos_sampling_budget_rejects_allbad_model_but_allows_later_valid_batch(workdir, evaluation):
+    args = _constructor_args(workdir) + ['--n-max', '2000', '--n-eff', '10', '--n-chunk', '50']
+    result, run_dir = _run(workdir, 'eos_sampling_'+evaluation, args,
+        env_extra={'CIP_ROWTEST_CONSTRUCTOR': '1', 'CIP_ROWTEST_BAD_EOS': evaluation})
+    rows = np.array([_annotation(run_dir / ('MARG-0-%d+annotation.dat' % row))[1][0] for row in range(3)])
+    assert np.isfinite(rows[[0, 2], 0]).all()
+    np.testing.assert_array_equal(rows[:, 2:], [[1, 0], [2, 0], [3, 0]])
+    assert 'No contribution to integral, skipping.' in result.stdout
+    if evaluation == 'lambda_nan':
+        assert np.isneginf(rows[1, 0]) and rows[1, 1] == 0.
+        assert result.stdout.count('No contribution to integral, skipping.') >= 10
+    else:
+        assert np.isfinite(rows[1, 0])
+        assert 'Rejecting proposed EOS row' not in result.stdout
+
+
+def test_unrelated_sampler_failure_after_eos_rejections_is_not_hidden(workdir):
+    args = _constructor_args(workdir, count=1)
+    args[args.index('--using-eos-index')+1] = '1'
+    result, run_dir = _run(workdir, 'unrelated_sampler_failure', args, expect_ok=False,
+        env_extra={'CIP_ROWTEST_CONSTRUCTOR': '1', 'CIP_ROWTEST_BAD_EOS': 'lambda_nan',
+                   'CIP_ROWTEST_SAMPLER_ERROR': '1'})
+    assert result.returncode != 0
+    assert 'synthetic unrelated sampler failure' in result.stdout
+    assert not list(run_dir.glob('*annotation.dat'))
+
+
+def test_only_known_exhausted_all_eos_rejection_signal_is_translated():
+    import ast
+    import types
+    tree = ast.parse(open(DRIVER).read())
+    node = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == '_exhausted_rejected_eos_proposal')
+    namespace = dict(opts=types.SimpleNamespace(sampler_method='adaptive_cartesian',
+        using_eos='file:proposals.dat', using_eos_index=0))
+    exec(compile(ast.Module(body=[node], type_ignores=[]), DRIVER, 'exec'), namespace)
+    signal = 'mcsampler: Too many iterations with no contribution to integral, hard fail'
+    namespace['_eos_sampling_status'] = dict(seen=20, all_rejected=True)
+    assert namespace['_exhausted_rejected_eos_proposal'](Exception(signal))
+    assert not namespace['_exhausted_rejected_eos_proposal'](RuntimeError(signal))
+    assert not namespace['_exhausted_rejected_eos_proposal'](Exception('unrelated'))
+    for state in (dict(seen=0, all_rejected=True), dict(seen=20, all_rejected=False)):
+        namespace['_eos_sampling_status'] = state
+        assert not namespace['_exhausted_rejected_eos_proposal'](Exception(signal))
