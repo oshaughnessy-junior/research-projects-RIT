@@ -212,6 +212,8 @@ def test_fake_ile_existing_run_cli(tmp_path):
     fake = CODE/"demo/auto_fit/fake_ile.py"
     proc = subprocess.run([sys.executable, str(fake), "--output", str(tmp_path/"extrinsic_posterior_samples.dat"), "--rows", "18000"], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+    assert not list(tmp_path.glob("posterior_samples-*.dat"))
+    assert not list(tmp_path.glob("overlap-grid-*"))
     result = run(ini, tmp_path)
     assert result["status"] == "complete", result
     for target in ("aligned_distance", "precessing_source_redshift"):
@@ -253,21 +255,41 @@ def test_group_information_cannot_be_manufactured(tmp_path):
         fit_posterior(x, np.ones(len(x)), np.zeros(len(x)), contract, "aligned_distance")
 
 
-def test_last_cip_binding_rejects_stale_or_incomplete_pairs(tmp_path):
-    from compression.cli import read_posterior, bind_final_cip
+def test_extrinsic_rows_weights_and_groups_are_used_directly(tmp_path, monkeypatch):
+    import compression.cli as cli
+    ini = configuration(tmp_path)
     fake = CODE/"demo/auto_fit/fake_ile.py"
-    subprocess.run([sys.executable, str(fake), "--output", str(tmp_path/"paired.dat"), "--rows", "3000"], check=True)
-    aligned, full, weights, _, _ = read_posterior(tmp_path/"paired.dat")
-    final = tmp_path/"posterior_samples-1.dat"
-    adjusted, groups, binding = bind_final_cip(aligned, full, weights, final)
-    assert np.isclose(adjusted.sum(), 1)
-    assert binding["rows"] == 3000
-    stale = full.copy()
-    stale[:, 0] += 10
-    with pytest.raises(ValueError, match="final CIP"):
-        bind_final_cip(aligned, stale, weights, final)
-    with pytest.raises(ValueError, match="lack paired"):
-        bind_final_cip(aligned[:10], full[:10], weights[:10], final)
+    table = tmp_path/"extrinsic_posterior_samples.dat"
+    subprocess.run([sys.executable, str(fake), "--output", str(table), "--rows", "3000"], check=True)
+    names = table.read_text().splitlines()[0]
+    data = np.loadtxt(table, skiprows=1)
+    data[:, -2] = np.linspace(.2, 2., len(data))
+    np.savetxt(table, data, header=names, comments="")
+    # An unrelated CIP table must never be opened or used to alter these weights.
+    (tmp_path/"posterior_samples-999.dat").write_text("invalid unrelated CIP table\n")
+    aligned, full, weights, groups, _ = cli.read_posterior(table, "posterior_weight", "intrinsic_group")
+    seen = []
+    def capture(points, row_weights, row_groups, contract, target, **kwargs):
+        np.testing.assert_array_equal(points, full if target == "precessing_source_redshift" else aligned)
+        np.testing.assert_array_equal(row_weights, weights)
+        np.testing.assert_array_equal(row_groups, groups)
+        seen.append(target)
+        class Model:
+            artifact = {"test": "direct input contract"}
+        return Model(), {"status": "pass_native_recovery"}
+    monkeypatch.setattr(cli, "fit_posterior", capture)
+    result = cli.run(ini, tmp_path)
+    assert result["status"] == "complete"
+    assert len(seen) == 2
+    assert "final_cip_posterior" not in result
+
+
+def test_final_cip_spin_prior_not_early_iteration_prior(tmp_path):
+    ini = configuration(tmp_path)
+    args = tmp_path/"args_cip_list.txt"
+    final = args.read_text()
+    args.write_text("2 X --parameter mc --parameter eta --transverse-prior taper-down\n"+final)
+    assert resolve(ini, tmp_path)[1]["spin_prior"] == "volumetric"
 
 
 @pytest.mark.parametrize("extra", ["--no-downselect", "--trust-sample-parameter-box"])
@@ -338,10 +360,9 @@ def test_real_pseudo_pipe_terminal_job(tmp_path):
     assert "auto_fit.sh" in submit
     assert (rundir/"auto_fit.production.ini").read_text() == ini.read_text()
     wrapper = (rundir/"auto_fit.sh").read_text()
-    assert "--intrinsic-posterior overlap-grid-6.xml.gz" in wrapper
-    from compression.cli import read_posterior
-    intrinsic, full, _, _, _ = read_posterior(rundir/"target_params.xml.gz", intrinsic_only=True)
-    assert len(intrinsic) > 0 and full is not None
+    assert "--posterior extrinsic_posterior_samples.dat" in wrapper
+    assert "--intrinsic-posterior" not in wrapper
+    assert "overlap-grid" not in wrapper
     dag = (rundir/"marginalize_intrinsic_parameters_BasicIterationWorkflow.dag").read_text()
     assert "AUTO_FIT.sub" in dag
     lines = dag.splitlines()

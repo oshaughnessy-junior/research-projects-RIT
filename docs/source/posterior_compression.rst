@@ -1,0 +1,138 @@
+Posterior compression
+=====================
+
+RIFT can fit compact analytic representations to the joint posterior in
+``extrinsic_posterior_samples.dat``. Each row contains intrinsic parameters and
+their paired luminosity distance. The fitter uses these rows and their posterior
+weights directly, preserving mass, spin and distance correlations.
+
+The final CIP stage supplies the intrinsic prior, including the spin prior.
+Earlier CIP stages can use different spin priors to explore the likelihood;
+those exploratory priors must not be divided out of the final posterior.
+The distance prior comes from the ILE/extrinsic configuration. These priors
+are resolved from the production INI and checked against ``args_ile.txt`` and
+the final entry of ``args_cip_list.txt``.
+
+A CIP posterior table does not supply the paired distances needed by these
+fits. Compression does not read CIP posterior rows, join them to the extrinsic
+samples or change the extrinsic samples' weights to match a CIP marginal.
+
+Enable compression in a workflow
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Append this section to the original high-level production INI:
+
+.. code-block:: ini
+
+   [rift-auto-fit]
+   enabled = true
+   targets = precessing_source_redshift, aligned_distance
+   component_counts = 1,2,4,8
+   output_directory = auto_fit
+   seed = 711
+   max_iterations = 200
+   validation_ks = .08
+   request_cpus = 1
+   request_memory_mb = 4096
+   request_disk_mb = 2048
+   max_runtime_seconds = 1800
+
+Use the usual final extrinsic export options, such as ``--add-extrinsic
+--batch-extrinsic --add-extrinsic-time-resampling``. Pseudo-pipe passes its
+production INI to BasicIteration, which adds a bounded terminal compression
+job after the joint extrinsic posterior is available. Omitting the section
+leaves compression disabled. For an aligned analysis, request only
+``targets = aligned_distance``.
+
+The default products are:
+
+* ``precessing_source_redshift``: source chirp mass, eta, all six Cartesian
+  spin components and redshift (nine dimensions).
+* ``aligned_distance``: source chirp mass, eta, both aligned spin components
+  and luminosity distance (five dimensions).
+
+For precessing input, the aligned product marginalizes transverse spins under
+the generating conditional prior. It does not impose an aligned waveform model.
+Masses use solar masses, distances use Mpc, and spins retain the generating
+L frame and reference frequency.
+
+Apply to an existing run
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use a RIFT installation containing the compression executable:
+
+.. code-block:: console
+
+   util_RIFT_compress_posterior.py --config /path/production.ini \
+       --rundir /path/completed_run
+
+The default data input is ``extrinsic_posterior_samples.dat`` under the run
+directory. ``--posterior FILE`` selects another joint posterior table;
+``--output DIRECTORY`` selects a new output directory. Relative paths resolve
+under ``--rundir``. No new waveform calls or posterior sampling are performed.
+The run's resolved argument files are needed to check the final prior and
+automatically selected support; no CIP posterior sample file is required.
+
+Fairdraw posterior rows have equal weights. For a weighted table, set
+``weight_column`` in ``[rift-auto-fit]`` to its posterior-weight column.
+Set ``group_column`` when the export records original intrinsic ancestry;
+otherwise identical intrinsic rows share a group. Grouping controls training
+and validation splits and does not reweight the posterior. Never apply earlier
+importance weights again to fairdraw rows.
+
+Existing output directories are preserved. A failed fit saves its candidate
+and validation report and returns nonzero. Choose another output directory
+for a new attempt. Missing distance columns, unresolved/custom priors and
+unsupported post-reweighting contracts fail explicitly. Do not substitute
+distance-slice likelihood rows or independent mass and distance marginals.
+
+Cosmology and likelihood interpretation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When omitted from the auto-fit section, cosmology and distance-prior choices
+inherit from the analysis. Current RIFT cosmological distance priors use
+Planck15. Conflicting declarations and inconsistent exported source columns
+are rejected. The stored model retains its generating prior and cosmology.
+
+The fitter estimates the native joint posterior density and divides by its
+retained-coordinate prior to evaluate a scalar likelihood, up to one fixed
+event constant. Omitted nuisance parameters retain the generating conditional
+prior. Native-recovery validation does not certify arbitrary-prior tails,
+population inference or absolute event evidence.
+
+The stored chart uses detector masses and distance. Source-frame evaluation
+substitutes ``Mc_detector = (1+z) Mc_source`` and ``dL = dL(z)`` without a
+likelihood Jacobian. Densities and integration measures include their Jacobians.
+An alternative evaluation cosmology changes this coordinate map without
+changing the generating distance prior.
+
+Efficient evaluation
+~~~~~~~~~~~~~~~~~~~~
+
+Load the model and cosmology context once, then evaluate arrays:
+
+.. code-block:: python
+
+   from RIFT.compression import CompressedFit, CosmologyContext
+   from astropy.cosmology import Planck18
+
+   fit = CompressedFit.load("auto_fit/aligned_distance/model.json")
+   ctx = CosmologyContext.from_astropy(Planck18, distance_max=2500.)
+   logL = fit.log_likelihood(points, mass_frame="source",
+                            radial_coordinate="luminosity_distance",
+                            cosmology=ctx)
+
+Mixture Cholesky factors and checked cosmology interpolators are cached.
+Cosmology tables cover the declared distance support and reject extrapolation;
+set ``distance_max`` to cover the model's distance range.
+For repeated integrals, reuse a proposal bank:
+
+.. code-block:: python
+
+   bank = fit.integration_bank(n=65536, seed=73, cosmology=ctx)
+   log_integral, diagnostics = bank.integrate_log_density(log_population_density)
+
+The callback receives source component masses, retained spins and redshift.
+Bank weights include the physical measure and proposal density. Keep their
+normalization fixed between population models and inspect the reported
+importance ESS.

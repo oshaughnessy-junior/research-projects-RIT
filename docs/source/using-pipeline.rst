@@ -5,6 +5,10 @@ Using the pipeline
 Basics
 ------
 
+For optional analytic fits of the joint extrinsic posterior, see
+:doc:`posterior_compression`. The final CIP stage determines the intrinsic
+spin prior used by those fits; the data rows come from the extrinsic export.
+
 The primary user-interface for this code is a command line tool
 :code:`util_RIFT_pseudo_pipe.py` which is available after following the `installation
 instructions <installation.txt>`_. For detailed documentation, see :doc:`executables/util_RIFT_pseudo_pipe`. To see the help for this tool, run

@@ -2760,11 +2760,10 @@ if opts.comov_distance_reweighting:
     dag.add_node(distance_node)
 if auto_fit_settings is not None:
     from RIFT.compression.workflow import attach as attach_auto_fit
-    # Compression targets the final CIP posterior, before downstream reweighting.
+    # Fit the joint extrinsic posterior, including its paired distances.
     final_posterior = "extrinsic_posterior_samples.dat"
     last_node = attach_auto_fit(dag, pipeline, opts.auto_fit_config,
-        opts.working_directory, last_node, final_posterior,
-        "overlap-grid-{}.{}".format(final_fit_grid_iteration, grid_suffix), runtime_prefix=extra_text)
+        opts.working_directory, last_node, final_posterior, runtime_prefix=extra_text)
 
 # Create final node for overall plots.  (Note: default setup is designed to enable plots of the last two iterations *at each step* but this seems like overkill)
 if plot_args:

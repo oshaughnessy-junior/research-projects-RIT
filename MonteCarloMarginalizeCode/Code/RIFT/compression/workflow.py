@@ -16,7 +16,7 @@ def preflight(config, rundir, *, extrinsic, distance_reweighting=False):
     return cfg, contract, settings
 
 
-def attach(dag, pipeline, config, rundir, parent, posterior, intrinsic_posterior, runtime_prefix=""):
+def attach(dag, pipeline, config, rundir, parent, posterior, runtime_prefix=""):
     """The local-universe job uses products already returned to the submit host."""
     run = Path(rundir).resolve()
     source = Path(config).resolve()
@@ -33,8 +33,7 @@ def attach(dag, pipeline, config, rundir, parent, posterior, intrinsic_posterior
     wrapper = run/"auto_fit.sh"
     wrapper.write_text("#!/bin/bash\nset -eu\n"+runtime_prefix+"\nexec "+shlex.quote(executable)+
         " --config "+shlex.quote(str(copy))+" --rundir "+shlex.quote(str(run))+
-        " --posterior "+shlex.quote(str(posterior))+
-        " --intrinsic-posterior "+shlex.quote(str(intrinsic_posterior))+"\n")
+        " --posterior "+shlex.quote(str(posterior))+"\n")
     wrapper.chmod(0o755)
     job = pipeline.CondorDAGJob(universe="local", executable=str(wrapper))
     job.set_sub_file(str(run/"AUTO_FIT.sub"))

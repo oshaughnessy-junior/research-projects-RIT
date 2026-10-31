@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 """Waveform-free paired export for a known two-component intrinsic/distance GMM.
 
-Rows are drawn from L; posterior_weight is proportional to the standard
-volumetric-spin/Euclidean-distance retained prior in the Mc,delta,spin,dL chart.
-Thus weighted rows represent L*pi, without using the compression implementation.
+Proposal rows are drawn from L, weighted by the volumetric-spin/Euclidean-
+distance native prior, then resampled into joint posterior fairdraws. Original
+proposal ancestry is retained without using the compression implementation.
 """
 import argparse
-from pathlib import Path
 import numpy as np
 
 
@@ -36,9 +35,7 @@ def main():
     index = rng.choice(args.rows, args.rows, p=weight/weight.sum())
     data = np.column_stack([m1, m2, mc, eta, x[:, 2:8], distance, np.ones(args.rows), np.arange(args.rows)])[index]
     np.savetxt(args.output, data, header="m1 m2 mc eta s1x s1y s1z s2x s2y s2z dist posterior_weight intrinsic_group", comments="")
-    # The final CIP intrinsic marginal is authoritative; distance here is ignored.
-    np.savetxt(Path(args.output).parent/"posterior_samples-1.dat", data,
-               header="m1 m2 mc eta s1x s1y s1z s2x s2y s2z dist posterior_weight intrinsic_group", comments="")
+
 
 
 if __name__ == "__main__":

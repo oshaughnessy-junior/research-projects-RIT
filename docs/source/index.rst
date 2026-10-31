@@ -18,6 +18,7 @@ Rapid inference via Iterative FiTting: this algorithm provides a framework for e
    getting-data
    data_formats
    using-pipeline
+   posterior_compression
    examples-ini
    examples-noini
    osg
