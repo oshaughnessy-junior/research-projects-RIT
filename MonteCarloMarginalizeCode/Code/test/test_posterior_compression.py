@@ -74,9 +74,9 @@ def truth_logpdf(x, means, cov):
     return logsumexp(np.stack([np.log(w)+multivariate_normal.logpdf(x, m, cov) for w, m in zip([.65, .35], means)]), axis=0)
 
 
-@pytest.mark.parametrize("dimension", [5, 9])
-def test_known_gmm_likelihood_and_source_frames(tmp_path, dimension):
-    ini = configuration(tmp_path)
+@pytest.mark.parametrize("dimension,distance_prior", [(5, "Euclidean"), (9, "Euclidean"), (5, "cosmo_sourceframe")])
+def test_known_gmm_likelihood_and_source_frames(tmp_path, dimension, distance_prior):
+    ini = configuration(tmp_path, distance_prior)
     _, contract, _ = resolve(ini, tmp_path)
     target = "aligned_distance" if dimension == 5 else "precessing_source_redshift"
     x, means, cov = known_likelihood(dimension=dimension)
@@ -300,6 +300,19 @@ def test_alternate_sampling_flag_alone_does_not_change_prior(tmp_path):
     with (tmp_path/"args_cip_list.txt").open("a") as stream:
         stream.write(" --pseudo-uniform-magnitude-prior-alternate-sampling")
     assert resolve(ini, tmp_path)[1]["spin_prior"] == "volumetric"
+
+
+def test_framework_default_boolean_and_overwritten_cuts(tmp_path):
+    ini = configuration(tmp_path)
+    ini.write_text(ini.read_text().replace("spin-magnitude-prior = volumetric", 'spin-magnitude-prior = "default"').replace("assume-precessing = True", "assume-precessing ="))
+    with (tmp_path/"args_cip_list.txt").open("a") as stream:
+        stream.write(" --downselect-parameter s1z --downselect-parameter-range [-.1,.1]")
+    contract = resolve(ini, tmp_path)[1]
+    assert contract["spin_prior"] == "volumetric"
+    assert contract["cuts"]["s1z"][1] > .9
+    ini.write_text(ini.read_text().replace("assume-precessing =\n", "assume-precessing = False\n"))
+    (tmp_path/"args_cip_list.txt").write_text("1 X --parameter mc --parameter eta --parameter s1z --parameter s2z")
+    assert resolve(ini, tmp_path)[1]["spin_prior"] == "uniform_aligned"
 
 
 def test_real_pseudo_pipe_terminal_job(tmp_path):

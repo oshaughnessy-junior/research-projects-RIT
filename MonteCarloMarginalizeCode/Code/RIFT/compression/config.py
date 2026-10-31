@@ -132,7 +132,7 @@ def resolve(config, rundir):
     if polar and any("theta"+str(i) in paramset and "cos_theta"+str(i) in paramset for i in (1,2)):
         raise ValueError("Overparameterized polar spin coordinates")
     precessing = not aligned
-    if "assume-precessing" in pseudo and (pseudo["assume-precessing"].lower() in ("true", "1", "yes")) != precessing:
+    if "assume-precessing" in pseudo and (pseudo["assume-precessing"].lower() in ("", "true", "1", "yes")) != precessing:
         raise ValueError("High-level INI precession choice conflicts with final CIP coordinates")
     aligned_prior = last(cip, "aligned-prior", "uniform")
     transverse_prior = last(cip, "transverse-prior", "uniform")
@@ -156,10 +156,9 @@ def resolve(config, rundir):
         if not cartesian or correction is not None:
             raise ValueError("Unsupported composition of post-sampling spin corrections")
         spin_prior = "uniform_mag_prec"
-    if "spin-magnitude-prior" in pseudo:
+    if "spin-magnitude-prior" in pseudo and pseudo["spin-magnitude-prior"] != "default":
         requested = pseudo["spin-magnitude-prior"]
-        expected = {"default": "uniform_mag_prec" if precessing else "zprior_aligned",
-                    "volumetric": "volumetric" if precessing else "uniform_aligned",
+        expected = {"volumetric": "volumetric" if precessing else "uniform_aligned",
                     "uniform_mag_prec": "uniform_mag_prec", "uniform_aligned": "uniform_aligned",
                     "zprior_aligned": "zprior_aligned"}.get(requested)
         if expected != spin_prior:
@@ -174,9 +173,10 @@ def resolve(config, rundir):
         cuts.update(s1z=[-.999*spin_caps[0], .999*spin_caps[0]],
                     s2z=[-.999*spin_caps[1], .999*spin_caps[1]])
     for name, value in zip(cip.get("downselect-parameter", []), cip.get("downselect-parameter-range", [])):
-        if name not in ("m1", "m2", "mtot", "mc", "eta", "q", "s1z", "s2z", "chi1", "chi2"):
+        if name not in ("m1", "m2", "mtot", "mc", "eta", "q", "s1x", "s1y", "s1z", "s2x", "s2y", "s2z", "chi1", "chi2"):
             raise ValueError("Unsupported coupled support cut: " + name)
-        if name != "eta":  # CIP replaces every requested eta downselection by [0,.25].
+        # CIP overwrites requested eta and Cartesian-spin downselection windows.
+        if name not in ("eta", "s1x", "s1y", "s1z", "s2x", "s2y", "s2z"):
             limits = interval(value)
             if name in cuts:
                 limits = [max(limits[0], cuts[name][0]), min(limits[1], cuts[name][1])]
