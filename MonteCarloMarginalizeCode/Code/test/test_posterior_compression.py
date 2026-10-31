@@ -368,3 +368,33 @@ def test_real_pseudo_pipe_terminal_job(tmp_path):
     lines = dag.splitlines()
     job = next(line.split()[1] for line in lines if line.startswith("JOB ") and "AUTO_FIT.sub" in line)
     assert any(line.startswith("PARENT ") and " CHILD "+job in line for line in lines)
+
+
+@pytest.mark.parametrize("aligned,flags", [
+    (True, "assume-nonprecessing = True"),
+    (True, ""),
+    (False, ""),
+    (False, "assume-precessing = False"),
+    (True, "assume-precessing = True\nassume-nonprecessing = True"),
+])
+def test_default_targets_follow_resolved_spin_coordinates(tmp_path, aligned, flags):
+    ini = configuration(tmp_path)
+    ini.write_text(ini.read_text().replace("assume-precessing = True", flags)
+                   .replace("targets = aligned_distance, precessing_source_redshift\n", ""))
+    if aligned:
+        path = tmp_path/"args_cip_list.txt"
+        text = path.read_text()
+        for name in ("s1x", "s1y", "s2x", "s2y"):
+            text = text.replace("--parameter "+name+" ", "")
+        path.write_text(text)
+    _, contract, settings = resolve(ini, tmp_path)
+    assert contract["precessing"] == (not aligned)
+    assert settings["targets"] == (["aligned_distance"] if aligned else
+        ["precessing_source_redshift", "aligned_distance"])
+
+
+def test_nonprecessing_override_conflict_refused(tmp_path):
+    ini = configuration(tmp_path)
+    ini.write_text(ini.read_text().replace("assume-precessing = True", "assume-nonprecessing = True"))
+    with pytest.raises(ValueError, match="nonprecession choice conflicts"):
+        resolve(ini, tmp_path)

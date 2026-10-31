@@ -26,7 +26,6 @@ Append this section to the original high-level production INI:
 
    [rift-auto-fit]
    enabled = true
-   targets = precessing_source_redshift, aligned_distance
    component_counts = 1,2,4,8
    output_directory = auto_fit
    seed = 711
@@ -41,8 +40,13 @@ Use the usual final extrinsic export options, such as ``--add-extrinsic
 --batch-extrinsic --add-extrinsic-time-resampling``. Pseudo-pipe passes its
 production INI to BasicIteration, which adds a bounded terminal compression
 job after the joint extrinsic posterior is available. Omitting the section
-leaves compression disabled. For an aligned analysis, request only
-``targets = aligned_distance``.
+leaves compression disabled. With ``targets`` omitted, final CIP spin
+coordinates select both products for a precessing analysis and only
+``aligned_distance`` for an aligned analysis. This follows the resolved run;
+absence of ``assume-precessing`` alone does not imply alignment, since
+pseudo-pipe can infer precession from the approximant. An explicit
+``assume-nonprecessing`` override is checked against the final CIP coordinates.
+Set ``targets = aligned_distance`` to request only that product in either case.
 
 The default products are:
 

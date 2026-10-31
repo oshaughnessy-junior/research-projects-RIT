@@ -134,7 +134,14 @@ def resolve(config, rundir):
     precessing = not aligned
     if precessing and spin_caps[1] > spin_caps[0]:
         raise ValueError("Secondary spin cap exceeds the primary cap; native Cartesian downselection creates an anisotropic prior requiring a separate adapter")
-    if "assume-precessing" in pseudo and (pseudo["assume-precessing"].lower() in ("", "true", "1", "yes")) != precessing:
+    def flag(name):
+        return name in pseudo and pseudo[name].lower() in ("", "true", "1", "yes")
+    # Pseudo-pipe's explicit nonprecessing override takes precedence. An absent
+    # or false assume-precessing flag still permits approximant-inferred precession.
+    if flag("assume-nonprecessing"):
+        if precessing:
+            raise ValueError("High-level INI nonprecession choice conflicts with final CIP coordinates")
+    elif flag("assume-precessing") and not precessing:
         raise ValueError("High-level INI precession choice conflicts with final CIP coordinates")
     aligned_prior = last(cip, "aligned-prior", "uniform")
     transverse_prior = last(cip, "transverse-prior", "uniform")
@@ -190,7 +197,8 @@ def resolve(config, rundir):
     # The current ILE cosmo branches explicitly call get_astropy_cosmology('Planck15').
     if dprior in ("cosmo", "cosmo_sourceframe") and cosmology != "Planck15":
         raise ValueError("Executed RIFT cosmological distance prior uses Planck15; INI declaration conflicts")
-    targets = [t.strip() for t in auto.get("targets", ",".join(TARGETS)).split(",")]
+    default_targets = TARGETS if precessing else ("aligned_distance",)
+    targets = [t.strip() for t in auto.get("targets", ",".join(default_targets)).split(",")]
     if not targets or any(t not in TARGETS for t in targets) or len(set(targets)) != len(targets):
         raise ValueError("Unknown or duplicate auto-fit target")
     components = [int(v) for v in auto.get("component_counts", "1,2,4,8").split(",")]
