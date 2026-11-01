@@ -1,59 +1,53 @@
+"""The Hyperpipe route truncates frames before any ILE.sub exists, so the
+frame helper must read its data interval and channels from args_ile.txt in
+both shapes it meets: the raw ``X --option ...`` record current pseudo_pipe
+writes, and the older ``arguments = ...`` wrapper.
+
+PR #181 pinned this against the shell implementation.  rift_O4d replaced that
+with util_ForOSG_MakeTruncatedLocalFramesDir.py (the .sh is now a thin exec
+wrapper), so this exercises the real helper on a real frame.
+"""
 import os
 from pathlib import Path
 import subprocess
 
+import numpy as np
 import pytest
 
+pytest.importorskip("gwpy")
+pytest.importorskip("lalframe")
 
-SCRIPT = (
-    Path(__file__).resolve().parents[3]
-    / "bin"
-    / "util_ForOSG_MakeTruncatedLocalFramesDir.sh"
-)
+BIN = Path(__file__).resolve().parents[3] / "bin"
+SCRIPT = BIN / "util_ForOSG_MakeTruncatedLocalFramesDir.sh"
 
 
 @pytest.mark.parametrize(
     "args_record",
     [
-        (
-            "X --data-start-time 100.25 --data-end-time 164.25 "
-            "--channel-name H1=FAKE-STRAIN\n"
-        ),
-        (
-            "arguments = --data-start-time 100.25 --data-end-time 164.25 "
-            "--channel-name H1=FAKE-STRAIN\n"
-        ),
+        "X --data-start-time 100.25 --data-end-time 164.25 "
+        "--channel-name H1=FAKE-STRAIN\n",
+        "arguments = --data-start-time 100.25 --data-end-time 164.25 "
+        "--channel-name H1=FAKE-STRAIN\n",
     ],
 )
 def test_truncation_helper_accepts_raw_and_legacy_ile_args(tmp_path, args_record):
+    from gwpy.timeseries import TimeSeries
+
+    frame = tmp_path / "H-FAKE-0-256.gwf"
+    TimeSeries(np.arange(0, 256 * 16, dtype=float), t0=0, sample_rate=16,
+               channel="H1:FAKE-STRAIN", name="H1:FAKE-STRAIN").write(str(frame))
     (tmp_path / "args_ile.txt").write_text(args_record)
     (tmp_path / "local.cache").write_text(
-        "H H1_TEST 0 4096 file://localhost/input.gwf\n"
-    )
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    switcheroo = bin_dir / "switcheroo"
-    switcheroo.write_text(
-        "#!/bin/sh\n"
-        "sed -i 's#file://localhost##g' \"$3\"\n"
-    )
-    switcheroo.chmod(0o755)
-    truncate = bin_dir / "util_TruncateMergeFrames.py"
-    truncate.write_text(
-        "#!/bin/sh\n"
-        "while [ $# -gt 0 ]; do\n"
-        "  if [ \"$1\" = --output ]; then shift; touch \"$1\"; exit 0; fi\n"
-        "  shift\n"
-        "done\n"
-        "exit 1\n"
-    )
-    truncate.chmod(0o755)
+        "H FAKE 0 256 {}\n".format(frame.as_uri()))
 
     env = os.environ.copy()
-    env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
-    subprocess.run(["bash", str(SCRIPT), str(tmp_path)], check=True, env=env)
+    env["PATH"] = str(BIN) + os.pathsep + env["PATH"]
+    result = subprocess.run(["bash", str(SCRIPT), str(tmp_path)], env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
 
-    assert "data-start-time 100.25" in (tmp_path / "my_time_args").read_text()
-    assert (tmp_path / "my_channel_pairs").read_text().strip() == "H1 FAKE-STRAIN"
-    assert list((tmp_path / "frames_dir").glob("H1-FAKE_STRAIN-99-66.gwf"))
+    # floor(100.25)-1 = 99, ceil(164.25)+1 = 166 -> 67 s.
+    staged = list((tmp_path / "frames_dir").glob("H1-FAKE_STRAIN-99-67.gwf"))
+    assert staged, sorted(p.name for p in (tmp_path / "frames_dir").iterdir())
+    rows = (tmp_path / "local.cache").read_text().split()
+    assert rows[:4] == ["H1", "FAKE_STRAIN", "99", "67"]
