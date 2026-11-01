@@ -32,16 +32,19 @@ class FakeParameters(SimpleNamespace):
 
 class FakeAdapter:
     calls = 0
+    configs = []
     epoch_by_dist = {}
 
     def __init__(self, config):
         self.config = config
+        FakeAdapter.configs.append(config)
 
     def generate(self, params):
         FakeAdapter.calls += 1
-        t = np.arange(N) * DT
-        hp = np.cos(2*np.pi*t*7/(N*DT)) / params.dist
-        hc = np.sin(2*np.pi*t*11/(N*DT)) / params.dist
+        n = self.config.n_samples
+        t = np.arange(n) * DT
+        hp = np.cos(2*np.pi*t*7/(n*DT)) / params.dist
+        hc = np.sin(2*np.pi*t*11/(n*DT)) / params.dist
         epoch = FakeAdapter.epoch_by_dist.get(params.dist, 30.)
         out = SimpleNamespace(polarizations=(hp, hc), dt_seconds=DT,
                               epoch_start_seconds=epoch, metadata={'fake': True})
@@ -54,6 +57,7 @@ RESPONSE_CALLS = []
 
 def fake_aet(hp, hc, *, dt, sky_colatitude, sky_longitude, epoch, config):
     RESPONSE_CALLS[-1]['got'] = (sky_colatitude, sky_longitude, epoch, dt)
+    RESPONSE_CALLS[-1]['config'] = config
     # Sky-dependent gain, so a sky change reaches the likelihood.
     gain = 1 + 0.1*np.cos(sky_colatitude) + 0.05*np.sin(sky_longitude)
     return SimpleNamespace(channels=gain*np.asarray([hp, hc, hp + hc]), dt=dt,
@@ -63,6 +67,7 @@ def fake_aet(hp, hc, *, dt, sky_colatitude, sky_longitude, epoch, config):
 @pytest.fixture
 def fake_backends(monkeypatch):
     FakeAdapter.calls = 0
+    FakeAdapter.configs = []
     FakeAdapter.epoch_by_dist = {}
     RESPONSE_CALLS.clear()
     monkeypatch.setattr(few_adapter, 'FEWConfig', SimpleNamespace(
@@ -167,6 +172,7 @@ def test_run_fixture_refuses_before_generating(fake_backends, overrides, message
     with pytest.raises(ValueError, match=message):
         cli.run_fixture(fixture(**overrides))
     assert FakeAdapter.calls == 0
+    assert FakeAdapter.configs == []
 
 
 def test_run_fixture_accepts_the_largest_permitted_sample_count(fake_backends):
@@ -174,4 +180,29 @@ def test_run_fixture_accepts_the_largest_permitted_sample_count(fake_backends):
     assert cli.MAX_WAVEFORM_SAMPLES >= 26216
     config = fixture(waveform={'epoch_reference': 'pinned equal-arm orbit t=0',
                                'n_samples': cli.MAX_WAVEFORM_SAMPLES})
-    assert cli.run_fixture(config)['status'] == 'COMPLETED'
+    result = cli.run_fixture(config)
+    assert result['status'] == 'COMPLETED'
+    assert result['n_samples'] == cli.MAX_WAVEFORM_SAMPLES
+
+
+@pytest.mark.parametrize('count', [16385, 26216])
+def test_upstream_sample_cap_generates_the_requested_count(fake_backends, count):
+    value = fixture(trials=[{'id': 'same', 'changes': {}}])
+    value['waveform']['n_samples'] = count
+    result = cli.run_fixture(value)
+    assert result['n_samples'] == count
+    assert len(FakeAdapter.configs) == 1 and FakeAdapter.calls == 2
+
+
+def test_main_forwards_fixture_order29_at_fine_grid_count(fake_backends, tmp_path):
+    value = fixture()
+    value['waveform']['n_samples'] = 26216
+    value['response']['interpolation_order'] = 29
+    source = tmp_path / 'fixture.json'
+    source.write_text(json.dumps(value))
+    output = tmp_path / 'result.json'
+    assert cli.main(['--fixture', str(source), '--output', str(output)]) == 0
+    result = json.loads(output.read_text())
+    assert result['n_samples'] == 26216 and result['fixture'] == value
+    assert len(FakeAdapter.configs) == 1 and FakeAdapter.calls == 4
+    assert [row['config']['interpolation_order'] for row in RESPONSE_CALLS] == [29] * 4

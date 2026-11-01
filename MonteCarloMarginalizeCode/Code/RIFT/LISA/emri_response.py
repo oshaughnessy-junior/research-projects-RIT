@@ -43,8 +43,8 @@ class ResponseConfig:
             raise ValueError("trim_seconds must be finite and positive")
         if (isinstance(self.interpolation_order, (bool, np.bool_))
                 or not isinstance(self.interpolation_order, Integral)
-                or self.interpolation_order != 25):
-            raise ValueError("the initial response supports interpolation_order=25 only")
+                or self.interpolation_order not in (25, 29)):
+            raise ValueError("response supports interpolation_order=25 or 29 only")
         if self.tdi_generation != "1st generation":
             raise ValueError("the initial response supports 1st generation TDI only")
 
