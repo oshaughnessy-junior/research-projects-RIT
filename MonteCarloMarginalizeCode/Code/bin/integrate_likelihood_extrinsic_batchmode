@@ -606,6 +606,10 @@ integration_params.add_option("--extrinsic-proposal-field-inflate",type=float,de
 integration_params.add_option("--supplementary-likelihood-factor-code", default=None,type=str,help="Import a module (in your pythonpath!) containing a supplementary factor for the likelihood.  Used to impose supplementary external priors of arbitrary complexity and external dependence (e.g., EM observations). EXPERTS-ONLY")
 integration_params.add_option("--supplementary-likelihood-factor-function", default=None,type=str,help="With above option, specifies the specific function used as an external prior.  CALL CONTRACT: f(right_ascension, declination, phi_orb, inclination, psi, distance, xpy=numpy) returning the LOG of the factor, which is ADDED to lnL.  WHERE IT IS ADDED AT ALL: only five of the eight likelihood_function bodies in this driver contain the call.  The three without it are the two non-time-marginalized signatures and the --rom-integrate-intrinsic one, so WITHOUT --time-marginalization a supplementary factor is silently ignored -- the banner still announces it, and the evidence comes back as if no factor had been given.  That hole is pre-existing and is pinned by test_zero_likelihood_standin.py so it cannot widen unnoticed.  NOTE THE TRAP: --zero-likelihood's stand-in applies the factor on EVERY signature, so validating a plugin under --zero-likelihood and then running production without --time-marginalization silently drops it.  THE xpy KEYWORD IS NOT OPTIONAL TO ACCEPT, only to use: three of the five call sites pass xpy=xpy_default and two do not, so a factor declared with the six positional arguments alone raises TypeError on the three vectorized paths while working on the scalar one and under --zero-likelihood.  Give it a default.  The --zero-likelihood stand-in passes xpy when the factor accepts it and omits it otherwise.  WHAT ARRIVES IN THOSE ARGUMENTS IS NOT THE SAME ON EVERY CODE PATH, and that is pre-existing.  The scalar (non-vectorized) likelihood and the --zero-likelihood stand-in pass the RAW SAMPLED coordinates: cos(dec) / cos(iota) under --declination-cosine-sampler / --inclination-cosine-sampler rather than the angles, the rotated (phi+psi, phi-psi) pair under --internal-rotate-phase, and distance in Mpc.  The vectorized paths instead pass the template's physical values (cosines inverted, sky and phase rotations already applied) with distance in SI, or 0 where distance is marginalized away.  So: a portable factor should not depend on distance, and one that depends on an angle should state which convention it assumes.  Under --zero-likelihood, arguments that the live likelihood signature does not sample are supplied from the template (0 for distance).  Finally, mcsampler (--sampler-method adaptive_cartesian) hands object-dtype arrays, on which numpy ufuncs raise, so cast (numpy.asarray(x, dtype=float)) before any arithmetic.  EXPERTS ONLY")
 integration_params.add_option("--supplementary-likelihood-factor-ini", default=None,type=str,help="With above option, specifies an ini file that is parsed (here) and passed to the preparation code, called when the module is first loaded, to configure the module. EXPERTS ONLY")
+integration_params.add_option("--supplementary-waveform-transform-code", default=None, type=str, help="EXPERTS ONLY. Extra-parameter seam (RIFT/likelihood/hlm_transform.py): a plugin, named by FILE PATH (preferred; required on file-transfer workers) or dotted module name, supplying a transfer function F(f; lambda, P) that multiplies every h_lm(f) and its conjugate bank BEFORE the U/V/Q precompute.  lambda are extra columns of a self-describing (Hyperpipe) --sim-grid, declared by the plugin's EXTRA_PARAMETERS and/or --supplementary-waveform-transform-parameter, passed per grid point and echoed into the output row.  F must depend only on lambda and the intrinsic point (no sky, time, psi, inclination, phase or distance).  The seam evaluates the plugin on f>=0 and builds the Hermitian two-sided response itself.  v1 requires --time-marginalization --vectorized --gpu (--force-xpy on CPU), a Hyperpipe --sim-grid and RIFT_HYPERPIPELINE_FORMAT output, and refuses --sim-xml, calibration marginalization, ROM/NR templates, --rotation-slow, --freqresponse, --early-time-multirate, a non-fd-diagonal inner product, peak-local quadrature, --zero-likelihood, --calibration-dump-responsibilities and --save-samples.")
+integration_params.add_option("--supplementary-waveform-transform-function", default=None, type=str, help="With --supplementary-waveform-transform-code: name of the transfer function in the plugin (default transfer_function).  CALL CONTRACT: f(f_nonneg, extra_params, P=None, xpy=numpy) returning complex F on the given non-negative frequencies [Hz], standard sign convention H(f)=int h(t) exp(-2 pi i f t) dt (a delay Delta is exp(-2 pi i f Delta)).")
+integration_params.add_option("--supplementary-waveform-transform-ini", default=None, type=str, help="With --supplementary-waveform-transform-code: ini file parsed (key case preserved) and passed to the plugin's optional prepare(config=..., extra_parameters=..., opts=...).")
+integration_params.add_option("--supplementary-waveform-transform-parameter", default=None, action="append", help="With --supplementary-waveform-transform-code: name of an extra grid column passed to the plugin (repeatable), in addition to the plugin's EXTRA_PARAMETERS.  Must not collide with an intrinsic parameter name.")
 optp.add_option_group(integration_params)
 
 #
@@ -1022,6 +1026,90 @@ if opts.internal_ile_inner_product == "td-gs" and not opts.gpu:
     xpy_default = numpy
     opts.gpu = True
     opts.force_xpy = True
+
+# ---------------------------------------------------------------------------------------
+# Extra-parameter waveform-transform seam (--supplementary-waveform-transform-*).
+# Loaded and checked here, AFTER the --gpu/--force-xpy resolution above, so the NoLoop
+# requirement is judged on the code path that will actually run.  v1 is deliberately narrow:
+# F has only been validated on the classic fd-diagonal PrecomputeLikelihoodTerms feeding NoLoop.
+# ---------------------------------------------------------------------------------------
+waveform_transform = None
+waveform_transform_extra_rows = None   # per-P_list-entry {name: float}, filled at grid load
+if (opts.supplementary_waveform_transform_function or opts.supplementary_waveform_transform_ini
+        or opts.supplementary_waveform_transform_parameter) and not opts.supplementary_waveform_transform_code:
+    optp.error("--supplementary-waveform-transform-function/-ini/-parameter require "
+               "--supplementary-waveform-transform-code")
+if opts.supplementary_waveform_transform_code:
+    _wt_bad = [name for name, bad in (
+        ("not on the NoLoop likelihood (needs --time-marginalization --vectorized --gpu, "
+         "and --force-xpy without cupy)",
+         not (opts.time_marginalization and opts.vectorized and opts.gpu)),
+        ("--sim-xml (sim_inspiral cannot carry extra parameters)", bool(opts.sim_xml)),
+        ("no --sim-grid (extra parameters come from a Hyperpipe grid)", not opts.sim_grid),
+        ("legacy positional .dat output (set RIFT_HYPERPIPELINE_FORMAT=1)",
+         not _load_hyperpipeline_io().is_active()),
+        ("calibration marginalization (--calibration-envelope-directory)", bool(opts.calibration_envelope_directory)),
+        ("--calibration-dump-responsibilities", bool(opts.calibration_dump_responsibilities)),
+        ("ROM templates (--rom-*)", bool(opts.rom_group or opts.rom_param or opts.rom_use_basis
+                                          or opts.rom_integrate_intrinsic)),
+        ("NR templates (--nr-*)", bool(opts.nr_lookup or opts.nr_group)),
+        ("--rotation-slow", bool(opts.rotation_slow)),
+        ("--freqresponse", bool(opts.freqresponse)),
+        ("--early-time-multirate", bool(opts.early_time_multirate)),
+        ("--internal-ile-inner-product %s" % opts.internal_ile_inner_product,
+         opts.internal_ile_inner_product != "fd-diagonal"),
+        ("--time-marginalization-quadrature peak-local",
+         opts.time_marginalization_quadrature == "peak-local"),
+        ("--zero-likelihood", bool(opts.zero_likelihood)),
+        ("--save-samples (XML sample export cannot carry extra parameters)", bool(opts.save_samples)),
+    ) if bad]
+    if _wt_bad:
+        sys.exit("ILE --supplementary-waveform-transform-code: refusing this job before analysis: "
+                 "unsupported in v1: " + "; ".join(_wt_bad))
+    from RIFT.likelihood import hlm_transform as _hlm_transform
+    from RIFT.misc import plugin_loader as _plugin_loader
+    waveform_transform = _hlm_transform.load_waveform_transform(
+        opts.supplementary_waveform_transform_code,
+        function=opts.supplementary_waveform_transform_function,
+        ini=opts.supplementary_waveform_transform_ini,
+        parameters=opts.supplementary_waveform_transform_parameter, opts=opts)
+    _wt_path, _wt_sha = _plugin_loader.module_provenance(waveform_transform.module)
+    print(" EXTERNAL WAVEFORM TRANSFORM : {} ({}) from {} sha256={} extra parameters={}".format(
+        waveform_transform.name, opts.supplementary_waveform_transform_function or "transfer_function",
+        _wt_path, _wt_sha, list(waveform_transform.extra_parameters)))
+    if not waveform_transform.extra_parameters:
+        sys.exit("ILE --supplementary-waveform-transform-code: refusing this job before analysis: "
+                 "the plugin declares no EXTRA_PARAMETERS and no "
+                 "--supplementary-waveform-transform-parameter was given")
+
+
+def _waveform_transform_extra_rows(grid_rows, grid_names, hpio):
+    """Validate the grid columns against the declared extra parameters and return one
+    {name: float} per row.  Hard errors: a declared name missing from the grid, a declared
+    name that is (or aliases) an intrinsic / output column, and a grid column that is neither
+    an intrinsic parameter nor declared (it would otherwise be silently dropped)."""
+    declared = list(waveform_transform.extra_parameters)
+    d2a = getattr(hpio, "disk_to_attr", lambda x: x)
+    reserved = set(["lnL", "sigma_lnL"]) | set(getattr(hpio, "DEFAULT_BASE_COLUMNS", ())) \
+        | set(getattr(hpio, "OPTIONAL_COLUMNS", ()))
+    def _is_known(name):
+        return name in lalsimutils.valid_params or d2a(name) in lalsimutils.valid_params or name in reserved
+    collide = [n for n in declared if _is_known(n)]
+    if collide:
+        raise ValueError("--supplementary-waveform-transform: declared extra parameter(s) {} collide "
+                         "with intrinsic or output column names".format(collide))
+    missing = [n for n in declared if n not in grid_names]
+    if missing:
+        raise ValueError("--supplementary-waveform-transform: declared extra parameter(s) {} are not "
+                         "columns of --sim-grid {} (columns: {})".format(missing, opts.sim_grid, list(grid_names)))
+    undeclared = [n for n in grid_names if not _is_known(n) and n not in declared]
+    if undeclared:
+        raise ValueError("--supplementary-waveform-transform: --sim-grid column(s) {} are neither "
+                         "intrinsic parameters nor declared extra parameters; refusing to drop them "
+                         "silently (declare them with --supplementary-waveform-transform-parameter)"
+                         .format(undeclared))
+    return [dict((n, float(row[n])) for n in declared) for row in numpy.atleast_1d(grid_rows)]
+
 
 # GPU availability may have changed dispatch since the parser guard above.
 # A requested Q refinement cannot follow the inherited-stencil downgrade path.
@@ -1601,6 +1689,11 @@ elif opts.sim_grid:
   # ----------------------------------------------------------------------
   _hpio = _load_hyperpipeline_io()
   _hpip_grid = _hpio.is_active() or _hpio.sniff(opts.sim_grid)
+  if waveform_transform is not None and not _hpio.sniff(opts.sim_grid):
+      # Named columns are the only way lambda can be identified; a positional grid read
+      # under RIFT_HYPERPIPELINE_FORMAT would still be accepted by the branch below.
+      sys.exit("ILE --supplementary-waveform-transform-code: refusing this job before analysis: "
+               "--sim-grid {} is not a self-describing Hyperpipe grid".format(opts.sim_grid))
   if _hpip_grid:
       print(" Hyperpipeline ASCII grid detected for ", opts.sim_grid)
       _all_arr, _hdr = _hpio.read_table(opts.sim_grid)
@@ -1619,6 +1712,8 @@ elif opts.sim_grid:
           lal_module=lal,
           valid_params=lalsimutils.valid_params)
       P_list_seed = _all_P[opts.event:n_event_max]
+      if waveform_transform is not None:
+          waveform_transform_extra_rows = _waveform_transform_extra_rows(grid_in, grid_names, _hpio)
   else:
    grid_in = np.genfromtxt(opts.sim_grid,names=True)
    grid_names = grid_in.dtype.names
@@ -4448,6 +4543,16 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
       extra_kwargs['IP_factory'] = ile_ip_factory
     if ile_td_gs_contexts is not None:
       extra_kwargs['td_gs_contexts'] = ile_td_gs_contexts   # td-gs: fully time-domain Precompute
+    if waveform_transform is not None:
+      # Extra-parameter seam.  In extra_kwargs (not waveform_generation_kwargs) so every
+      # PrecomputeLikelihoodTerms call for this point receives it.
+      _wt_lambda = waveform_transform_extra_rows[indx_event]
+      print("  [waveform transform] point {} extra parameters {}".format(indx_event, _wt_lambda))
+      _wt_bound = waveform_transform.bind(_wt_lambda)
+      if _wt_bound is not None:
+        extra_kwargs['hlm_transform'] = _wt_bound
+      else:
+        print("  [waveform transform] identity at this point; banks unchanged")
     if opts.early_time_multirate:
         import RIFT.likelihood.factored_likelihood_multirate as factored_likelihood_multirate
         _bad = [n for n, v in (("calibration marginalization", calibration_marginalization),
@@ -6360,6 +6465,10 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                 _vals["p_phi0"] = P.p_phi0
             if _use_distance:
                 _vals["distance"] = pinned_params["distance"]
+            if waveform_transform is not None:
+                # Echo the extra parameters so the shard stays self-describing.
+                _cols = tuple(_cols) + tuple(waveform_transform.extra_parameters)
+                _vals.update(waveform_transform_extra_rows[indx_event])
             _hpio.write_row(fname_output_txt, _cols, [_vals[c] for c in _cols])
         else:
           # ----------------------------------------------------------------

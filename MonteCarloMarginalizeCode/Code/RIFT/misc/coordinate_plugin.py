@@ -188,6 +188,8 @@ import sys
 import warnings
 from typing import Callable, Optional, Sequence, Tuple
 
+from RIFT.misc import plugin_loader as _plugin_loader
+
 
 _DEFAULT_FUNCTION_NAME = "convert_coordinates"
 
@@ -199,48 +201,24 @@ def _load_module_from_spec(spec: str):
       1. ``spec == 'rift_default'``  -> built-in shim (see below).
       2. spec looks like a file path -> ``importlib.util.spec_from_file_location``.
       3. otherwise                    -> ``importlib.import_module``.
+
+    Steps 2-3 are the shared resolver in :mod:`RIFT.misc.plugin_loader` (also used by
+    ILE's ``--supplementary-waveform-transform-code``); behaviour and error text are
+    unchanged.
     """
     if spec == "rift_default":
         return importlib.import_module(
             "RIFT.misc._builtin_rift_default_coordinate_plugin"
         )
-
-    # File path branch.  We treat anything that exists on disk, or anything
-    # that ends in '.py', as a file-path spec.  Using both heuristics lets
-    # the user write either an absolute path or a relative one, while still
-    # leaving dotted-name imports unambiguous.
-    looks_like_path = spec.endswith(".py") or os.path.sep in spec or os.path.isfile(spec)
-    if looks_like_path:
-        if not os.path.isfile(spec):
-            raise FileNotFoundError(
-                f"--supplementary-coordinate-code: file not found: {spec!r}"
-            )
-        module_name = "_rift_coord_plugin_" + os.path.splitext(os.path.basename(spec))[0]
-        loader_spec = importlib.util.spec_from_file_location(module_name, spec)
-        if loader_spec is None or loader_spec.loader is None:
-            raise ImportError(f"Could not build import spec for {spec!r}")
-        module = importlib.util.module_from_spec(loader_spec)
-        sys.modules[module_name] = module
-        loader_spec.loader.exec_module(module)
-        return module
-
-    # Dotted-name branch.
-    return importlib.import_module(spec)
+    return _plugin_loader.load_module_from_spec(
+        spec, flag="--supplementary-coordinate-code",
+        module_prefix="_rift_coord_plugin_")
 
 
 def _parse_ini(ini_path: Optional[str]) -> Optional[configparser.ConfigParser]:
     """Parse the optional ini file.  Preserve key case (matches the existing
     ``--supplementary-likelihood-factor-ini`` behaviour)."""
-    if not ini_path:
-        return None
-    if not os.path.isfile(ini_path):
-        raise FileNotFoundError(
-            f"--supplementary-coordinate-ini: file not found: {ini_path!r}"
-        )
-    cfg = configparser.ConfigParser()
-    cfg.optionxform = str  # preserve case
-    cfg.read(ini_path)
-    return cfg
+    return _plugin_loader.parse_ini(ini_path, flag="--supplementary-coordinate-ini")
 
 
 def _warn_unknown_names(
