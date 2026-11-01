@@ -14,7 +14,10 @@ Locates RIFT_ROOT by:
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import runpy
+import subprocess
 import sys
 import tempfile
 import types
@@ -57,6 +60,9 @@ sys.modules["RIFT"] = fake_rift
 fake_hp = types.ModuleType("RIFT.hyperpipe")
 fake_hp.__path__ = [str(HP)]
 sys.modules["RIFT.hyperpipe"] = fake_hp
+fake_misc = types.ModuleType("RIFT.misc")
+fake_misc.__path__ = [str(RIFT_PY / "RIFT" / "misc")]
+sys.modules["RIFT.misc"] = fake_misc
 
 
 def _load(name, path):
@@ -70,7 +76,258 @@ def _load(name, path):
 coords = _load("RIFT.hyperpipe.coords", HP / "coords.py")
 config = _load("RIFT.hyperpipe.config", HP / "config.py")
 marg_list = _load("RIFT.hyperpipe.marg_list", HP / "marg_list.py")
+marg_contract = _load("RIFT.hyperpipe.marg_contract", HP / "marg_contract.py")
+cip_pipeline = _load(
+    "RIFT.misc.cip_pipeline", RIFT_PY / "RIFT" / "misc" / "cip_pipeline.py"
+)
 drivers_base = _load("RIFT.hyperpipe.drivers.base", HP / "drivers" / "base.py")
+
+
+def _check_pipeline_render(terminal_evidence: bool = False,
+                           terminal_stages: bool = False,
+                           osg: bool = False) -> None:
+    """Render a tiny indexed-grid DAG without importing the LAL stack."""
+    with tempfile.TemporaryDirectory(prefix="rift-hyperpipe-render-") as tmpd:
+        run = Path(tmpd)
+        (run / "grid.dat").write_text("# lnL sigma_lnL m1 m2\n0 0 30 20\n")
+        (run / "args_post.txt").write_text(
+            "2 --parameter m1 --parameter m2\n")
+        (run / "args_ile.txt").write_text("X --cache local.cache\n")
+        (run / "local.cache").write_text("cache\n")
+        execution = {
+            "cache_file": "local.cache",
+            "request_memory": 4096,
+            "request_disk": "2G",
+            "retries": 3,
+        }
+        if osg:
+            execution.update({
+                "use_osg": True,
+                "use_singularity": True,
+                "singularity_image": "/tmp/test-rift.sif",
+                "transfer_files": ["local.cache"],
+            })
+        (run / "jobs.json").write_text(json.dumps([{
+            "name": "ile",
+            "protocol": "indexed-grid-v1",
+            "exe": "/bin/true",
+            "args_file": "args_ile.txt",
+            "n_chunk": 2,
+            "execution": execution,
+        }]))
+        if terminal_stages:
+            (run / "terminal").mkdir()
+            (run / "terminal.json").write_text(json.dumps({
+                "version": 1,
+                "stages": [
+                    {
+                        "name": "samples",
+                        "kind": "indexed-grid-fanout-v1",
+                        "job": {
+                            "protocol": "indexed-grid-v1",
+                            "exe": "/bin/true",
+                            "args": "--terminal-worker",
+                            "n_chunk": 2,
+                            "execution": {
+                                "request_memory": 6144,
+                                "request_disk": "3G",
+                                "retries": 4,
+                            },
+                        },
+                        "grid": str(run / "grid-$(macroiteration).dat"),
+                        "output_file": "EXTR_out.xml",
+                        "fanout": {
+                            "count": 3,
+                            "group_size": 2,
+                            "group_sizes": [2, 2, 1],
+                        },
+                        "initial_dir": str(run / "terminal"),
+                        "log_dir": str(run / "terminal"),
+                    },
+                    {
+                        "name": "collect",
+                        "kind": "command-v1",
+                        "depends_on": ["samples"],
+                        "exe": "/bin/true",
+                        "args": "--collect $(macroiteration)",
+                        "initial_dir": str(run),
+                        "execution": {
+                            "use_osg": True,
+                            "transfer_files": [str(run / "local.cache")],
+                            "transfer_output_files": ["collected.dat"],
+                        },
+                    },
+                    {
+                        "name": "positional",
+                        "kind": "command-v1",
+                        "depends_on": ["collect"],
+                        "exe": "/bin/true",
+                        "args": "input.dat --start $(macrostart)",
+                        "instances": [{"start": 0}, {"start": 10}],
+                        "initial_dir": str(run),
+                    },
+                ],
+            }))
+        old_cwd = os.getcwd()
+        old_argv = sys.argv[:]
+        old_image = os.environ.get("SINGULARITY_RIFT_IMAGE")
+        old_base_exe = os.environ.get("SINGULARITY_BASE_EXE_DIR")
+        try:
+            os.chdir(run)
+            sys.argv = [
+                "create_eos_posterior_pipeline",
+                "--working-directory", str(run),
+                "--input-grid", str(run / "grid.dat"),
+                "--marg-job-spec-file", str(run / "jobs.json"),
+                "--eos-post-args-list", str(run / "args_post.txt"),
+                "--eos-post-exe", "/bin/true",
+                "--n-iterations", "2",
+                "--n-samples-per-job", "4",
+                "--eos-post-explode-jobs", "1",
+                "--eos-post-explode-jobs-last", "1",
+                "--use-full-submit-paths",
+            ]
+            if terminal_evidence:
+                sys.argv.append("--terminal-evidence")
+            if terminal_stages:
+                sys.argv.extend([
+                    "--terminal-stage-spec-file", str(run / "terminal.json")])
+            if osg:
+                sys.argv.extend(["--use-osg", "--use-singularity"])
+                os.environ["SINGULARITY_RIFT_IMAGE"] = "/tmp/test-rift.sif"
+                os.environ["SINGULARITY_BASE_EXE_DIR"] = "/usr/bin/"
+            runpy.run_path(
+                str(RIFT_PY / "bin" / "create_eos_posterior_pipeline"),
+                run_name="__main__",
+            )
+        finally:
+            sys.argv = old_argv
+            os.chdir(old_cwd)
+            if old_image is None:
+                os.environ.pop("SINGULARITY_RIFT_IMAGE", None)
+            else:
+                os.environ["SINGULARITY_RIFT_IMAGE"] = old_image
+            if old_base_exe is None:
+                os.environ.pop("SINGULARITY_BASE_EXE_DIR", None)
+            else:
+                os.environ["SINGULARITY_BASE_EXE_DIR"] = old_base_exe
+
+        dag = (run / "marginalize_hyperparameters.dag").read_text()
+        sub = (run / "MARG_0.sub").read_text()
+        consolidator = (run / "con_marg_0.sh").read_text()
+        assert "macrongroup=\"2\"" in dag
+        # The one-row seed must produce exactly one first-iteration MARG node;
+        # iteration 1 has four requested points and therefore two more nodes.
+        assert dag.count("MARG_0.sub") == 3
+        assert "RETRY" in dag and " 3" in dag
+        assert "PARENT " in dag and " CHILD " in dag
+        assert "--sim-grid" in sub
+        assert sub.count("--event=$(macroevent)") == 1
+        assert "--n-events-to-analyze $(macrongroup)" in sub
+        assert "--output-file" in sub
+        assert "request_memory = 4096" in sub
+        assert "request_disk = 2G" in sub
+        if osg:
+            arguments_line = next(
+                line for line in sub.splitlines()
+                if line.startswith("arguments ="))
+            assert "--cache-file=local.cache" in arguments_line
+            assert str(run / "local.cache") not in arguments_line
+            assert str(run / "local.cache") in sub
+        assert "util_CleanILE_hyperpipeline.py" in consolidator
+        if terminal_evidence:
+            prior_sub = (run / "EOS_POST_prior.sub").read_text()
+            evidence_sub = (run / "evidence_final.sub").read_text()
+            assert "--integrate-prior" in prior_sub
+            assert "--n-output-samples 1" in prior_sub
+            assert "prior-integral-$(macroiteration)" in prior_sub
+            assert "--strict" in evidence_sub
+            assert "--annotation-glob" in evidence_sub
+            assert "output-$(macroiterationnext)-*+annotation.dat" in evidence_sub
+            assert ("prior-integral-$(macroiteration)_withpriorchange+annotation.dat"
+                    in evidence_sub)
+            assert "evidence_$(macroiteration)_normalized" in evidence_sub
+            assert "EOS_POST_prior.sub" in dag
+            assert "evidence_final.sub" in dag
+            assert "CATEGORY" in dag and "CIP_PRIOR" in dag
+            assert "CATEGORY" in dag and "EVIDENCE" in dag
+        else:
+            assert not (run / "EOS_POST_prior.sub").exists()
+            assert not (run / "evidence_final.sub").exists()
+            assert "EOS_POST_prior.sub" not in dag
+            assert "evidence_final.sub" not in dag
+        if terminal_stages:
+            terminal_sub = (run / "TERMINAL_samples.sub").read_text()
+            collect_sub = (run / "TERMINAL_collect.sub").read_text()
+            positional_sub = (run / "TERMINAL_positional.sub").read_text()
+            assert "--terminal-worker" in terminal_sub
+            assert "--sim-grid" in terminal_sub
+            assert "grid-$(macroiteration).dat" in terminal_sub
+            assert "--n-events-to-analyze $(macrongroup)" in terminal_sub
+            assert "request_memory = 6144M" in terminal_sub
+            assert "request_disk = 3G" in terminal_sub
+            assert "--collect $(macroiteration)" in collect_sub
+            assert "executable = true" in collect_sub
+            assert "transfer_input_files" in collect_sub
+            assert str(run / "local.cache") in collect_sub
+            assert "/bin/true" in collect_sub
+            assert "transfer_output_files = collected.dat" in collect_sub
+            assert 'arguments = "input.dat --start $(macrostart)' in positional_sub
+            assert '--input.dat' not in positional_sub
+            assert dag.count("TERMINAL_samples.sub") == 3
+            assert dag.count("macrongroup=\"2\"") >= 3
+            assert 'macroevent="4" macrongroup="1"' in dag
+            assert "TERMINAL_collect.sub" in dag
+            assert "TERMINAL_positional.sub" in dag
+            assert dag.count("TERMINAL_positional.sub") == 2
+            assert 'macrostart="0"' in dag
+            assert 'macrostart="10"' in dag
+            assert "TERMINAL_samples" in dag
+            assert "TERMINAL_collect" in dag
+            jobs = {}
+            edges = set()
+            for line in dag.splitlines():
+                fields = line.split()
+                if fields and fields[0] == "JOB":
+                    jobs.setdefault(Path(fields[2]).name, []).append(fields[1])
+                elif fields and fields[0] == "PARENT":
+                    split_at = fields.index("CHILD")
+                    for parent in fields[1:split_at]:
+                        for child in fields[split_at + 1:]:
+                            edges.add((parent, child))
+            final_join = jobs["JOIN_POST.sub"][-1]
+            workers = jobs["TERMINAL_samples.sub"]
+            collector = jobs["TERMINAL_collect.sub"][0]
+            assert len(workers) == 3
+            assert all((final_join, worker) in edges for worker in workers)
+            assert all((worker, collector) in edges for worker in workers)
+        else:
+            assert not (run / "TERMINAL_samples.sub").exists()
+            assert not (run / "TERMINAL_collect.sub").exists()
+
+        # A missing posterior product must fail without leaving a header-only
+        # grid that a later iteration could accept as successful input.
+        empty_post = run / "empty-post"
+        empty_post.mkdir()
+        missing_grid = run / "missing-grid.dat"
+        join_result = subprocess.run(
+            [str(run / "join_post.sh"), str(empty_post), str(missing_grid)],
+            cwd=str(run), capture_output=True, text=True)
+        assert join_result.returncode != 0
+        assert "no primary posterior sample files" in join_result.stderr
+        assert not missing_grid.exists()
+
+        header_only_post = run / "header-only-post"
+        header_only_post.mkdir()
+        (header_only_post / "output-1-0.dat").write_text(
+            "# RIFT_HYPERPIPELINE_V1\n# lnL sigma_lnL m1 m2\n")
+        header_only_grid = run / "header-only-grid.dat"
+        join_result = subprocess.run(
+            [str(run / "join_post.sh"), str(header_only_post),
+             str(header_only_grid)],
+            cwd=str(run), capture_output=True, text=True)
+        assert join_result.returncode != 0
+        assert not header_only_grid.exists()
 
 
 def run_checks() -> None:
@@ -108,7 +365,37 @@ def run_checks() -> None:
     else:
         raise AssertionError("validate_config({}) should have raised")
 
-    # 4. base driver round-trip
+    # 4. generic indexed-grid MARG contract and posterior schedule
+    with tempfile.TemporaryDirectory() as tmpd:
+        base = Path(tmpd)
+        exe = base / "fake_ile"
+        exe.write_text("#!/bin/sh\n")
+        os.chmod(exe, 0o755)
+        (base / "args_ile.txt").write_text("X --cache local.cache\n")
+        (base / "jobs.json").write_text(
+            '[{"name":"ile","protocol":"indexed-grid-v1",'
+            '"exe":"fake_ile","args_file":"args_ile.txt","n_chunk":4}]'
+        )
+        jobs = marg_contract.load_marg_job_specs(str(base / "jobs.json"))
+        assert jobs[0].exe == str(exe)
+        assert jobs[0].args == "--cache local.cache"
+        assert jobs[0].result_glob == "MARG*.dat"
+    assert cip_pipeline.expand_argument_schedule(
+        ["2 --sampler-method GMM", "1 --sampler-method AV"], 4
+    ) == [
+        "--sampler-method GMM",
+        "--sampler-method GMM",
+        "--sampler-method AV",
+        "--sampler-method AV",
+    ]
+    try:
+        cip_pipeline.expand_argument_schedule(["G2 --sampler-method GMM"], 2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unsupported special schedules must fail explicitly")
+
+    # 5. base driver round-trip
     with tempfile.TemporaryDirectory() as tmpd:
         grid = Path(tmpd) / "g.dat"
         grid.write_text("# lnL sigma_lnL x y z\n0 0 1.0 2.0 3.0\n")
@@ -123,6 +410,13 @@ def run_checks() -> None:
             conforming_output_name=True,
         )
         assert "-3.1415926535" in Path(out).read_text()
+
+    # 6. build-only integration: preserve the legacy render, then opt in to
+    # terminal prior-normalized evidence using the same low-level writer.
+    _check_pipeline_render()
+    _check_pipeline_render(terminal_evidence=True)
+    _check_pipeline_render(terminal_stages=True)
+    _check_pipeline_render(osg=True)
 
     print(f"standalone_check: ALL OK  (RIFT_ROOT={RIFT_ROOT})")
 

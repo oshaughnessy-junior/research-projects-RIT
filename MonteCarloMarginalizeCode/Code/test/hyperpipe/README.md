@@ -25,12 +25,24 @@ pixi run demo-dryrun    # end-to-end dry-run of util_RIFT_hyperpipe.py
 pixi run which-rift     # confirm pixi resolved the in-tree RIFT correctly
 ```
 
+Before review or release, also run the heavier pseudo-pipe build comparison:
+
+```sh
+python integration/run_pseudo_build_gate.py
+python integration/run_terminal_execution_gate.py
+```
+
+It renders equivalent BasicIteration and Hyperpipe workflows through the real
+pseudo-pipe entry point and compares their pipeline-build semantics. See
+`integration/README.md` for its scope and retained-output option.
+
 ## Layout
 
 ```
 test/hyperpipe/
 ├── pixi.toml                       # env spec: python + scientific stack + full lalsuite
 ├── README.md                       # you are here
+├── integration/                    # heavier pseudo-build and local execution gates
 └── tests/
     ├── conftest.py                 # auto-detects RIFT_ROOT from this file's location
     ├── test_coords.py              # CIP-mirror coord-spec emission
