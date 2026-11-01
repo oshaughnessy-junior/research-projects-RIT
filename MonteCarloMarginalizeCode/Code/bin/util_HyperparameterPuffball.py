@@ -48,6 +48,11 @@ parser.add_argument("--supplementary-coordinate-chart", default=None, type=str,
 parser.add_argument("--supplementary-coordinate-input-parameter", action='append', default=None,
                     help="File-column name to feed the plugin as an input dimension. Repeat per column. "
                          "If omitted, the plugin's CHARTS[chart] input_parameters / INPUT_PARAMETERS is used.")
+parser.add_argument("--supplementary-coordinate-api", default="auto", choices=["auto", "rift", "inplace"],
+                    help="Plugin API: 'rift' (current contract), 'inplace' (PR #434 shape: fn(X, coord_names, **kw) "
+                         "transforms columns under their original names, with inverse_<fn>), or 'auto' (default: "
+                         "the plugin's PLUGIN_API, else classify by signature). With 'inplace', ranges for --parameter "
+                         "names are file-basis inputs to get_bounds. See RIFT.misc.coordinate_plugin.")
 opts=  parser.parse_args()
 
 if opts.random_parameter is None:
@@ -133,6 +138,7 @@ if _unknown_range_names:
 _coord_plugin_converter = None
 _coord_plugin_inverse   = None
 _coord_plugin_in_names  = None  # the FILE-basis names we feed the plugin
+_coord_plugin_api       = None
 if opts.supplementary_coordinate_code:
     from RIFT.misc.coordinate_plugin import load_coordinate_converter
     _coord_plugin_converter, _coord_plugin_module = load_coordinate_converter(
@@ -145,7 +151,11 @@ if opts.supplementary_coordinate_code:
         opts=opts,
         prior_map=None,
         prior_range_map=None,
+        api=opts.supplementary_coordinate_api,
+        allowed_apis=("rift", "inplace"),
+        external_range_args=opts.external_range_args,
     )
+    _coord_plugin_api = _coord_plugin_converter.plugin_api
     # Resolve the FILE-basis input names: explicit CLI override > chart's
     # input_parameters > module's INPUT_PARAMETERS.
     _chart_spec = (
@@ -160,6 +170,8 @@ if opts.supplementary_coordinate_code:
         opts.supplementary_coordinate_input_parameter
         or (_chart_spec.get("input_parameters") if _chart_spec else None)
         or getattr(_coord_plugin_module, "INPUT_PARAMETERS", [])
+        # inplace plugin: the puffed names are the file columns it transforms in place
+        or (list(coord_names) if _coord_plugin_api == "inplace" else [])
     )
     if not _coord_plugin_in_names:
         sys.exit("util_HyperparameterPuffball: plugin loaded but no file-basis "
@@ -168,7 +180,7 @@ if opts.supplementary_coordinate_code:
     # Round-trip requires an inverse.  Bail out with a clear message if the
     # plugin doesn't provide one -- silently using a pseudo-inverse here
     # would produce subtly wrong puff displacements.
-    _coord_plugin_inverse = getattr(_coord_plugin_module, "inverse_convert_coordinates", None)
+    _coord_plugin_inverse = _coord_plugin_converter.inverse
     if not callable(_coord_plugin_inverse):
         sys.exit("util_HyperparameterPuffball: --supplementary-coordinate-code set, but "
                  "the plugin does not define inverse_convert_coordinates.  The puff lane "
@@ -180,7 +192,18 @@ if opts.supplementary_coordinate_code:
 
 # Ranges from the plugin's get_bounds hook, in the puff basis.  Command-line
 # ranges win.  Failures raise: a wrong-frame range must not be used silently.
-if opts.get_range_from_external:
+if _coord_plugin_api == "inplace":
+    # The puffed names are also file names, so a command-line range for one has no stated
+    # frame: it is read in the FILE basis and mapped by get_bounds (which must cover every
+    # puffed name), and refused without --get-range-from-external.
+    from RIFT.misc.coordinate_plugin import inplace_sampling_ranges
+    _inplace_ranges = inplace_sampling_ranges(
+        _coord_plugin_module, coord_names, downselect_dict,
+        [name for name in downselect_dict if name in coord_names],
+        opts.get_range_from_external, opts.external_range_args)
+    if _inplace_ranges is not None:
+        downselect_dict.update(_inplace_ranges)
+elif opts.get_range_from_external:
     if _coord_plugin_converter is None:
         sys.exit("util_HyperparameterPuffball: --get-range-from-external needs --supplementary-coordinate-code")
     from RIFT.misc.coordinate_plugin import call_get_bounds

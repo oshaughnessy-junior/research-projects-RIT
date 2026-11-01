@@ -176,6 +176,63 @@ Plugins that don't need this -- single basis, single prior set -- can omit
 The loader fails closed: missing entry-point function, unimportable module,
 unreadable ini, or a ``prepare`` that raises will all cause
 ``load_coordinate_converter`` to raise, never silently fall back.
+
+
+Two plugin API shapes: ``rift`` and ``inplace``
+-----------------------------------------------
+Everything above describes the ``rift`` API, which every existing plugin
+uses.  The loader also accepts a second, smaller shape (the one proposed in
+PR #434), called ``inplace``::
+
+    PLUGIN_API = "inplace"                     # recommended; see selection below
+
+    def rotate(X, coord_names, **kwargs):      # name set by --supplementary-coordinate-function
+        '''X has columns labelled by coord_names.  Return an array of the
+        SAME shape whose columns hold the transformed values under the SAME
+        names (e.g. x0, x1 -> rotated x0, x1).  Columns the plugin does not
+        know are returned unchanged.'''
+
+    def inverse_rotate(X, coord_names, **kwargs):  # always "inverse_" + function name
+        '''Same shape and labels; undoes rotate.'''
+
+    def get_bounds(coord_names, ranges, **kwargs):   # optional
+        '''ranges: {name: [lo, hi]} in the FILE basis.  Return {name: [lo, hi]}
+        in the transformed basis, under the original names, for every name
+        in coord_names.'''
+
+The loader wraps an ``inplace`` plugin so drivers see the ``rift`` call
+signature: the wrapper copies its input before the call (the caller's array
+is never mutated), calls ``fn(x, low_level_coord_names, **kw)``, and then
+selects the requested ``coord_names`` by name (a requested name that is not
+an input name raises).  The inverse is wrapped the same way.  Values given
+with ``--external-range-args key=value`` (parsed as python literals) are
+passed to the forward and inverse calls in this mode only; ``rift`` plugins
+receive only ``chart=``, as before.
+
+Selection, in order:
+  1. explicit: the module attribute ``PLUGIN_API = "rift" | "inplace"`` or
+     the CLI flag ``--supplementary-coordinate-api {auto,rift,inplace}``
+     (default ``auto``).  If both are given they must agree.
+  2. ``auto`` classifies by ``inspect.signature`` only; it never calls the
+     plugin to find out.  ``rift`` if the entry point has a parameter named
+     ``low_level_coord_names``, or the module defines any of ``prepare``,
+     ``register_priors``, ``CHARTS``, ``DEFAULT_CHART``, ``INPUT_PARAMETERS``,
+     ``OUTPUT_PARAMETERS``, ``jacobian``.  ``inplace`` only if the entry
+     point is exactly ``(X, coord_names, **kwargs)`` and ``inverse_<function>``
+     exists.  Shapes that fit neither contract, or fit both (for example the
+     default name ``convert_coordinates``, whose ``inverse_convert_coordinates``
+     is also the ``rift`` inverse name, with both functions in the inplace
+     shape) raise and ask for ``PLUGIN_API``.  A forward-only function in the
+     inplace shape stays ``rift``, which is how it has always been called.
+
+Only ``util_ConstructEOSPosterior.py`` and ``util_HyperparameterPuffball.py``
+accept ``inplace`` plugins today; other drivers refuse them.  In those two
+drivers an ``inplace`` plugin's sampled (or puffed) names are all in the
+transformed basis, ``--integration-parameter-range`` / ``--parameter-range``
+values for them are FILE-basis inputs to ``get_bounds`` (and are refused
+without ``--get-range-from-external``, since their frame would be
+ambiguous), and every sampled column is passed through the inverse before
+it is written.
 """
 
 from __future__ import annotations
@@ -183,6 +240,7 @@ from __future__ import annotations
 import configparser
 import importlib
 import importlib.util
+import inspect
 import os
 import sys
 import warnings
@@ -190,6 +248,136 @@ from typing import Callable, Optional, Sequence, Tuple
 
 
 _DEFAULT_FUNCTION_NAME = "convert_coordinates"
+
+PLUGIN_APIS = ("rift", "inplace")
+# Module attributes that only the rift contract defines.  Any of them pins a
+# plugin to the rift API under auto-classification.
+_RIFT_ONLY_HOOKS = ("prepare", "register_priors", "CHARTS", "DEFAULT_CHART",
+                    "INPUT_PARAMETERS", "OUTPUT_PARAMETERS", "jacobian")
+
+
+def _signature(obj):
+    try:
+        return inspect.signature(obj)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_inplace_shaped(sig) -> bool:
+    """True for exactly ``(X, coord_names, **kwargs)``: two required positional
+    parameters, a ``**kwargs``, no ``*args`` and no required keyword-only."""
+    if sig is None:
+        return False
+    params = list(sig.parameters.values())
+    if any(p.kind is p.VAR_POSITIONAL for p in params):
+        return False
+    if not any(p.kind is p.VAR_KEYWORD for p in params):
+        return False
+    if any(p.kind is p.KEYWORD_ONLY and p.default is p.empty for p in params):
+        return False
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) == 2 and all(p.default is p.empty for p in positional)
+
+
+def _ambiguous(plugin_name, why):
+    return ValueError(
+        f"coordinate plugin {plugin_name!r}: cannot tell which plugin API it implements ({why}). "
+        "Set PLUGIN_API = 'rift' or 'inplace' in the plugin, or pass "
+        "--supplementary-coordinate-api rift|inplace.  See RIFT.misc.coordinate_plugin."
+    )
+
+
+def classify_plugin_api(module, function_name: Optional[str] = None, api: Optional[str] = None) -> str:
+    """Return ``'rift'`` or ``'inplace'`` for a loaded plugin module.
+
+    ``api`` is the CLI choice (``None``/``'auto'`` = not given).  An explicit
+    choice (CLI or the module's ``PLUGIN_API``) wins; both given must agree.
+    Otherwise classify from ``inspect.signature`` alone -- the plugin is never
+    called here.  See the module docstring for the rules.
+    """
+    plugin_name = getattr(module, "NAME", getattr(module, "__name__", "?"))
+    declared = getattr(module, "PLUGIN_API", None)
+    requested = None if api in (None, "auto") else api
+    for value, source in ((declared, "PLUGIN_API"), (requested, "--supplementary-coordinate-api")):
+        if value is not None and value not in PLUGIN_APIS:
+            raise ValueError(f"coordinate plugin {plugin_name!r}: {source}={value!r} "
+                             f"is not one of {PLUGIN_APIS!r}")
+    if declared is not None and requested is not None and declared != requested:
+        raise ValueError(f"coordinate plugin {plugin_name!r}: PLUGIN_API={declared!r} in the plugin "
+                         f"but --supplementary-coordinate-api {requested}")
+    if requested is not None or declared is not None:
+        return requested or declared
+
+    fn_name = function_name or _DEFAULT_FUNCTION_NAME
+    sig = _signature(getattr(module, fn_name))
+    if sig is None:
+        return "rift"        # cannot introspect: keep the contract it has always had
+    if "low_level_coord_names" in sig.parameters:
+        return "rift"
+    if any(hasattr(module, h) for h in _RIFT_ONLY_HOOKS):
+        return "rift"
+
+    inv = getattr(module, "inverse_" + fn_name, None)
+    if _is_inplace_shaped(sig) and callable(inv):
+        inv_sig = _signature(inv)
+        if inv_sig is not None and "low_level_coord_names" in inv_sig.parameters:
+            if fn_name == _DEFAULT_FUNCTION_NAME:
+                return "rift"   # inverse_convert_coordinates in the rift shape: a rift plugin
+            raise _ambiguous(plugin_name, f"{fn_name} has the inplace shape but inverse_{fn_name} "
+                                          "takes low_level_coord_names")
+        if fn_name == _DEFAULT_FUNCTION_NAME:
+            raise _ambiguous(plugin_name, "convert_coordinates and inverse_convert_coordinates both have "
+                                          "the inplace shape, and inverse_convert_coordinates is also "
+                                          "the rift inverse name")
+        return "inplace"
+
+    try:
+        sig.bind(None, coord_names=None, low_level_coord_names=None, chart=None)
+    except TypeError:
+        raise _ambiguous(plugin_name, f"{fn_name}{sig} matches neither the rift call "
+                                      "(x_in, coord_names, low_level_coord_names, **kw) nor the inplace "
+                                      "shape (X, coord_names, **kw) with an inverse_" + fn_name)
+    if _is_inplace_shaped(sig):
+        warnings.warn(
+            f"coordinate plugin {plugin_name!r}: {fn_name}{sig} has the inplace shape but no "
+            f"inverse_{fn_name}, so it is treated as a rift plugin (called with "
+            "low_level_coord_names in **kwargs).  Set PLUGIN_API to silence this.",
+            RuntimeWarning, stacklevel=3)
+    return "rift"
+
+
+def _select_columns(Y, have, want, what, plugin_name):
+    import numpy as np
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim != 2 or Y.shape[1] != len(have):
+        raise ValueError(f"coordinate plugin {plugin_name!r}: {what} returned shape {Y.shape}; "
+                         f"the inplace API returns the input's shape (N, {len(have)})")
+    missing = [n for n in want if n not in have]
+    if missing:
+        raise ValueError(f"coordinate plugin {plugin_name!r} (inplace API): {what} cannot produce "
+                         f"{missing!r}; an inplace plugin keeps its input names, so every requested "
+                         f"name must be one of {list(have)!r}")
+    return Y[:, [list(have).index(n) for n in want]]
+
+
+def _inplace_wrappers(convert_fn, inverse_fn, extra_kwargs, coord_names, low_level_coord_names, plugin_name):
+    import numpy as np
+
+    def _forward(x_in, coord_names=coord_names, low_level_coord_names=low_level_coord_names, **kwargs):
+        kwargs.pop("chart", None)
+        names_in = list(low_level_coord_names)
+        x = np.array(np.atleast_2d(x_in), dtype=float, copy=True)   # never hand over the caller's array
+        y = convert_fn(x, list(names_in), **{**extra_kwargs, **kwargs})
+        return _select_columns(y, names_in, list(coord_names), "forward", plugin_name)
+
+    def _inverse(y_in, coord_names=coord_names, low_level_coord_names=low_level_coord_names, **kwargs):
+        kwargs.pop("chart", None)
+        names_in = list(coord_names)
+        y = np.array(np.atleast_2d(y_in), dtype=float, copy=True)
+        x = inverse_fn(y, list(names_in), **{**extra_kwargs, **kwargs})
+        return _select_columns(x, names_in, list(low_level_coord_names), "inverse", plugin_name)
+
+    return _forward, _inverse
 
 
 def _load_module_from_spec(spec: str):
@@ -362,6 +550,9 @@ def load_coordinate_converter(
     opts=None,
     prior_map: Optional[dict] = None,
     prior_range_map: Optional[dict] = None,
+    api: Optional[str] = None,
+    allowed_apis: Sequence[str] = ("rift",),
+    external_range_args=None,
 ) -> Tuple[Callable, object]:
     """Load a user-supplied coordinate-convert plugin.
 
@@ -385,6 +576,18 @@ def load_coordinate_converter(
     callers may pass (matching ``convert_waveform_coordinates``, which
     accepts but ignores its non-relevant kwargs).  This keeps plugin
     authors honest: their function must accept ``**kwargs``.
+
+    Plugin API (see the module docstring): ``api`` is the CLI choice
+    (``auto``/``rift``/``inplace``; ``None`` = ``auto``).  ``allowed_apis``
+    lists the shapes the calling driver supports; the default, ``("rift",)``,
+    keeps every existing caller on the current contract and makes it refuse an
+    ``inplace`` plugin.  The returned converter carries two attributes:
+    ``converter.plugin_api`` (``'rift'`` or ``'inplace'``) and
+    ``converter.inverse`` (a callable with the rift inverse signature, or
+    None).  For a ``rift`` plugin ``converter.inverse`` is the module's own
+    ``inverse_convert_coordinates``, unwrapped.  ``external_range_args``
+    (``key=value`` strings) reach the forward and inverse calls only for an
+    ``inplace`` plugin.
     """
     if not spec:
         raise ValueError("load_coordinate_converter requires a non-empty spec")
@@ -404,6 +607,20 @@ def load_coordinate_converter(
         raise TypeError(
             f"coordinate plugin {plugin_name!r}: attribute {fn_name!r} is not callable"
         )
+
+    plugin_api = classify_plugin_api(module, fn_name, api)
+    if plugin_api not in tuple(allowed_apis):
+        raise ValueError(
+            f"coordinate plugin {plugin_name!r} uses the {plugin_api!r} plugin API, which this "
+            f"driver does not support (supported: {list(allowed_apis)!r})."
+        )
+    if plugin_api == "inplace":
+        inverse_fn = getattr(module, "inverse_" + fn_name, None)
+        if not callable(inverse_fn):
+            raise AttributeError(
+                f"coordinate plugin {plugin_name!r} (inplace API) does not define "
+                f"inverse_{fn_name}; the inplace API needs it to write samples in the file basis."
+            )
 
     cfg = _parse_ini(ini_path)
 
@@ -483,10 +700,18 @@ def load_coordinate_converter(
         )
 
     print(
-        " COORDINATE PLUGIN loaded: {} from {} (entry={}, chart={})".format(
-            plugin_name, spec, fn_name, resolved_chart
+        " COORDINATE PLUGIN loaded: {} from {} (entry={}, chart={}, api={})".format(
+            plugin_name, spec, fn_name, resolved_chart, plugin_api
         )
     )
+
+    if plugin_api == "inplace":
+        _forward, _inverse = _inplace_wrappers(
+            convert_fn, inverse_fn, parse_external_range_args(external_range_args),
+            coord_names, low_level_coord_names, plugin_name)
+        _forward.plugin_api = "inplace"
+        _forward.inverse = _inverse
+        return _forward, module
 
     def _wrapper(x_in, coord_names=coord_names, low_level_coord_names=low_level_coord_names, **kwargs):
         # Match the canonical signature used by
@@ -502,6 +727,8 @@ def load_coordinate_converter(
             **kwargs,
         )
 
+    _wrapper.plugin_api = "rift"
+    _wrapper.inverse = getattr(module, "inverse_convert_coordinates", None)
     return _wrapper, module
 
 
@@ -560,6 +787,10 @@ def call_get_bounds(module, coord_names, ranges, external_range_args=None):
     ``ranges`` is a copy of the ranges known so far.  The hook returns
     ``{name: [lo, hi]}`` in the basis named by ``coord_names`` (the sampling
     or puff basis, i.e. the plugin's output names).  Errors propagate.
+
+    For an ``inplace`` plugin ``ranges`` are in the FILE basis and the result
+    is in the transformed basis under the same names; use
+    ``inplace_sampling_ranges``, which also requires full coverage.
     """
     fn = getattr(module, "get_bounds", None)
     if not callable(fn):
@@ -575,3 +806,33 @@ def call_get_bounds(module, coord_names, ranges, external_range_args=None):
             raise ValueError(f"get_bounds returned a non-increasing range for {name!r}: {rng!r}")
         result[name] = [lo, hi]
     return result
+
+
+def inplace_sampling_ranges(module, names, file_ranges, cli_range_names, use_get_bounds,
+                            external_range_args=None):
+    """Sampling-basis ranges for an ``inplace`` plugin's sampled ``names``.
+
+    An inplace plugin reuses the file's names for its transformed coordinates,
+    so a range given on the command line for one of them has no stated frame.
+    It is read as a FILE-basis range and handed to ``get_bounds``, which must
+    then return a range for every name in ``names``.  Without
+    ``use_get_bounds`` a command-line range on a sampled name is refused, and
+    the return value is ``None``: the caller derives ranges itself (CEP: from
+    the forward-transformed input grid).
+    """
+    names = list(names)
+    if use_get_bounds:
+        out = call_get_bounds(module, names, file_ranges, external_range_args)
+        missing = [n for n in names if n not in out]
+        if missing:
+            raise ValueError(f"get_bounds (inplace API) returned no range for {missing!r}; with an "
+                             "inplace plugin it must cover every sampled name")
+        return {n: out[n] for n in names}
+    clash = [n for n in names if n in set(cli_range_names)]
+    if clash:
+        raise ValueError(
+            f"range(s) given on the command line for {clash!r}, which an inplace coordinate plugin "
+            "transforms under the same name(s): the frame of those ranges is ambiguous.  Pass "
+            "--get-range-from-external so the plugin's get_bounds maps these file-basis ranges, "
+            "or drop them.")
+    return None
