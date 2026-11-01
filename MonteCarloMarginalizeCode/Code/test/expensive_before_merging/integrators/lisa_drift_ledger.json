@@ -77,6 +77,14 @@
       "decision": "PORT",
       "reason": "Tolerant truthiness for optparse values that may arrive as strings from the pipe. Belongs with _normalize_interpolate_time_argv, its ONLY caller in the main driver (opts._noloop_time_interp), not with the fair-draw family -- porting it alongside those helpers would have added dead code to the LISA driver."
     },
+    "FUNC:_waveform_transform_extra_rows": {
+      "decision": "PHYSICS",
+      "reason": "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from declared Hyperpipe grid columns and echoed into the output row. The LISA driver has its own precompute and TDI response; whether F acts before or after the response, and whether a lensing-type F is response-independent for LISA, is a physics decision to make with LISA-specific validation, not a passthrough to copy."
+    },
+    "FUNC:_waveform_transform_extra_rows._is_known": {
+      "decision": "PHYSICS",
+      "reason": "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from declared Hyperpipe grid columns and echoed into the output row. The LISA driver has its own precompute and TDI response; whether F acts before or after the response, and whether a lensing-type F is response-independent for LISA, is a physics decision to make with LISA-specific validation, not a passthrough to copy."
+    },
     "FUNC:analyze_event._apply_order_control": {
       "decision": "NA",
       "reason": "Nested dispatcher for the ground-detector response-order estimator. It is reachable only from the check/choose controls classified above, and LISA's TDI response has no corresponding pmax or Qmax truncation to dispatch."
@@ -556,6 +564,22 @@
     "OPTION:--srate-internal": {
       "decision": "NA",
       "reason": "Separate internal sampling rate for the ground-based precompute. LISA's precompute takes its rate from the h5 frame and P.deltaT; there is no second internal rate to set."
+    },
+    "OPTION:--supplementary-waveform-transform-code": {
+      "decision": "PHYSICS",
+      "reason": "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from declared Hyperpipe grid columns and echoed into the output row. The LISA driver has its own precompute and TDI response; whether F acts before or after the response, and whether a lensing-type F is response-independent for LISA, is a physics decision to make with LISA-specific validation, not a passthrough to copy."
+    },
+    "OPTION:--supplementary-waveform-transform-function": {
+      "decision": "PHYSICS",
+      "reason": "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from declared Hyperpipe grid columns and echoed into the output row. The LISA driver has its own precompute and TDI response; whether F acts before or after the response, and whether a lensing-type F is response-independent for LISA, is a physics decision to make with LISA-specific validation, not a passthrough to copy."
+    },
+    "OPTION:--supplementary-waveform-transform-ini": {
+      "decision": "PHYSICS",
+      "reason": "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from declared Hyperpipe grid columns and echoed into the output row. The LISA driver has its own precompute and TDI response; whether F acts before or after the response, and whether a lensing-type F is response-independent for LISA, is a physics decision to make with LISA-specific validation, not a passthrough to copy."
+    },
+    "OPTION:--supplementary-waveform-transform-parameter": {
+      "decision": "PHYSICS",
+      "reason": "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from declared Hyperpipe grid columns and echoed into the output row. The LISA driver has its own precompute and TDI response; whether F acts before or after the response, and whether a lensing-type F is response-independent for LISA, is a physics decision to make with LISA-specific validation, not a passthrough to copy."
     },
     "OPTION:--td-acf-cond": {
       "decision": "PHYSICS",

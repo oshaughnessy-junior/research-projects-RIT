@@ -637,7 +637,7 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         extra_waveform_kwargs={},
         use_gwsignal=False,
         use_gwsignal_approx=None,
-        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True, IP_factory=None, td_gs_contexts=None):
+        use_external_EOB=False,nr_lookup=False,nr_lookup_valid_groups=None,no_memory=True,perturbative_extraction=False,perturbative_extraction_full=False,hybrid_use=False,hybrid_method='taper_add',use_provided_strain=False,ROM_group=None,ROM_param=None,ROM_use_basis=False,ROM_limit_basis_size=None,skip_interpolation=False,force_22_mode=False, calibration_realizations=None, calibration_conjugate=False, return_calibration_crossterms=False, calibration_self_term=True, IP_factory=None, td_gs_contexts=None, hlm_transform=None):
     """
     Compute < h_lm(t) | d > and < h_lm | h_l'm' >
 
@@ -664,7 +664,17 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         FFT of data or templates.  On that code path crossTerms[det][(p1,p2)] and
         crossTermsV[det][(p1,p2)] are ARRAYS of length N_window (U(t), V(t) aligned with
         rholms), not scalars.  Default None: this function is unchanged.
+
+    hlm_transform:  optional callable (hlms, hlms_conj, P) -> (hlms, hlms_conj), applied to the
+        mode banks immediately after internal_hlm_generator and BEFORE mode pruning and every
+        U/V/Q/calibration-self-term inner product (the extra-parameter seam of
+        RIFT.likelihood.hlm_transform, ILE --supplementary-waveform-transform-*).  Default None:
+        this function is unchanged.  Refused with td_gs_contexts and ROM_use_basis, which build
+        their banks on routes the seam has not been validated on.
     """
+    if hlm_transform is not None and (td_gs_contexts is not None or ROM_use_basis):
+        raise ValueError("hlm_transform (--supplementary-waveform-transform-*) is not supported "
+                         "with td_gs_contexts or ROM_use_basis")
     if td_gs_contexts is not None:
         if force_22_mode:
             raise NotImplementedError("force_22_mode is not implemented for the td-gs Precompute (td_gs_contexts)")
@@ -734,6 +744,9 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
                                              extra_waveform_kwargs=extra_waveform_kwargs,use_gwsignal=use_gwsignal,use_gwsignal_approx=use_gwsignal_approx,
                                              skip_interpolation=skip_interpolation,force_22_mode=force_22_mode)
                                              
+    if hlm_transform is not None:
+        # Extra-parameter seam: F(f; lambda, P) on both banks, before anything consumes them.
+        hlms, hlms_conj = hlm_transform(hlms, hlms_conj, P)
 
     if IP_factory is not None and hasattr(IP_factory, "register_template_modes"):
         IP_factory.register_template_modes(hlms)

@@ -299,6 +299,10 @@ FILES=(
   "$C/test/test_multirate_precompute.py"
   "$C/test/test_multirate_xpy.py"
   "$C/test/test_multirate_ile_refusal.py"
+  # -- extra-parameter waveform-transform seam (--supplementary-waveform-transform-*): F=1 bitwise
+  #    U/V/Q, constant-A scaling, pure-delay Q shift vs the evaluate_fvals sign, numpy time-domain
+  #    reference, loader, ILE refusals and one zero-data ILE identity run (four REDLINE flags).
+  "$C/test/test_hlm_transform.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -586,7 +590,9 @@ done
 # PR #181 catch-up merge (2026-11-01): PR 181 measured 872/859 against a 658/645 base, i.e.
 # +214 collected / +214 passed and no new skips.  PROVISIONAL floors below are that delta
 # added to the 1281/1255 base; RE-MEASURE whole-manifest on CIT before merging (never summed).
-EXPECTED_TESTS=1495
+# test_hlm_transform.py adds 23 tests and no skips (23 passed locally, venv python 3.13 /
+# lalsuite 8, no cupy) -> PROVISIONAL 1518/1492, same re-measure caveat.
+EXPECTED_TESTS=1518
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -624,7 +630,7 @@ EXPECTED_TESTS=1495
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1194.
 # test_dslice_refine.py adds 10 passes -> 1204.
 # PR #181 catch-up merge: +214 passes (provisional, see EXPECTED_TESTS).
-EXPECTED_PASSED=1469
+EXPECTED_PASSED=1492
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
