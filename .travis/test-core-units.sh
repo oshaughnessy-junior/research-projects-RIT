@@ -151,7 +151,41 @@ FILES=(
   "$C/test/hyperpipe/tests/test_coords.py"
   "$C/test/hyperpipe/tests/test_drivers.py"
   "$C/test/hyperpipe/tests/test_marg_list.py"
+  # CONSTRAINT (pytest 9, measured 2026-09-07): every file from a conftest-bearing
+  # directory must be listed CONTIGUOUSLY.  Under pytest 9's collection model a
+  # directory revisited non-contiguously in the arg list loses its conftest for the
+  # second block -- on the runner (pytest 9.1.1) test_marg_contract.py's 21 tests all
+  # errored "fixture 'hp_modules' not found" while its four siblings, listed before
+  # the revisit, passed.  CIT's pytest 8.3.5 does not reproduce it; the runner is the
+  # instrument.  Minimal repro: [tests/test_config.py, test/test_hyperpipeline_io.py,
+  # tests/test_marg_contract.py] fails; any contiguous order passes.
+  "$C/test/hyperpipe/tests/test_cit_execution_runner.py"
+  "$C/test/hyperpipe/tests/test_marg_contract.py"
+  "$C/test/hyperpipe/tests/test_osg_truncated_frames_helper.py"
+  "$C/test/hyperpipe/tests/test_terminal_contract.py"
+  "$C/test/hyperpipe/tests/test_worker_argument_staging.py"
   "$C/test/test_hyperpipeline_io.py"
+  # -- hyperpipe pseudo-pipe builder (PR 181).  Every file below was run individually under a
+  # runner-like import environment on CIT (IGWN conda python with htcondor/asimov/pesummary
+  # blocked via a sys.meta_path finder, glue present -- pip lalsuite's closure carries
+  # lscsoft-glue) before being added, and the counts matched the unblocked CIT run file for
+  # file.  test_pesummary_publishes_both.py is deliberately NOT here: its module-level
+  # importorskip collects ZERO without pesummary, which the per-file floor below would read
+  # as a dead file -- it is rostered OPTDEP and covered by the hyperpipe gate sweep on CIT.
+  "$C/test/test_cip_format_decision.py"
+  "$C/test/test_container_exe_paths.py"
+  "$C/test/test_convergence_exit_codes.py"
+  "$C/test/test_eos_posterior_header.py"
+  "$C/test/test_external_grid_fetch.py"
+  "$C/test/test_extrinsic_stage_shared.py"
+  "$C/test/test_grid_loader_parity.py"
+  "$C/test/test_hypercombine_formats.py"
+  "$C/test/test_hyperpipeline_grid_metadata.py"
+  "$C/test/test_ile_early_exit_order.py"
+  "$C/test/test_osg_cache_rewrite.py"
+  "$C/test/test_pseudo_pipe_option_precedence.py"
+  "$C/test/test_worker_partition.py"
+  "$C/test/test_alternate_iteration_format_guard.py"
   # -- coordinate plugin through the hyperpipe post and puff stages; puffball ranges; CEP
   # get_bounds.  ~13 tests, about ten driver subprocesses.
   "$C/test/test_hyperpipe_coordinate_passing.py"
@@ -446,6 +480,24 @@ done
 #            MEASURED on CIT (citlogin6; `import cupy` FAILS there) 2026-10-04, IGWN conda
 #            python 3.11: junit 676 collected / 663 passed / 13 skipped / 0 failed, 3 subtests.
 #            The 2 above 671/658 come from base tests added after the 658/645 measurement.
+#   869/856  MERGED rift_O4d (106 merges, through the 658/645 row above) into the hyperpipe
+#            builder branch (PR 181), whose own manifest additions are the 556/544 row.
+#            RE-MEASURED on the merged tree, never summed.  MEASURED on CIT (ldas-pcdev11, cupy
+#            made unimportable on PYTHONPATH to match the runner; ldas-grid was at its thread
+#            cap) 2026-10-04, IGWN conda python 3.11, RIFT_COREUNIT_PYTHON pointed at the IGWN
+#            interpreter: junit 872 collected / 859 passed / 13 skipped / 0 failed, of which 3
+#            are subtests.
+#   872/859  + test_alternate_iteration_format_guard.py (3 tests, no skips: the XML-only
+#            AlternateIteration builder and its pseudo_pipe routes refuse
+#            RIFT_HYPERPIPELINE_FORMAT), ported from the S240705at run's source tree.
+#   556/544  + the 18 hyperpipe pseudo-pipe builder suites (PR 181) at the rift_O4d merge,
+#            re-measured whole-manifest on CIT (IGWN conda python 3.11) 2026-09-07.  The same
+#            measurement caught test_advanced_parameter_ports.py failing 3 tests at the merge:
+#            its AST extraction anchored the ILE writer block on an ImportFrom, and the
+#            hyperpipe branch binds _hpio via a lazy loader instead -- extraction fragility,
+#            not a writer defect; the anchor now accepts both bindings.  Also the previous
+#            floors' second lesson repeated: the gate PASSED at 556/544 against floors still
+#            saying 347/335, i.e. green while under-floored, which is why this line exists.
 #
 # RAISE these when files are added: a floor left at the old value passes while covering less,
 # which is the failure this gate exists to catch.
@@ -531,7 +583,10 @@ done
 # #489: poisoned real IMRPv2 allocations (6) and EFPE buffer checks (6) -> 1218.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1220.
 # test_dslice_refine.py adds 10 tests and no skips -> 1230.
-EXPECTED_TESTS=1281
+# PR #181 catch-up merge (2026-11-01): PR 181 measured 872/859 against a 658/645 base, i.e.
+# +214 collected / +214 passed and no new skips.  PROVISIONAL floors below are that delta
+# added to the 1281/1255 base; RE-MEASURE whole-manifest on CIT before merging (never summed).
+EXPECTED_TESTS=1495
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -568,7 +623,8 @@ EXPECTED_TESTS=1281
 # #489: six IMRPv2 and six EFPE buffer cases, all required -> 1192.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1194.
 # test_dslice_refine.py adds 10 passes -> 1204.
-EXPECTED_PASSED=1255
+# PR #181 catch-up merge: +214 passes (provisional, see EXPECTED_TESTS).
+EXPECTED_PASSED=1469
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them

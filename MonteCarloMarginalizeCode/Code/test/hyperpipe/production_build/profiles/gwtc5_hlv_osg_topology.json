@@ -1,0 +1,116 @@
+{
+  "schema": "rift-hyperpipe-production-build/v1",
+  "name": "gwtc5-hlv-osg-topology",
+  "build_timeout_seconds": 300,
+  "environment": {
+    "SINGULARITY_RIFT_IMAGE": "osdf://example.invalid/rift/Reviewed-GWTC5-RIFT.sif",
+    "SINGULARITY_BASE_EXE_DIR": "/usr/bin"
+  },
+  "pseudo_pipe_args": [
+    "--manual-initial-grid", "<GRID>",
+    "--fake-data-cache", "<CACHE>",
+    "--bilby-ini-file", "<BILBY_INI>",
+    "--event-time", "1126259462.391",
+    "--manual-ifo-list", "H1,L1",
+    "--approx", "IMRPhenomXPHM",
+    "--assume-precessing",
+    "--fmin-template", "20",
+    "--internal-force-iterations", "2",
+    "--internal-n-evaluations-per-iteration", "4",
+    "--n-output-samples", "7",
+    "--n-output-samples-last", "7",
+    "--ile-jobs-per-worker", "3",
+    "--internal-ile-request-disk", "4G",
+    "--internal-general-request-disk", "4G",
+    "--cip-explode-jobs", "1",
+    "--cip-explode-jobs-last", "1",
+    "--internal-propose-converge-last-stage",
+    "--internal-n-iterations-subdag-max", "3",
+    "--add-extrinsic",
+    "--add-extrinsic-time-resampling",
+    "--batch-extrinsic",
+    "--internal-mitigate-fd-J-frame", "rotate",
+    "--export-marginal-distance-grid",
+    "--export-distance-slices", "2",
+    "--calibration-reweighting",
+    "--calibration-reweighting-count", "25",
+    "--calibration-reweighting-batchsize", "2",
+    "--calibration-reweighting-osg",
+    "--distance-reweighting",
+    "--archive-pesummary-label", "rift-production-gate",
+    "--archive-pesummary-event-label", "synthetic-event",
+    "--use-osg",
+    "--use-osg-file-transfer",
+    "--use-osg-cip",
+    "--internal-use-oauth-files", "scitokens",
+    "--skip-reproducibility"
+  ],
+  "expected": {
+    "dry_run_macros": {
+      "macroiteration": 0,
+      "macroiterationprev": -1,
+      "macroiterationnext": 1,
+      "macroevent": 0,
+      "macroid": 0,
+      "macrongroup": 1,
+      "macrostartidx": 0,
+      "macroendidx": 2
+    },
+    "dry_run_submits": [
+      "MARG_0.sub",
+      "EOS_POST_worker_*.sub",
+      "TERMINAL_calibration_reweight.sub",
+      "TERMINAL_pesummary.sub"
+    ],
+    "subdag_count": 1,
+    "child_dag_tokens": [
+      "JUMPSTART_MARG_NET.sub",
+      "ABORT-DAG-ON",
+      "MARG_0.sub"
+    ],
+    "terminal_stages": [
+      "extrinsic_samples",
+      "extrinsic_collect",
+      "frame_rotation",
+      "distance_grid",
+      "distance_slices",
+      "bilby_pickle",
+      "calibration_reweight",
+      "calibration_merge",
+      "posterior_hdf5",
+      "comoving_distance_reweight",
+      "pesummary"
+    ],
+    "submit_tokens": {
+      "MARG_0.sub": [
+        "integrate_likelihood_extrinsic_batchmode",
+        "request_disk = 4G",
+        "use_oauth_services = scitokens",
+        "MY.SingularityBindCVMFS = True",
+        "should_transfer_files = YES",
+        "PreCmd = \"ile_pre.sh\"",
+        "Reviewed-GWTC5-RIFT.sif"
+      ],
+      "EOS_POST_worker_0.sub": [
+        "util_ConstructIntrinsicPosterior_GenericCoordinates.py",
+        "request_disk = 4G",
+        "use_oauth_services = scitokens",
+        "should_transfer_files = YES",
+        "MY.SingularityImage = \"./Reviewed-GWTC5-RIFT.sif\"",
+        "osdf://example.invalid/rift/Reviewed-GWTC5-RIFT.sif",
+        "Reviewed-GWTC5-RIFT.sif"
+      ],
+      "TERMINAL_calibration_reweight.sub": [
+        "executable = /usr/bin/calibration_reweighting.py",
+        "use_oauth_services = scitokens",
+        "should_transfer_files = YES",
+        "weight_files",
+        "Reviewed-GWTC5-RIFT.sif"
+      ],
+      "TERMINAL_pesummary.sub": [
+        "summarypages",
+        "--samples"
+      ]
+    }
+  }
+}

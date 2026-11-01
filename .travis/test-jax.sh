@@ -621,6 +621,7 @@ JAXDIR="MonteCarloMarginalizeCode/Code/test/jax"
 FILES=(
   "${JAXDIR}/test_jax_time_quadrature.py"
   "${JAXDIR}/test_jax_terminal_time_marginalization.py"
+  "${JAXDIR}/test_jax_hyperpipe_marg_contract.py"
   "${JAXDIR}/test_jax_likelihood.py"
   "${JAXDIR}/test_jax_banded_data_term.py"
   "${JAXDIR}/test_jax_endtoend.py"
@@ -1257,7 +1258,11 @@ fi
 # Measured collection: 1078 selected tests from 62 files; nine deselected.
 # Follow-up: +6 RB mesh/support cases and +2 initial automatic-fallback cases.
 # Full1078 baseline plus separately verified8 new cases; same62 files/9 deselections.
-EXPECTED_TESTS=1086
+# 2026-10-04: + test_jax_hyperpipe_marg_contract.py (5 tests: the driver as a
+# Hyperpipe MARG worker -- reads a hyperpipe grid, writes hyperpipe shards that
+# util_HyperCombine consolidates, stays legacy without the flag).  962 + 5 = 967.
+# PR #181 catch-up merge: 1086 + 5 = 1091 (provisional; re-measure).
+EXPECTED_TESTS=1091
 
 echo "== collection floor check (expect >= ${EXPECTED_TESTS} tests) =="
 collect_out="$("${PYTHON_BIN}" -m pytest --collect-only -q -p no:cacheprovider "${DESELECT[@]}" "${FILES[@]}" 2>&1)"

@@ -545,8 +545,19 @@ if opts.use_bw_psd:
     convert_psd_job.write_sub_file()
 
 
-# Make directories for all iterations
-for indx in np.arange(it_start,opts.n_iterations+1):
+# Make directories for all iterations.
+#
+# One past n_iterations when the terminal extrinsic stage is on: unlike the
+# other builders, this workflow's final CIP sits one index PAST the loop and
+# writes overlap-grid-<n_iterations+1>, so ILE_extr -- whose initialdir and log
+# paths are iteration_$(macroiteration)_ile -- runs in iteration_<n+1>_ile.
+# Without this the DAG builds and the extrinsic jobs then fail on the execute
+# node with no such directory.  Conditional so a run without the extrinsic
+# stage creates exactly the directories it always did.
+n_iterations_dir_max = opts.n_iterations + 1
+if opts.last_iteration_extrinsic:
+    n_iterations_dir_max += 1
+for indx in np.arange(it_start,n_iterations_dir_max):
     ile_dir = opts.working_directory+"/iteration_"+str(indx)+"_ile"
     cip_dir = opts.working_directory+"/iteration_"+str(indx)+"_cip"
     consolidate_dir = opts.working_directory+"/iteration_"+str(indx)+"_con"
@@ -1390,11 +1401,37 @@ dag.add_node(convert_node)
 
 # Create export stages for extrinsic samples
 if opts.last_iteration_extrinsic:
-    # Check if 'it' is defined : it will not always be, if done later
-    if not ('it' in globals()):
-        it = opts.n_iterations  # last iteration
-    elif it < opts.n_iterations and 'Z' in cip_args_prefixes:
-        it += 1   # deal with an offset/fencepost issue that can happen when using subdags for some reason
+    # Which grid the extrinsic stage reads.  NOT the same arithmetic as the
+    # other builders, because this workflow's shape is not the same.
+    #
+    # The iteration loop above writes its grid with REFINE, not CIP, and the
+    # terminal CIP is then created OUTSIDE the loop at
+    # macroiteration=n_iterations / macroiterationnext=n_iterations+1.  So the
+    # run's final posterior is overlap-grid-<n_iterations+1> -- the grid
+    # `convert` turns into posterior_samples-<n_iterations+1>.dat -- while the
+    # last REFINE grid is overlap-grid-<n_iterations>.  Reading the REFINE grid
+    # runs the terminal ILE on the NR proposal grid instead of on the posterior,
+    # which is not what the equivalent stage does in
+    # create_event_parameter_pipeline_BasicIteration.
+    #
+    # The conditional that used to stand here could not fire either way: `it` is
+    # already set to opts.n_iterations unconditionally just above the terminal
+    # CIP, so the `if not ('it' in globals())` branch was dead and the `elif it <
+    # opts.n_iterations` could never be true.  Applying the one-line fix from
+    # RIFT PR #187 here produced an identical DAG in seven configurations, once
+    # DAGMan's md5 node ids are normalised (they are seeded from the clock and a
+    # random draw, so a raw byte diff of two builds is noise either way).  This
+    # is the different change that was actually needed.  Evidence in the
+    # commit message and RIFT PR #189; the state of every builder against
+    # this invariant is in RIFT/misc/DESIGN_terminal_extrinsic_grid.md.
+    it = opts.n_iterations + 1
+
+    # ...and wait for the node that writes it.  parent_fit_node is still the
+    # last REFINE (or PUFF) node from the loop -- the line that would have
+    # advanced it past the terminal CIP is commented out at the CIP block -- so
+    # without this the extrinsic ILE would read a grid whose writer is not an
+    # ancestor, i.e. a file that need not exist yet.
+    parent_fit_node = fit_node
     print(" Extrinsic information being pulled from iteration {} ".format(it))
 
     # Create nodes for followup tasks

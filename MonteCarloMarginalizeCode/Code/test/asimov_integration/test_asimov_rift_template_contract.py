@@ -231,6 +231,7 @@ def test_rift_liquid_template_option_blocks_land_safely():
     assert parser.get("engine", "ecc_min") == "0.0"
     assert parser.get("engine", "ecc_max") == "0.2"
     assert parser.get("rift-pseudo-pipe", "calibration-reweighting") == "True"
+    assert parser.get("rift-pseudo-pipe", "calibration-reweighting-osg") == "True"
     assert parser.get("rift-pseudo-pipe", "bilby-ini-file") == '"/tmp/bilby.ini"'
     assert parser.get("rift-pseudo-pipe", "internal-force-iterations") == "3"
     assert parser.get("rift-pseudo-pipe", "internal-correlate-default") == "True"
