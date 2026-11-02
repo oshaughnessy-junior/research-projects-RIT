@@ -171,7 +171,8 @@ def _assert_user_terminal_stage_ran(rundir: Path):
 
 
 def _build(run_base: Path, osg_contract=False, backend: str = "htcondor",
-           builder: str = "Hyperpipe", user_stages: Path = None):
+           builder: str = "Hyperpipe", user_stages: Path = None,
+           with_puff: bool = False):
     seed = run_base / "zero-spin-grid.dat"
     cache = run_base / "empty.cache"
     rundir = run_base / "run"
@@ -190,8 +191,8 @@ def _build(run_base: Path, osg_contract=False, backend: str = "htcondor",
         "--fmin-template", "20",
         "--force-mc-range", "[18,30]",
         "--force-eta-range", "[0.14,0.249999]",
-        "--internal-force-iterations", "1",
-        "--internal-force-puff-iterations", "-1",
+        "--internal-force-iterations", "2" if with_puff else "1",
+        "--internal-force-puff-iterations", "2" if with_puff else "-1",
         "--internal-n-evaluations-per-iteration", "9",
         "--n-output-samples", "9",
         "--n-output-samples-last", "9",
@@ -439,6 +440,34 @@ def _assert_no_puff_nodes(rundir: Path):
     # back out again.
 
 
+def _count_rows(path: Path):
+    table, _columns = hyperpipeline_io.read_table(str(path))
+    return len(np.atleast_1d(table))
+
+
+def _assert_puff_rows_consolidated(rundir: Path):
+    """RIFT #519: every MARG and MARG_PUFF row of an iteration must survive.
+
+    MARG (on grid-1.dat) and MARG_PUFF (on grid_puff-1.dat) write
+    MARG-<event>-$(cluster)-$(process).dat into one directory.  On a backend
+    that renders $(cluster) as a constant, one overwrites the other, every
+    node exits 0, and consolidation silently sees fewer rows.
+    """
+    n_cip = _count_rows(rundir / "grid-1.dat")
+    n_puff = _count_rows(rundir / "grid_puff-1.dat")
+    assert n_puff > 0, "puff produced no rows"
+    marg = sorted((rundir / "iteration_1_marg").rglob("MARG*.dat"))
+    n_marg = sum(_count_rows(path) for path in marg)
+    assert n_marg == n_cip + n_puff, (
+        "iteration-1 MARG shards hold {} rows, expected {} (grid-1) + {} "
+        "(grid_puff-1): shards were overwritten".format(n_marg, n_cip, n_puff))
+    n_con = _count_rows(rundir / "consolidated_1.net_marg")
+    assert n_con == n_marg, (
+        "consolidated_1.net_marg holds {} rows, the MARG shards {}".format(
+            n_con, n_marg))
+    return dict(n_cip=n_cip, n_puff=n_puff, n_marg=n_marg, n_con=n_con)
+
+
 def _assert_outputs(rundir: Path, logs: Path, completed):
     marg_files = sorted((rundir / "iteration_0_marg" / "event_0").glob(
         "MARG*.dat"))
@@ -473,8 +502,10 @@ def _assert_outputs(rundir: Path, logs: Path, completed):
             assert np.allclose(posterior_table[spin], 0.0)
 
     assert (rundir / "all.marg_net").stat().st_size > 0
-    normalized_evidence = np.atleast_1d(np.loadtxt(
-        rundir / "evidence_0_normalized"))
+    # The terminal evidence is written for the last CIP iteration.
+    evidence_files = sorted(rundir.glob("evidence_*_normalized"))
+    assert len(evidence_files) == 1, evidence_files
+    normalized_evidence = np.atleast_1d(np.loadtxt(evidence_files[0]))
     assert len(normalized_evidence) >= 6
     assert np.all(np.isfinite(normalized_evidence[:6]))
     # A constant likelihood has a unit Bayes factor after dividing by the
@@ -519,6 +550,10 @@ def main(argv=None):
               "own executor. local: build and run through the registered "
               "no-scheduler backend, i.e. what a user would actually do."))
     parser.add_argument(
+        "--with-puff", action="store_true",
+        help=("Hyperpipe + local backend only: two iterations with puff, and "
+              "check iteration-1 MARG rows = grid-1 + grid_puff-1 (RIFT #519)."))
+    parser.add_argument(
         "--osg-build-contract-only", action="store_true",
         help="Build and inspect the OSG data-free transfer contract without running jobs")
     args = parser.parse_args(argv)
@@ -547,9 +582,14 @@ def main(argv=None):
                 run_base, _environment(run_base, backend=args.backend))
             user_stages = _write_user_terminal_stage(
                 run_base, child_dag=child_dag)
+        if args.with_puff and (args.backend != "local"
+                               or args.builder != "Hyperpipe"
+                               or args.osg_build_contract_only):
+            raise SystemExit("--with-puff needs --backend local and the "
+                             "Hyperpipe builder")
         rundir = _build(run_base, osg_contract=args.osg_build_contract_only,
                         backend=args.backend, builder=args.builder,
-                        user_stages=user_stages)
+                        user_stages=user_stages, with_puff=args.with_puff)
         if args.osg_build_contract_only:
             _assert_osg_data_free_contract(rundir)
             print("constant-likelihood OSG build contract gate: PASS")
@@ -565,7 +605,11 @@ def main(argv=None):
                 rundir, env, driver_name=dag_name)
         else:
             logs, completed = _execute_without_condor(rundir, env)
-        _assert_no_puff_nodes(rundir)
+        if args.with_puff:
+            summary = _assert_puff_rows_consolidated(rundir)
+            print("puff rows consolidated:", summary)
+        else:
+            _assert_no_puff_nodes(rundir)
         if args.builder == "Hyperpipe":
             _assert_outputs(rundir, logs, completed)
             if user_stages is not None:

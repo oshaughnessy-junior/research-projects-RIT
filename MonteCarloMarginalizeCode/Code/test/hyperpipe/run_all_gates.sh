@@ -145,6 +145,9 @@ script_lane const-lnL "$PY" \
 script_lane const-lnL-local "$PY" \
   "$CODE/test/hyperpipe/integration/run_constant_likelihood_pipeline_gate.py" \
   --backend local
+script_lane const-lnL-puff "$PY" \
+  "$CODE/test/hyperpipe/integration/run_constant_likelihood_pipeline_gate.py" \
+  --backend local --with-puff
 script_lane const-lnL-legacy "$PY" \
   "$CODE/test/hyperpipe/integration/run_constant_likelihood_pipeline_gate.py" \
   --backend local --builder BasicIteration

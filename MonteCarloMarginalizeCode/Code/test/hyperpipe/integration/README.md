@@ -48,6 +48,10 @@ generation, convergence, prior integration, and evidence normalization must
 all complete. The gate verifies nine constant-likelihood MARG rows, a non-empty
 posterior, and that ILE never attempts detector-data access. Use
 `--keep-output` to retain the pipeline and per-node execution logs.
+`--backend local --with-puff` runs two iterations with puff and checks that
+iteration 1's MARG rows equal grid-1 plus grid_puff-1, and that consolidation
+keeps them all: MARG and MARG_PUFF share a directory and need distinct
+`$(cluster)` ids (RIFT #519).
 
 The extra-parameter (lambda) loop gate runs the same way:
 

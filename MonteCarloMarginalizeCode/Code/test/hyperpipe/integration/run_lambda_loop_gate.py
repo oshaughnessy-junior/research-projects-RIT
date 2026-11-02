@@ -91,9 +91,9 @@ def _execute(rundir, env):
     """gate._execute_without_condor, but with a distinct $(cluster) per node.
 
     MARG and MARG_PUFF nodes of one iteration write MARG-<event>-$(cluster)-$(process).dat
-    into the same directory, so a constant $(cluster) -- the const-lnL executor's "0", and
-    the `local` backend's ${RIFT_CLUSTER:-0}, which nothing sets -- overwrites one with the
-    other.  That gate (and its local lane) never meets it because it disables puff."""
+    into the same directory, so a constant $(cluster) -- the const-lnL executor's "0" --
+    overwrites one with the other.  (The `local` backend draws a fresh id per node since
+    RIFT #519.)"""
     counter = [0]
     original = gate._substitute
 

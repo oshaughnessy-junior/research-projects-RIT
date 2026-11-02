@@ -481,6 +481,42 @@ class LocalBackendTests(unittest.TestCase):
                               stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, timeout=120)
 
+    def test_each_node_gets_its_own_cluster_id(self):
+        """RIFT #519: MARG and MARG_PUFF of one iteration share a directory.
+
+        Both write MARG-<event>-$(cluster)-$(process).dat there.  HTCondor gives
+        every submission its own cluster id; a constant one makes the second
+        node overwrite the first, and both still exit 0.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "shared")
+            job = self.m.CondorDAGJob(universe="vanilla", executable="/bin/bash")
+            job.set_sub_file(os.path.join(td, "marg.sub"))
+            job.add_arg("-c")
+            job.add_arg("'mkdir -p {0} && echo $(macrotag) > {0}/MARG-0-$(cluster)-$(process).dat'".format(out))
+            job.write_sub_file()
+            dag = self.m.CondorDAG()
+            prev = None
+            for tag in ("marg", "puff", "marg2"):
+                node = self.m.CondorDAGNode(job)
+                node.add_macro("macrotag", tag)
+                if prev is not None:
+                    node.add_parent(prev)
+                dag.add_node(node)
+                prev = node
+            result = self._run(td, dag)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            files = sorted(os.listdir(out))
+            self.assertEqual(len(files), 3, (files, result.stdout))
+            tags = sorted(open(os.path.join(out, f)).read().strip() for f in files)
+            self.assertEqual(tags, ["marg", "marg2", "puff"])
+            # A re-run of the driver must not reuse ids either.
+            result = subprocess.run(["bash", dag.dag_file], cwd=td, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(len(os.listdir(out)), 6)
+
     def test_failing_subdag_stops_the_workflow(self):
         """A bare `bash child.sh` in a driver without -e ignores the failure."""
         with tempfile.TemporaryDirectory() as td:
