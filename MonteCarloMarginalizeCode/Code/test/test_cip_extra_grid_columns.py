@@ -190,6 +190,26 @@ def test_ignore_is_byte_identical_to_dropping_the_column(tmp_path):
     assert "lens_amp" not in hpio.read_header(str(tmp_path / "ignored" / "out.dat"))
 
 
+def test_pin_matches_a_consolidated_grid(tmp_path):
+    """Consolidation rounds every column to 5 decimals: a pin at pi/2 arrives as 1.5708.
+
+    Measured on the PR #518 real run: with a 1e-9 tolerance CIP dropped all 150 rows and died
+    with an IndexError.  The pin must keep the rows, and a pin nothing matches must fail with
+    a message that names it.
+    """
+    grid = _write_lambda_grid(str(tmp_path / "grid.dat"), other=round(np.pi / 2, 5))
+    d = str(tmp_path / "run")
+    proc = _run(d, grid, _FIT + ["--extra-column-pin", "lens_other:%r" % (np.pi / 2), "--n-max", "3000",
+                                 "--n-chunk", "1000", "--n-eff", "50", "--n-output-samples", "100"])
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    assert "0 input rows off the pinned value(s) dropped" in proc.stdout
+    arr, _cols = hpio.read_table(os.path.join(d, "out.dat"))
+    np.testing.assert_array_equal(arr["lens_other"], np.pi / 2)
+    proc = _run(str(tmp_path / "miss"), grid, _FIT + ["--extra-column-pin", "lens_other:1.6", "--n-max", "3000"])
+    assert proc.returncode != 0
+    assert "left no input rows" in proc.stdout, proc.stdout[-3000:]
+
+
 def test_quadpuff_contingency_carries_lambda(tmp_path):
     grid = _write_lambda_grid(str(tmp_path / "grid.dat"))
     d = str(tmp_path / "run")

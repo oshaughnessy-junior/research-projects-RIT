@@ -369,7 +369,7 @@ parser.add_argument("--supplementary-prior-code",default=None,type=str,help="Imp
 # parameter lambda.  CIP refuses to run while any extra column is unhandled: dropping it would
 # pool rows that differ only in lambda.  Each must be fit, pinned or ignored.
 parser.add_argument("--integration-parameter-range",action='append',default=None,help="Hyperpipe extra grid columns only: sampling range of an extra column used as a coordinate, NAME:[a,b] (repeatable; same syntax as util_ConstructEOSPosterior.py).  Required for every extra column given with --parameter.  The prior is uniform on [a,b]; override it with --import-prior-dictionary-file or a --supplementary-likelihood-factor-code plugin (which receives one array per sampling coordinate, extra columns included).  The column is written back into the output grid so ILE->CIP->ILE preserves it.")
-parser.add_argument("--extra-column-pin",action='append',default=None,help="Hyperpipe extra grid columns only: NAME:VALUE.  Keep only input rows whose NAME equals VALUE (relative tolerance 1e-9), do not fit NAME, and write VALUE as a constant column in the output grid.")
+parser.add_argument("--extra-column-pin",action='append',default=None,help="Hyperpipe extra grid columns only: NAME:VALUE.  Keep only input rows whose NAME equals VALUE (to within 5e-6 + 1e-9*max(1,|VALUE|): consolidation rounds every column to 5 decimals by default), do not fit NAME, and write VALUE as a constant column in the output grid.")
 parser.add_argument("--extra-column-ignore",action='append',default=None,help="Hyperpipe extra grid columns only: NAME.  Drop the column and POOL rows that differ only in it (deliberately), and do not write it to the output grid.")
 
 opts=  parser.parse_args()
@@ -2668,6 +2668,12 @@ if opts.mc_range:
     if opts.source_redshift>0:
         mc_cut_range =np.array(mc_cut_range)*(1+opts.source_redshift)  # prevent stupidity in grid selection
 print(" Stripping samples outside of ", mc_cut_range, " in mc")
+# --extra-column-pin tolerance.  CIP reads the CONSOLIDATED grid, and consolidation
+# (util_CleanILE_hyperpipeline.py, --intrinsic-digits 5 by default) rounds every column,
+# lambda included, to 5 decimals: a pin at pi/2 arrives as 1.5708.  A 1e-9 relative
+# tolerance rejected every row of such a run (only pins exact at 5 decimals survived).
+_EXTRA_PIN_ATOL = 0.5e-5
+_extra_pin_rejected = 0
 P= lalsimutils.ChooseWaveformParams()
 P_list_in = []
 for line in dat:
@@ -2679,7 +2685,8 @@ for line in dat:
       if opts.verbose:
           print(" Skipping ", line, " as too massive, with mass ", line[1]+line[2])
       continue
-  if _extra_pin and any(abs(line[_extra_col[_n]] - _v) > 1e-9*max(1.0, abs(_v)) for _n, _v in _extra_pin.items()):
+  if _extra_pin and any(abs(line[_extra_col[_n]] - _v) > _EXTRA_PIN_ATOL + 1e-9*max(1.0, abs(_v)) for _n, _v in _extra_pin.items()):
+      _extra_pin_rejected += 1
       continue  # --extra-column-pin: keep only rows at the pinned lambda
   if line[col_lnL+1] > opts.sigma_cut:
 #      if opts.verbose:
@@ -2830,6 +2837,13 @@ Pref_default = P.copy()  # keep this around to fix the masses, if we don't have 
 # Force 32 bit dype
 dat_out = np.array(dat_out,dtype=internal_dtype)
 print(" Stripped size  = ", dat_out.shape,  " with memory usage (bytes) ", sys.getsizeof(dat_out))
+if _extra_pin:
+    print(" --extra-column-pin: {} input rows off the pinned value(s) dropped".format(_extra_pin_rejected))
+    if len(dat_out) == 0 and _extra_pin_rejected:
+        sys.exit("CIP: --extra-column-pin {} left no input rows ({} dropped as off the pinned value); "
+                 "the grid's values of {} are e.g. {}".format(
+                     _extra_pin, _extra_pin_rejected, list(_extra_pin),
+                     [sorted(set(np.round(dat[:, _extra_col[_n]], 9)))[:3] for _n in _extra_pin]))
 dat_out_low_level_coord_names = np.array(dat_out_low_level_coord_names)
 indx_P_in = np.arange(len(dat_out_low_level_coord_names))  # input row of each retained row; cut in step with it
  # scale out mass units
