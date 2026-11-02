@@ -311,6 +311,11 @@ FILES=(
   # Injected lensed signal (constant-amplitude and point-lens demos, H1+L1, zero noise) recovered
   #    through the seam by ILE (four REDLINE flags): argmax, analytic lnL(A) shape, rho^2/2.  ~30 s.
   "$C/test/test_hlm_transform_injection.py"
+  # -- named extra grid columns (lambda) through CIP and util_ParameterPuffball.py: lambda
+  #    recovery, pin/ignore, refusals, byte identity of ignore vs drop and Hyperpipe vs legacy,
+  #    quadpuff carry, puff range and row-coherent pass-through.  12 tests, ~14 driver
+  #    subprocesses, ~30 s locally.
+  "$C/test/test_cip_extra_grid_columns.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -604,7 +609,9 @@ done
 # PR #518 pseudo_pipe passthrough: +11 (test_waveform_transform_pseudo_build.py, 11 passed
 # locally) -> PROVISIONAL 1537/1511.
 # test_hlm_transform_injection.py: +2 (2 passed locally) -> PROVISIONAL 1539/1513.
-EXPECTED_TESTS=1539
+# CIP/PUFF named extra grid columns: test_cip_extra_grid_columns.py (12) and 3 more in
+# test_hyperpipeline_io.py, no skips -> PROVISIONAL 1554/1528.
+EXPECTED_TESTS=1554
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -645,7 +652,8 @@ EXPECTED_TESTS=1539
 # PR #518 review fixes: +8 passes in test_hlm_transform.py (provisional, see EXPECTED_TESTS).
 # PR #518 pseudo_pipe passthrough: +11 passes (provisional).
 # test_hlm_transform_injection.py: +2 passes (provisional).
-EXPECTED_PASSED=1513
+# CIP/PUFF named extra grid columns: +15 passes (provisional, see EXPECTED_TESTS).
+EXPECTED_PASSED=1528
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them

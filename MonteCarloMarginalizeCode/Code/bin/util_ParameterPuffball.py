@@ -76,6 +76,7 @@ parser.add_argument("--mu-puff-transverse-max", type=float, default=1.,
                     help="Maximum random transverse radius for each spin in mu mode (default 1); further bounded by sqrt(1-siz^2). Independent of --puff-factor.")
 parser.add_argument("--mu-puff-n-proposals", type=int, default=None,
                     help="Attempted proposal budget in mu mode; default: number of input seeds. No retries after rejection.")
+parser.add_argument("--integration-parameter-range",action='append',default=None,help="Hyperpipe extra grid columns only (named columns that are not ChooseWaveformParams parameters, e.g. lensing lambda carried by ILE/CIP): NAME:[a,b], the range of an extra column puffed with --parameter NAME.  Puffed values outside [a,b] are dropped (or reflected with --reflect-parameter NAME).  Same syntax as CIP.  Extra columns NOT given with --parameter are passed through unchanged, row by row.")
 opts=  parser.parse_args()
 if opts.random_seed is not None:
     np.random.seed(opts.random_seed)
@@ -148,6 +149,33 @@ if not(opts.no_correlation is None):
 #            print i1, i2
 #    print opts.no_correlation, coord_names, corr_list
 
+# Named extra columns (lambda) of a Hyperpipe --inj-file: carried beside P (never stored on it),
+# puffed like any coordinate when given with --parameter, else passed through unchanged.
+from RIFT.misc import hyperpipeline_io as _hpio
+_extra_all = ()
+if opts.inj_file and (_hpio.is_active() or _hpio.sniff(opts.inj_file)):
+    _extra_all = _hpio.extra_column_names(_hpio.read_header(opts.inj_file), known=lalsimutils.valid_params)
+_extra_puff = [n for n in (coord_names or []) if n in _extra_all]
+_extra_ranges = {}
+for _spec in (opts.integration_parameter_range or []):
+    _name, _, _rng = _spec.partition(':')
+    if _name not in _extra_puff:
+        parser.error("--integration-parameter-range {}: {} is not an extra column of --inj-file puffed with "
+                     "--parameter (extra columns: {})".format(_spec, _name, list(_extra_all)))
+    _extra_ranges[_name] = [float(v) for v in eval(_rng)]
+if _extra_all:
+    _bad = [flag for flag, on in (("--puff-coordinate-system", opts.puff_coordinate_system),
+                                  ("--eccentric-phase-coordinates", opts.eccentric_phase_coordinates)) if on]
+    _bad += ["--random-parameter " + n for n in opts.random_parameter if n in _extra_all]
+    if _bad:
+        parser.error("--inj-file carries extra column(s) {}; not supported with {}".format(list(_extra_all), _bad))
+    for _name in _extra_puff:
+        if _name not in _extra_ranges:
+            parser.error("extra column {} is puffed (--parameter): give its range with "
+                         "--integration-parameter-range {}:[a,b]".format(_name, _name))
+    print(" Extra grid columns: puffed ", _extra_ranges, "; passed through ",
+          [n for n in _extra_all if n not in _extra_puff])
+
 downselect_dict = {}
 reflect_dict={}
 
@@ -176,6 +204,8 @@ if len(dlist) != len(dlist_ranges):
     print(" downselect parameters inconsistent", dlist, dlist_ranges)
 for indx in np.arange(len(dlist_ranges)):
     downselect_dict[dlist[indx]] = dlist_ranges[indx]
+for _name in _extra_puff:
+    downselect_dict[_name] = _extra_ranges[_name]
 
 indx_reflect=[]
 rlist=[]
@@ -201,7 +231,6 @@ for indx in np.arange(len(rlist)):
 # input file's column header is preserved on output so puffball is a
 # format pass-through (perturbed rows, same columns).
 # ----------------------------------------------------------------------
-from RIFT.misc import hyperpipeline_io as _hpio
 _hpip_in = _hpio.is_active() or _hpio.sniff(opts.inj_file)
 if _hpip_in:
     print(" Hyperpipeline ASCII input detected for --inj-file ", opts.inj_file)
@@ -210,6 +239,10 @@ if _hpip_in:
         P_factory=lalsimutils.ChooseWaveformParams,
         lal_module=lal,
         valid_params=lalsimutils.valid_params)
+    if _extra_all:
+        # read_table rows are in the same order as read_grid_to_P_list's P_list
+        _arr_in, _ = _hpio.read_table(opts.inj_file)
+        _lam_in = np.column_stack([np.atleast_1d(_arr_in[n]).astype(float) for n in _extra_all])
 else:
     _hpip_in_columns = None
     # Load data
@@ -254,6 +287,9 @@ for P in P_list:
         fac=1
         if coord_names[x] in ['mc','m1','m2','mtot']:
             fac = lal.MSUN_SI
+        if coord_names[x] in _extra_puff:
+            line_out[x] = _lam_in[len(dat_out), _extra_all.index(coord_names[x])]
+            continue
         line_out[x] = P.extract_param(coord_names[x])/fac
         
     dat_out.append(line_out)
@@ -355,6 +391,8 @@ for indx, name  in enumerate(coord_names):
 # Apply downselect constraints, using conversion utility for speed
 #   WARNING: For spin, we are NOT retaining transverse DOF by default!
 names_downselect = list(set(downselect_dict.keys()) - set(rlist))
+names_downselect_extra = [p for p in names_downselect if p in _extra_puff]   # tested directly on X_out
+names_downselect = [p for p in names_downselect if p not in _extra_puff]
 # chieff_aligned holds each point's own s1z, s2z difference, which the converter (fresh spin-free P
 # per row) cannot see.  Test spin-dependent ranges on the assigned point instead, below.
 names_downselect_late = []
@@ -386,10 +424,21 @@ if opts.eccentric_phase_coordinates:
                             if name not in names_cart else 0. for name in names_downselect] for p in P_list]).reshape(-1, len(names_downselect))
     for indx, name in enumerate(names_cart):
         x_out_down[:, names_downselect.index(name)] = x_cart[:, indx]
+elif _extra_puff:
+    X_native = X_out
+    # lalsimutils cannot convert lambda (its per-row fallback would assign it to P and exit):
+    # convert the standard columns alone.
+    _std = [i for i, n in enumerate(coord_names) if n not in _extra_puff]
+    x_out_down = lalsimutils.convert_waveform_coordinates(X_out[:, _std], coord_names=names_downselect,
+                                                          low_level_coord_names=[coord_names[i] for i in _std])
 else:
     X_native = X_out
     x_out_down = lalsimutils.convert_waveform_coordinates(X_out, coord_names=names_downselect, low_level_coord_names=coord_names)
 indx_ok = np.ones(len(x_out_down),dtype=bool)
+for name in names_downselect_extra:
+    _v = X_out[:, coord_names.index(name)]
+    indx_ok &= (_v >= downselect_dict[name][0]) & (_v <= downselect_dict[name][1])
+    print('   Increment downselect : {} {} '.format(name, np.sum(indx_ok) ))
 if opts.eccentric_phase_coordinates:
     indx_ok &= np.all(np.isfinite(X_native),axis=1)
 for indx, name in enumerate(names_downselect):
@@ -435,6 +484,8 @@ print(" Range downselect : ", np.sum(indx_ok), len(indx_ok))
 X_out = X_out[indx_ok]
 X_native = X_native[indx_ok]
 late_rows = late_rows[indx_ok]
+if _extra_all:
+    _lam_in = _lam_in[indx_ok]
 P_list = list(itertools.compress(P_list, indx_ok))  # https://stackoverflow.com/questions/18665873/filtering-a-list-based-on-a-list-of-booleans
 
 # Discard points which are 'close' to the original data set
@@ -450,6 +501,8 @@ if opts.force_away > 0:
     X_out = X_out[Y_id]
     X_native = X_native[Y_id]
     late_rows = late_rows[Y_id]
+    if _extra_all:
+        _lam_in = _lam_in[Y_id]
     P_list = list(itertools.compress(P_list, Y_id))  # https://stackoverflow.com/questions/18665873/filtering-a-list-based-on-a-list-of-booleans
 
 
@@ -482,10 +535,17 @@ print(" The number of raw points is ", len(P_list))
 
 # Copy parameters back in.  MAKE SURE THIS IS POSSIBLE
 P_out = []
+_lam_out = []   # one lambda row (ordered as _extra_all) per P_out entry
 for indx_P in np.arange(len(P_list)):
     include_item=True
     P = P_list[indx_P]
+    if _extra_all:
+        _lam_row = np.array(_lam_in[indx_P], dtype=float)   # pass-through values
+        for _name in _extra_puff:
+            _lam_row[_extra_all.index(_name)] = X_native[indx_P, coord_names.index(_name)]
     for indx in np.arange(len(coord_names)):
+        if coord_names[indx] in _extra_puff:
+            continue   # carried in _lam_row, not on P
         fac=1
         # sanity check restrictions, which may cause problems with the coordinate converters
         if coord_names[indx] == 'eta' and (X_out[indx_P,indx]>0.25 or X_out[indx_P,indx]<1e-5) :
@@ -555,6 +615,8 @@ for indx_P in np.arange(len(P_list)):
                 include_item = False
     if include_item:
         P_out.append(P)
+        if _extra_all:
+            _lam_out.append(_lam_row)
 
 
 
@@ -595,12 +657,17 @@ if opts.append_with_random_parameter:
             raise Exception(" --append-with-random-parameter {} requires --append-with-random-parameter-range".format(_param))
     _n_extra = int(np.ceil(opts.append_with_random_fraction * len(P_out)))
     P_extra = []
+    _lam_extra = []
     for _indx_base in np.random.randint(0, len(P_out), size=_n_extra):
         P = P_out[_indx_base].manual_copy()
+        if _extra_all:
+            _lam_row = np.array(_lam_out[_indx_base], dtype=float)
         _ok = True
         for _param in _app_params:
             _lo, _hi = _app_ranges[_param]
-            if _param in ['chi1_perp', 'chi2_perp']:
+            if _param in _extra_all:
+                _lam_row[_extra_all.index(_param)] = np.random.uniform(_lo, _hi)
+            elif _param in ['chi1_perp', 'chi2_perp']:
                 # re-draw the transverse magnitude AND azimuth (azimuth is undefined for
                 # aligned points, which dominate contracted grids), capping so the total
                 # spin magnitude respects the chi bound
@@ -630,6 +697,8 @@ if opts.append_with_random_parameter:
             if lalsimutils.estimateWaveformDuration(P) > opts.enforce_duration_bound:
                 continue
         P_extra.append(P)
+        if _extra_all:
+            _lam_extra.append(_lam_row)
     print(" append-with-random: appended {} randomized points ({} requested) in {}".format(len(P_extra), _n_extra, _app_params))
     P_out = P_out + P_extra
     # SHUFFLE the combined rows: downstream consumers may read grids in order and/or
@@ -637,6 +706,9 @@ if opts.append_with_random_parameter:
     # sit at the END and can be silently dropped, defeating the tail-guard.
     _perm = np.random.permutation(len(P_out))
     P_out = [P_out[_i] for _i in _perm]
+    if _extra_all:
+        _lam_out = _lam_out + _lam_extra
+        _lam_out = [_lam_out[_i] for _i in _perm]
 
 print(" The number of exported points is ", len(P_out))
 if opts.eccentric_phase_coordinates:
@@ -660,9 +732,15 @@ if opts.fail_if_empty and len(P_out)<1:
 if _hpip_in or _hpio.is_active():
     _cols_out = _hpip_in_columns if _hpip_in_columns is not None \
         else _hpio.build_column_list()
+    _extra_cols_out = None
+    if _extra_all:
+        _cols_out = tuple(c for c in _cols_out if c not in _extra_all)
+        _lam_mat = np.asarray(_lam_out, dtype=float).reshape(len(P_out), len(_extra_all))
+        _extra_cols_out = [(n, _lam_mat[:, k]) for k, n in enumerate(_extra_all)]
     _hpio.write_grid_from_P_list(opts.inj_file_out, P_out, _cols_out,
                                  lal_module=lal,
-                                 lalsimutils_module=lalsimutils)
+                                 lalsimutils_module=lalsimutils,
+                                 extra_columns=_extra_cols_out)
 else:
     lalsimutils.ChooseWaveformParams_array_to_xml(P_out,fname=opts.inj_file_out,fref=P.fref)
 

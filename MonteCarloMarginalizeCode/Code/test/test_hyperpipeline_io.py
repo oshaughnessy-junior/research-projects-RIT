@@ -525,6 +525,72 @@ def test_consolidate_drops_high_sigma():
     print("test_consolidate_drops_high_sigma: OK")
 
 
+# ---------------------------------------------------------------------------
+# Named extra columns (lambda, e.g. lensing parameters) carried through CIP.
+# ---------------------------------------------------------------------------
+
+def test_extra_column_names_classification():
+    """Only columns no fixed layout and no `known` name claims are extra, header order kept;
+    a known name matches directly or through the disk->attr alias (a1x -> s1x)."""
+    cols = hpio.build_column_list(use_tides=True, use_sky=True) + ("lens_amp", "incl", "lens_y")
+    assert hpio.extra_column_names(cols) == ("lens_amp", "incl", "lens_y")
+    assert hpio.extra_column_names(cols, known=("incl",)) == ("lens_amp", "lens_y")
+    assert hpio.extra_column_names(hpio.build_column_list(), known=("s1x",)) == ()
+    assert hpio.extra_column_names(("lnL", "sigma_lnL", "m1", "m2", "a1x", "q"), known=("s1x",)) == ("q",)
+
+
+def test_to_legacy_dat_extra_columns_after_sigma():
+    """Extra columns land after sigma_lnL in the given order; every other position is the
+    historical one, and legacy_column_indices reports the extra positions."""
+    cols = hpio.build_column_list(use_eccentricity=True) + ("lens_amp", "lens_y")
+    rows = [[-1.0, 0.01, 30, 25, .1, .2, .3, -.1, -.2, -.3, 0.4, 1.1, 0.7],
+            [-2.0, 0.02, 31, 24, 0, 0, 0, 0, 0, 0, 0.5, 1.2, 0.8]]
+    arr = _roundtrip(cols, rows)
+    plain = hpio.to_legacy_dat(arr, use_eccentricity=True)
+    out = hpio.to_legacy_dat(arr, use_eccentricity=True, extra_columns=("lens_y", "lens_amp"))
+    np.testing.assert_array_equal(out[:, :plain.shape[1]], plain)
+    ix = hpio.legacy_column_indices(use_eccentricity=True, extra_columns=("lens_y", "lens_amp"))
+    assert ix["lnL"] == hpio.legacy_column_indices(use_eccentricity=True)["lnL"]
+    assert (ix["lens_y"], ix["lens_amp"]) == (ix["sigma_lnL"] + 1, ix["sigma_lnL"] + 2)
+    np.testing.assert_allclose(out[:, ix["lens_amp"]], [1.1, 1.2])
+    np.testing.assert_allclose(out[:, ix["lens_y"]], [0.7, 0.8])
+    np.testing.assert_allclose(out[:, ix["sigma_lnL"]], [0.01, 0.02])
+    try:
+        hpio.to_legacy_dat(arr, extra_columns=("m1",))
+        raise AssertionError("collision with the legacy layout was accepted")
+    except ValueError:
+        pass
+
+
+def test_grid_writer_extra_columns_roundtrip_and_default_bytes():
+    """extra_columns are appended verbatim (scalar broadcast); None writes the same bytes as
+    before the option existed; a duplicate name is refused."""
+    P1, P2 = _FakeP(), _FakeP()
+    P1.m1, P1.m2, P2.m1, P2.m2 = 30.0, 25.0, 31.0, 24.0
+    cols = hpio.build_column_list()
+    d = tempfile.mkdtemp()
+    f0, f1, f2 = (os.path.join(d, n) for n in ("a.dat", "b.dat", "c.dat"))
+    hpio.write_grid_from_P_list(f0, [P1, P2], cols, lal_module=None)
+    hpio.write_grid_from_P_list(f1, [P1, P2], cols, lal_module=None, extra_columns=None)
+    assert open(f0).read() == open(f1).read()
+    hpio.write_grid_from_P_list(f2, [P1, P2], cols, lal_module=None,
+                                extra_columns=[("lens_amp", [1.25, 0.75]), ("lens_y", 0.3)])
+    arr, hdr = hpio.read_table(f2)
+    assert hdr == cols + ("lens_amp", "lens_y")
+    np.testing.assert_allclose(arr["lens_amp"], [1.25, 0.75])
+    np.testing.assert_allclose(arr["lens_y"], [0.3, 0.3])
+    np.testing.assert_allclose(arr["m1"], [30.0, 31.0])
+    # the CIP reader path: lambda survives read -> legacy layout
+    out = hpio.to_legacy_dat(arr, extra_columns=hpio.extra_column_names(hdr))
+    np.testing.assert_allclose(out[:, -2], [1.25, 0.75])
+    for bad in ([("m1", [1, 2])], [("x", [1, 2]), ("x", [3, 4])], [("x", [1, 2, 3])]):
+        try:
+            hpio.write_grid_from_P_list(f2, [P1, P2], cols, lal_module=None, extra_columns=bad)
+            raise AssertionError("accepted bad extra_columns %r" % (bad,))
+        except ValueError:
+            pass
+
+
 if __name__ == "__main__":
     test_default_roundtrip()
     test_eccentricity_columns()
@@ -546,4 +612,7 @@ if __name__ == "__main__":
     test_column_alias_bridge()
     test_sky_column_alias_bridge()
     test_grid_no_lal_module_passthrough()
+    test_extra_column_names_classification()
+    test_to_legacy_dat_extra_columns_after_sigma()
+    test_grid_writer_extra_columns_roundtrip_and_default_bytes()
     print("\nAll hyperpipeline_io tests passed.")

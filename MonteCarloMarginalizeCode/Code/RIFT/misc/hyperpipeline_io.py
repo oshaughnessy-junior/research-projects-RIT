@@ -529,7 +529,7 @@ def read_table(fname):
 def to_legacy_dat(arr, use_eccentricity=False, use_meanPerAno=False,
                   use_tides=False, use_eos_index=False, use_distance=False,
                   use_eob_parameters=False, use_hyperbolic=False,
-                  use_sky=False):
+                  use_sky=False, extra_columns=()):
     """Reshape a hyperpipeline structured array into the legacy CIP layout.
 
     The legacy CIP reader expects a plain ``(N, K)`` ``ndarray`` whose
@@ -547,6 +547,13 @@ def to_legacy_dat(arr, use_eccentricity=False, use_meanPerAno=False,
     ``util_ConstructIntrinsicPosterior_GenericCoordinates.py`` produces.
     The synthetic ``event_id`` column is filled with ``-1`` because the
     hyperpipeline format does not carry that book-keeping field.
+
+    *extra_columns* (named, arbitrary columns such as lensing parameters; see
+    :func:`extra_column_names`) are appended AFTER ``sigma_lnL``, in the order
+    given, so ``lnL``/``sigma_lnL`` keep their positions and the legacy
+    ``line[col_lnL+1]`` convention is unchanged.  Their positions are reported
+    by :func:`legacy_column_indices` with the same *extra_columns*.  Default
+    ``()`` reproduces the historical layout exactly.
     """
     n = len(arr)
 
@@ -568,6 +575,13 @@ def to_legacy_dat(arr, use_eccentricity=False, use_meanPerAno=False,
     if use_sky:
         cols.extend(["ecliptic_longitude", "ecliptic_latitude"])
     cols.extend(["lnL", "sigma_lnL"])
+    extra_columns = tuple(extra_columns or ())
+    clash = [c for c in extra_columns if c in cols]
+    if clash:
+        raise ValueError(
+            "hyperpipeline_io.to_legacy_dat: extra column(s) {} collide with "
+            "the legacy layout {}".format(clash, cols))
+    cols.extend(extra_columns)
 
     out = np.zeros((n, len(cols)), dtype=float)
     for j, name in enumerate(cols):
@@ -580,6 +594,26 @@ def to_legacy_dat(arr, use_eccentricity=False, use_meanPerAno=False,
                     "not present in file (have {})".format(name, arr.dtype.names))
             out[:, j] = arr[name]
     return out
+
+
+def extra_column_names(columns, known=()):
+    """Return the named columns of a hyperpipeline header that no fixed layout knows.
+
+    A column is *extra* (an arbitrary parameter lambda carried per row, e.g. a
+    lensing parameter declared to ILE with
+    ``--supplementary-waveform-transform-parameter``) unless it is ``lnL`` /
+    ``sigma_lnL``, one of :data:`DEFAULT_BASE_COLUMNS` / :data:`OPTIONAL_COLUMNS`,
+    or -- itself or via :func:`disk_to_attr` -- in *known* (pass
+    ``lalsimutils.valid_params``).  This is the same classification ILE applies
+    to the ``--sim-grid`` columns of the extra-parameter seam, so a column ILE
+    echoes as a declared extra parameter is extra here too.  Header order is
+    kept.
+    """
+    known = set(known or ())
+    fixed = set(DEFAULT_BASE_COLUMNS) | set(OPTIONAL_COLUMNS)
+    return tuple(c for c in columns
+                 if c not in fixed and c not in known
+                 and disk_to_attr(c) not in known)
 
 
 def read_many(filenames):
@@ -768,7 +802,7 @@ def with_grid_suffix(fname):
 def write_grid_from_P_list(fname, P_list, columns,
                            lal_module=None, lalsimutils_module=None,
                            lnL_values=None, sigma_lnL_values=None,
-                           metadata_overrides=None):
+                           metadata_overrides=None, extra_columns=None):
     """Write a hyperpipeline grid file from a list of ChooseWaveformParams.
 
     Used by CIP / puffball / fetch when emitting the next-iteration
@@ -795,8 +829,31 @@ def write_grid_from_P_list(fname, P_list, columns,
         dependency-light for tests that only exercise pure-numpy code paths.
     lnL_values, sigma_lnL_values : array-like or None
         Optional per-row likelihood values.  Filled with zeros if omitted.
+    extra_columns : sequence of (name, values) pairs, or dict, or None
+        Named columns that are NOT ``ChooseWaveformParams`` attributes (e.g.
+        lensing parameters lambda), carried alongside *P_list* rather than
+        stored on P.  Each *values* is a length-``len(P_list)`` array (or a
+        scalar, broadcast); the columns are appended after *columns* in the
+        given order and written verbatim (no unit conversion).  ``None``
+        reproduces the historical output exactly.
     """
     columns = tuple(columns)
+    extra_items = []
+    if extra_columns:
+        items = extra_columns.items() if hasattr(extra_columns, "items") else extra_columns
+        for name, vals in items:
+            if name in columns or name in [e[0] for e in extra_items]:
+                raise ValueError(
+                    "hyperpipeline_io.write_grid_from_P_list: extra column '{}' "
+                    "duplicates an output column".format(name))
+            vals = np.asarray(vals, dtype=float)
+            if vals.ndim == 0:
+                vals = np.full(len(P_list), float(vals))
+            if vals.shape != (len(P_list),):
+                raise ValueError(
+                    "hyperpipeline_io.write_grid_from_P_list: extra column '{}' "
+                    "has shape {}, expected ({},)".format(name, vals.shape, len(P_list)))
+            extra_items.append((name, vals))
     if "lnL" not in columns or "sigma_lnL" not in columns:
         raise ValueError(
             "hyperpipeline_io.write_grid_from_P_list: 'lnL' and 'sigma_lnL' "
@@ -829,6 +886,9 @@ def write_grid_from_P_list(fname, P_list, columns,
                 mat[i, j] = _si_to_disk(name, raw, lal_module)
             else:
                 mat[i, j] = float(raw)
+    if extra_items:
+        columns = columns + tuple(e[0] for e in extra_items)
+        mat = np.column_stack([mat] + [e[1] for e in extra_items])
     write_table_with_metadata(fname, columns, mat,
                               P=P_list[0] if len(P_list) else None,
                               metadata_overrides=metadata_overrides)
@@ -908,7 +968,8 @@ def read_grid_to_P_list(fname, P_factory, lal_module=None,
 def legacy_column_indices(use_eccentricity=False, use_meanPerAno=False,
                           use_tides=False, use_eos_index=False,
                           use_distance=False, use_eob_parameters=False,
-                          use_hyperbolic=False, use_sky=False):
+                          use_hyperbolic=False, use_sky=False,
+                          extra_columns=()):
     """Return the positional column indices the legacy CIP loop expects.
 
     Mirrors the layout produced by :func:`to_legacy_dat` so callers can
@@ -920,7 +981,9 @@ def legacy_column_indices(use_eccentricity=False, use_meanPerAno=False,
     ``'lambda1'``, ``'a6c'``, ``'E0'``, ``'p_phi0'``,
     ``'eccentricity'``, ``'meanPerAno'``,
     ``'ecliptic_longitude'``, ``'ecliptic_latitude'``.  Any column not
-    present in the configuration maps to ``None``.
+    present in the configuration maps to ``None``.  Each name in
+    *extra_columns* is added as a key, at the position :func:`to_legacy_dat`
+    gives it (after ``sigma_lnL``).
     """
     # event_id m1 m2 a1x a1y a1z a2x a2y a2z = 9 leading columns.
     idx = 9
@@ -955,6 +1018,8 @@ def legacy_column_indices(use_eccentricity=False, use_meanPerAno=False,
         idx += 2
     out["lnL"] = idx
     out["sigma_lnL"] = idx + 1
+    for k, name in enumerate(tuple(extra_columns or ())):
+        out[name] = idx + 2 + k
     return out
 
 
