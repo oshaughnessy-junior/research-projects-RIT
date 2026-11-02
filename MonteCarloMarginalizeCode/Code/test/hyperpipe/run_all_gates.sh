@@ -151,6 +151,8 @@ script_lane const-lnL-legacy "$PY" \
 script_lane const-lnL-osg "$PY" \
   "$CODE/test/hyperpipe/integration/run_constant_likelihood_pipeline_gate.py" \
   --osg-build-contract-only
+script_lane lambda-loop "$PY" \
+  "$CODE/test/hyperpipe/integration/run_lambda_loop_gate.py"
 script_lane cit-profile "$PY" \
   "$CODE/test/hyperpipe/production_build/run_cit_pseudo_profile_gate.py"
 

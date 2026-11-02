@@ -165,7 +165,8 @@ FILES=(
   "$C/test/hyperpipe/tests/test_terminal_contract.py"
   "$C/test/hyperpipe/tests/test_worker_argument_staging.py"
   # pseudo_pipe --internal-ile-supplementary-waveform-transform-* (PR #518): real Hyperpipe
-  # builds (empty cache, no network): flags, NoLoop, OSG staging, refusals.  ~12 s.
+  # builds (empty cache, no network): flags, NoLoop, OSG staging, the lambda loop closed through
+  # CIP/PUFF (DAG args), posterior-stage and treatment refusals.  ~35 s.
   "$C/test/hyperpipe/tests/test_waveform_transform_pseudo_build.py"
   "$C/test/test_hyperpipeline_io.py"
   # -- hyperpipe pseudo-pipe builder (PR 181).  Every file below was run individually under a
@@ -611,7 +612,9 @@ done
 # test_hlm_transform_injection.py: +2 (2 passed locally) -> PROVISIONAL 1539/1513.
 # CIP/PUFF named extra grid columns: test_cip_extra_grid_columns.py (12) and 3 more in
 # test_hyperpipeline_io.py, no skips -> PROVISIONAL 1554/1528.
-EXPECTED_TESTS=1554
+# Hyperpipe lambda loop closed in pseudo_pipe: +15 in test_waveform_transform_pseudo_build.py
+# (26 passed locally, no skips) -> PROVISIONAL 1569/1543.
+EXPECTED_TESTS=1569
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -653,7 +656,8 @@ EXPECTED_TESTS=1554
 # PR #518 pseudo_pipe passthrough: +11 passes (provisional).
 # test_hlm_transform_injection.py: +2 passes (provisional).
 # CIP/PUFF named extra grid columns: +15 passes (provisional, see EXPECTED_TESTS).
-EXPECTED_PASSED=1528
+# Hyperpipe lambda loop closed in pseudo_pipe: +15 passes (provisional).
+EXPECTED_PASSED=1543
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
