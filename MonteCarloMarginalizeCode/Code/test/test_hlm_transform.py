@@ -8,8 +8,12 @@ Precompute level (synthetic IMRPhenomD injection, analytic PSD, no files):
     the evaluate_fvals-sign version does not -- the packed-FFT phase-sign trap.
 Time domain: the delayed bank, inverse-FFT'd, equals a numpy-FFT time-domain reference and
 its peak moves LATER by Delta.
-Loader, Hermitian construction and ILE refusals; one ILE end-to-end identity run on a
-zero-data frame with the four REDLINE flags, which also checks the lambda echo.
+IMRPhenomXHM (FD-model route, whose series carry f0 = 0): the seam matches a numpy
+time-domain real-kernel reference on both banks.
+Loader, Hermitian construction and ILE refusals.  ILE end-to-end on a zero-data frame with the
+four REDLINE flags: an identity run (byte-identical, lambda echo); a lens_amp != 1 run that must
+equal a base run with the distance prior scaled by 1/lens_amp (fails if the hand-off to the
+precompute is removed); non-finite lambda and plugin exceptions abort with nonzero exit.
 """
 import os
 import subprocess
@@ -113,16 +117,40 @@ def test_two_sided_response_is_hermitian_on_the_lal_grid(n):
     np.testing.assert_allclose(F[pos], (1 + f[pos]) * np.exp(1j * (0.3 + f[pos])), rtol=0, atol=0)
 
 
-def test_response_validation_and_origin_assert():
+def test_response_validation_and_f0_is_ignored():
     bad_shape = _fn_transform(lambda f, lam, P=None, xpy=np: np.ones(3, dtype=complex))
     with pytest.raises(ValueError, match="shape"):
         HT.two_sided_response(bad_shape, 16, 1.0, {})
     bad_val = _fn_transform(lambda f, lam, P=None, xpy=np: np.full(f.shape, np.nan + 0j))
     with pytest.raises(ValueError, match="non-finite"):
         HT.two_sided_response(bad_val, 16, 1.0, {})
+    # f0 metadata is not trusted (it is 0 on the IMRPhenomX* route): f comes from N and deltaF
+    for n in (16, 17):
+        s = lal.CreateCOMPLEX16FrequencySeries("x", lal.LIGOTimeGPS(0), 0.0, 0.5, lal.HertzUnit, n)
+        np.testing.assert_array_equal(HT.packed_frequencies(s), 0.5 * (np.arange(n) - n // 2))
+
+
+def test_plugin_failures_become_waveform_transform_errors_and_P_is_copied():
     s = lal.CreateCOMPLEX16FrequencySeries("x", lal.LIGOTimeGPS(0), 0.0, 1.0, lal.HertzUnit, 16)
-    with pytest.raises(ValueError, match="FFT-shift origin"):
-        HT.packed_frequencies(s)
+    s.data.data = np.ones(16, dtype=complex)
+    def boom(f, lam, P=None, xpy=np):
+        raise RuntimeError("plugin boom")
+    with pytest.raises(HT.WaveformTransformError, match="plugin boom"):
+        HT.apply_hlm_transform({(2, 2): s}, {}, transform=_fn_transform(boom), extra_params={"lam": 1.})
+    bad_val = _fn_transform(lambda f, lam, P=None, xpy=np: np.full(f.shape, np.inf + 0j))
+    with pytest.raises(HT.WaveformTransformError, match="non-finite"):
+        HT.apply_hlm_transform({(2, 2): s}, {}, transform=bad_val, extra_params={"lam": 1.})
+    t = HT.WaveformTransform(lambda f, lam, P=None, xpy=np: np.ones(f.shape, complex), ("lam",),
+                             is_identity=lambda lam: 1 / 0)
+    with pytest.raises(HT.WaveformTransformError, match="is_identity"):
+        t.bind({"lam": 1.})
+    P = lalsimutils.ChooseWaveformParams()
+    P.m1 = 10 * lal.MSUN_SI
+    def writer(f, lam, P=None, xpy=np):
+        P.m1 = 0.0
+        return np.ones(f.shape, complex)
+    HT.apply_hlm_transform({(2, 2): s}, {}, P=P, transform=_fn_transform(writer), extra_params={"lam": 1.})
+    assert P.m1 == 10 * lal.MSUN_SI
 
 
 def test_demo_plugins_load_and_identity_shortcut():
@@ -184,6 +212,52 @@ def _conj_ts(h, dt):
     ts = lal.CreateCOMPLEX16TimeSeries("hc", lal.LIGOTimeGPS(0), 0.0, dt, lal.DimensionlessUnit, len(h))
     ts.data.data = np.conj(h)
     return ts
+
+
+def _real_kernel_td(x, dt, Ffun):
+    """Real time-domain kernel with standard-convention response F(f >= 0), numpy rfft."""
+    n = len(x)
+    F = np.asarray(Ffun(np.fft.rfftfreq(n, dt)), dtype=complex)
+    F[0] = F[0].real
+    if n % 2 == 0:
+        F[-1] = 1.0                                   # the seam's Nyquist choice
+    return np.fft.irfft(np.fft.rfft(x) * F, n)
+
+
+@pytest.mark.parametrize("approx", ["IMRPhenomXHM", "IMRPhenomXPHM"])
+def test_seam_on_fd_model_mode_bank_matches_time_domain_reference(approx):
+    """The FD-model route hands the seam banks whose f0 metadata is 0, not -floor(N/2) deltaF
+    (PR #518 review B1).  The bin layout is the standard one regardless: the seamed banks
+    equal DataFourier of [real kernel applied to Re and Im of h_lm(t)]."""
+    P = lalsimutils.ChooseWaveformParams()
+    P.m1, P.m2 = 35.0 * lal.MSUN_SI, 30.0 * lal.MSUN_SI
+    P.s1z, P.s2z = 0.1, -0.2
+    P.fmin = P.fref = 30.0
+    P.deltaT, P.deltaF = 1.0 / 4096, 1.0 / 8
+    P.dist = 800e6 * lal.PC_SI
+    P.approx = lalsim.GetApproximantFromString(approx)
+    lmax = 3
+    hlmT = lalsimutils.hlmoft(P.copy(), lmax)
+    pl = HT.load_waveform_transform(str(DEMO / "point_lens_geometric_optics.py"))
+    delay = _fn_transform(lambda f, lam, P=None, xpy=np: 0.8 * np.exp(-2j * np.pi * f * lam["D"] + 0.7j), ("D",))
+    for tf, lam in ((pl, {"lens_mass_z": 3e3, "lens_y": 0.6}), (delay, {"D": 0.0123457})):
+        hl, hc = lalsimutils.std_and_conj_hlmoff(P.copy(), lmax)
+        assert len(hl) > 2
+        k = next(iter(hl))
+        assert hl[k].f0 != -hl[k].deltaF * (hl[k].data.length // 2)     # the route B1 is about
+        HT.apply_hlm_transform(hl, hc, P=P, transform=tf, extra_params=lam)
+        Ff = lambda f: tf.evaluate(f, lam)
+        for mode in hl:
+            h = np.array(hlmT[mode].data.data)
+            hp = _real_kernel_td(h.real, P.deltaT, Ff) + 1j * _real_kernel_td(h.imag, P.deltaT, Ff)
+            ts = lal.CreateCOMPLEX16TimeSeries("r", hlmT[mode].epoch, 0.0, P.deltaT, lal.DimensionlessUnit, len(h))
+            ts.data.data = hp
+            ref = np.array(lalsimutils.DataFourier(ts).data.data)
+            ts.data.data = np.conj(hp)
+            refc = np.array(lalsimutils.DataFourier(ts).data.data)
+            sc = np.max(np.abs(ref))
+            assert np.max(np.abs(hl[mode].data.data - ref)) <= 1e-12 * sc, (mode, lam)
+            assert np.max(np.abs(hc[mode].data.data - refc)) <= 1e-12 * sc, (mode, lam)
 
 
 # ----------------------------------------------------------------- precompute level
@@ -319,7 +393,7 @@ def _identity_plugin(tmp_path):
         """)
 
 
-def _ile_refusal(tmp_path, extra, hyperpipe=True):
+def _ile_refusal(tmp_path, extra, hyperpipe=True, block_cupy=False):
     # Data and PSD files do not exist: the refusal must come before anything reads them.
     argv = [sys.executable, str(ILE), "--event-time", "1000000000",
             "--data-start-time", "999999994", "--data-end-time", "1000000002",
@@ -330,6 +404,12 @@ def _ile_refusal(tmp_path, extra, hyperpipe=True):
     env = _env(RIFT_HYPERPIPELINE_FORMAT="1") if hyperpipe else _env()
     if not hyperpipe:
         env.pop("RIFT_HYPERPIPELINE_FORMAT", None)
+    if block_cupy:
+        # Force the no-cupy condition: a shadow package whose import fails, as on a CPU host.
+        shadow = tmp_path / "no_cupy"
+        (shadow / "cupy").mkdir(parents=True, exist_ok=True)
+        (shadow / "cupy" / "__init__.py").write_text("raise ImportError('cupy blocked by test')\n")
+        env["PYTHONPATH"] = str(shadow) + os.pathsep + env["PYTHONPATH"]
     return subprocess.run(argv, capture_output=True, text=True, env=env, timeout=600, cwd=str(tmp_path))
 
 
@@ -342,12 +422,19 @@ def _ile_refusal(tmp_path, extra, hyperpipe=True):
     ("peak-local", REDLINE + ["--time-marginalization-quadrature", "peak-local"], True, "peak-local"),
     ("save-samples", REDLINE + ["--save-samples"], True, "--save-samples"),
     ("calmarg", REDLINE + ["--calibration-envelope-directory", "/nonexistent"], True, "calibration marginalization"),
+    ("dgrid", REDLINE + ["--export-marginal-distance-grid"], True, "--export-marginal-distance-grid"),
+    ("dslice", REDLINE + ["--export-distance-slices", "5"], True, "--export-distance-slices"),
 ])
 def test_ile_refuses_unsupported_configurations(tmp_path, label, extra, hyperpipe, reason):
     grid = _hp_grid(tmp_path / "grid.dat")
+    # Without --force-xpy the run is off NoLoop only where cupy does not load; on a cupy host
+    # it is legitimately NoLoop.  Force the no-cupy condition so the case is host-independent.
+    no_cupy = label == "no-force-xpy"
     r = _ile_refusal(tmp_path, extra + ["--sim-grid", grid,
                                         "--supplementary-waveform-transform-code", _identity_plugin(tmp_path)],
-                     hyperpipe=hyperpipe)
+                     hyperpipe=hyperpipe, block_cupy=no_cupy)
+    if no_cupy:
+        assert "Override --gpu" in r.stdout, r.stdout[-2000:]
     assert r.returncode != 0, r.stdout[-2000:]
     assert "refusing this job before analysis" in r.stderr, r.stderr[-3000:]
     assert reason in r.stderr, r.stderr[-3000:]
@@ -403,7 +490,7 @@ def zero_frame(tmp_path_factory):
     return dict(cache=cache, psd=psd_path, event_time=event_time, seg_start=seg_start, seg_end=seg_end)
 
 
-def _ile_run(tmp_path, zf, grid, out, extra):
+def _ile_run(tmp_path, zf, grid, out, extra, expect_ok=True):
     argv = [sys.executable, str(ILE), "--cache-file", str(zf["cache"]), "--channel-name", "H1=FAKE-STRAIN",
             "--psd-file", "H1=%s" % zf["psd"], "--event-time", str(zf["event_time"]),
             "--data-start-time", str(zf["seg_start"]), "--data-end-time", str(zf["seg_end"]),
@@ -413,6 +500,8 @@ def _ile_run(tmp_path, zf, grid, out, extra):
             "--d-max", "1000", "--seed", "11", "--output-file", str(out)] + REDLINE + extra
     r = subprocess.run(argv, capture_output=True, text=True, env=_env(RIFT_HYPERPIPELINE_FORMAT="1"),
                        timeout=900, cwd=str(tmp_path))
+    if not expect_ok:
+        return r
     assert r.returncode == 0, (r.stdout + r.stderr)[-4000:]
     assert "FAILED ANALYSIS" not in r.stdout, r.stdout[-4000:]
     assert "NOT APPLIED" not in r.stdout or "calibration-fused-kernel" in r.stdout
@@ -433,3 +522,65 @@ def test_ile_identity_plugin_is_byte_identical_and_echoes_lambda(tmp_path, zero_
     for c in bcols:
         assert float(seam[c][0]) == float(base[c][0]), c
     assert np.isfinite(float(base["lnL"][0]))
+
+
+def _amp_grid(path, amps):
+    from RIFT.misc import hyperpipeline_io as hpio
+    P = lalsimutils.ChooseWaveformParams()
+    P.m1, P.m2 = 35.0 * lal.MSUN_SI, 30.0 * lal.MSUN_SI
+    P.fmin = P.fref = 40.0
+    P.ampO = -1
+    cols = tuple(hpio.DEFAULT_BASE_COLUMNS) + ("lens_amp",)
+    hpio.write_table_with_metadata(str(path), cols, [[0, 0, 35.0, 30.0, 0, 0, 0, 0, 0, 0, a] for a in amps], P=P)
+    return str(path)
+
+
+def _lnL(path):
+    from RIFT.misc import hyperpipeline_io as hpio
+    a, _ = hpio.read_table(str(path))
+    return float(a["lnL"][0])
+
+
+def test_ile_lens_amplitude_reaches_the_likelihood(tmp_path, zero_frame):
+    """lens_amp = A scales every h_lm by A, which on any data is the template at distance d/A.
+    So a seam run with A must equal a base run whose distance prior [d_min, d_max] is scaled by
+    1/A (same seed; the sampled distance coordinate maps one to one).  On zero data the lnL also
+    moves monotonically: louder templates (A > 1) are penalized more.  This test fails if the
+    transform does not reach PrecomputeLikelihoodTerms (PR #518 review S1)."""
+    plug = _identity_plugin(tmp_path)        # F = lens_amp, constant
+    base = _ile_run(tmp_path, zero_frame, _amp_grid(tmp_path / "g1.dat", [1.0]), tmp_path / "base", [])
+    lnL = {1.0: _lnL(tmp_path / "base_0_.dat")}
+    for A in (0.3, 3.0):
+        grid = _amp_grid(tmp_path / ("g%s.dat" % A), [A])
+        r = _ile_run(tmp_path, zero_frame, grid, tmp_path / ("seam%s" % A),
+                     ["--supplementary-waveform-transform-code", plug])
+        assert "point 0 extra parameters {'lens_amp': %s}" % A in r.stdout
+        lnL[A] = _lnL(tmp_path / ("seam%s_0_.dat" % A))
+        _ile_run(tmp_path, zero_frame, grid, tmp_path / ("scaled%s" % A),
+                 ["--d-min", repr(1.0 / A), "--d-max", repr(1000.0 / A)])
+        np.testing.assert_allclose(lnL[A], _lnL(tmp_path / ("scaled%s_0_.dat" % A)), rtol=1e-9, atol=1e-9)
+    assert lnL[0.3] > lnL[1.0] + 1 and lnL[3.0] < lnL[1.0] - 1, lnL
+
+
+def test_ile_nonfinite_lambda_is_refused_at_grid_load(tmp_path, zero_frame):
+    grid = _amp_grid(tmp_path / "gn.dat", [float("nan")])
+    r = _ile_run(tmp_path, zero_frame, grid, tmp_path / "nan",
+                 ["--supplementary-waveform-transform-code", _identity_plugin(tmp_path)], expect_ok=False)
+    assert r.returncode != 0, r.stdout[-3000:]
+    assert "non-finite extra parameter" in r.stderr, r.stderr[-3000:]
+    assert "FAILED ANALYSIS" not in r.stdout          # refused before any analysis
+    assert not (tmp_path / "nan_0_.dat").exists()
+
+
+def test_ile_plugin_exception_aborts_with_nonzero_exit(tmp_path, zero_frame):
+    plug = _write_plugin(tmp_path, "boom_plug", """
+        import numpy
+        EXTRA_PARAMETERS = ["lens_amp"]
+        def transfer_function(f, extra_params, P=None, xpy=numpy):
+            raise RuntimeError("boom from plugin")
+        """)
+    r = _ile_run(tmp_path, zero_frame, _amp_grid(tmp_path / "gb.dat", [2.0]), tmp_path / "boom",
+                 ["--supplementary-waveform-transform-code", plug], expect_ok=False)
+    assert r.returncode != 0, r.stdout[-3000:]
+    assert "aborting" in r.stderr and "boom from plugin" in r.stderr, r.stderr[-3000:]
+    assert not (tmp_path / "boom_0_.dat").exists()

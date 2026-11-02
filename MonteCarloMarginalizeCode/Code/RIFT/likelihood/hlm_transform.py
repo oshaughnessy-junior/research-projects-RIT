@@ -25,7 +25,7 @@ Plugin contract (a module named by file path or dotted name)::
     def transfer_function(f, extra_params, P=None, xpy=numpy, **kw):
         # f: 1-D array of NON-NEGATIVE physical frequencies [Hz], standard sign convention
         #    H(f) = int h(t) exp(-2 pi i f t) dt, so a pure delay Delta is exp(-2 pi i f Delta).
-        # extra_params: {name: float}.  P: intrinsic ChooseWaveformParams (read-only).
+        # extra_params: {name: float}.  P: a copy of the intrinsic ChooseWaveformParams.
         # returns a finite complex array of the same shape.
     def is_identity(extra_params): ...           # optional; True -> the seam skips the multiply
 
@@ -36,11 +36,23 @@ under which the SAME array multiplies both ``hlms`` (FFT of h_lm(t)) and ``hlms_
 conj h_lm(t)): FFT[conj(K*h)](f) = conj(F(-f)) FFT[conj h](f) = F(f) FFT[conj h](f).
 
 PHASE-SIGN TRAP.  The banks are LAL two-sided series from ``COMPLEX16TimeFreqFFT``: ascending,
-``f0 = -floor(N/2) deltaF``, physical frequency of bin k = ``deltaF (k - N//2)``.
-``lalsimutils.evaluate_fvals``' default labelling (``deltaF (N/2 - k)``) is the NEGATIVE of
-that; using it would conjugate F, which leaves every norm unchanged and moves a delay the
-wrong way.  This module asserts ``f0`` and builds f itself; the sign is pinned against a
-numpy time-domain reference in ``test/test_hlm_transform.py``.
+physical frequency of bin k = ``deltaF (k - N//2)``.  ``lalsimutils.evaluate_fvals``' default
+labelling (``deltaF (N/2 - k)``) is the NEGATIVE of that; using it would conjugate F, which
+leaves every norm unchanged and moves a delay the wrong way.  This module builds f itself
+from N and deltaF; the sign is pinned against a numpy time-domain reference in
+``test/test_hlm_transform.py``.
+
+The series' ``f0`` metadata is NOT used: it is the FFT-shift origin ``-floor(N/2) deltaF``
+on the IMRPhenomD/SEOB routes, but 0 on the FD-model (IMRPhenomXHM/XPHM) route, whose TD
+modes carry ``f0 = +fNyq`` into ``DataFourier``.  The bin layout is the same on both routes
+(checked against the time-domain reference for IMRPhenomXHM in the test file).
+
+The even-length Nyquist bin (``F[0]``) is set to 1, not ``F(fNyq)``.  It only matters if the
+inner product's ``fMax`` reaches Nyquist.
+
+ERRORS.  Anything raised while binding or applying a transform (a plugin exception, a
+non-finite or wrongly shaped response) is re-raised as :class:`WaveformTransformError`, which
+ILE treats as fatal (nonzero exit) rather than as a per-point ``FAILED ANALYSIS``.
 """
 
 import functools
@@ -53,6 +65,10 @@ from RIFT.misc import plugin_loader
 FLAG_CODE = "--supplementary-waveform-transform-code"
 FLAG_INI = "--supplementary-waveform-transform-ini"
 DEFAULT_FUNCTION = "transfer_function"
+
+
+class WaveformTransformError(RuntimeError):
+    """A failure inside the seam or the plugin.  ILE aborts the job on it."""
 
 
 class WaveformTransform(object):
@@ -78,6 +94,9 @@ class WaveformTransform(object):
         return bool(self.is_identity is not None and self.is_identity(dict(extra_params)))
 
     def evaluate(self, f_nonneg, extra_params, P=None, xpy=numpy):
+        # The plugin gets a COPY of P, so a plugin that writes to it cannot alter the template.
+        if P is not None and hasattr(P, "manual_copy"):
+            P = P.manual_copy()
         kw = {"P": P}
         if self._accepts_xpy:
             kw["xpy"] = xpy
@@ -87,7 +106,12 @@ class WaveformTransform(object):
         """Callable ``(hlms, hlms_conj, P) -> (hlms, hlms_conj)`` for one grid point, for
         ``PrecomputeLikelihoodTerms(hlm_transform=...)``.  ``None`` if F is the identity at
         *extra_params* (declared by the plugin's ``is_identity``)."""
-        if self.identity_for(extra_params):
+        try:
+            identity = self.identity_for(extra_params)
+        except Exception as exc:
+            raise WaveformTransformError("waveform transform {}: is_identity failed at lambda={}: {!r}"
+                                         .format(self.name, dict(extra_params), exc)) from exc
+        if identity:
             return None
         return functools.partial(apply_hlm_transform, transform=self,
                                  extra_params=dict(extra_params), xpy=xpy)
@@ -119,15 +143,11 @@ def load_waveform_transform(code, function=None, ini=None, parameters=None, opts
 
 
 def packed_frequencies(series):
-    """Physical frequencies of a LAL two-sided (FFT-shifted) COMPLEX16FrequencySeries.
-
-    Asserts the LAL origin ``f0 = -floor(N/2) deltaF``; returns ``deltaF (k - N//2)``."""
+    """Physical frequencies of a LAL two-sided (FFT-shifted) COMPLEX16FrequencySeries:
+    ``deltaF (k - N//2)``, from N and deltaF only (``series.f0`` is not reliable; see the
+    module docstring)."""
     n = int(series.data.length)
     df = float(series.deltaF)
-    if not numpy.isclose(float(series.f0), -df * (n // 2), rtol=1e-12, atol=1e-12 * max(df, 1.0)):
-        raise ValueError("waveform transform: mode series origin f0={} is not the LAL FFT-shift "
-                         "origin -floor(N/2)*deltaF={} (N={}, deltaF={}); refusing to guess the "
-                         "packing".format(float(series.f0), -df * (n // 2), n, df))
     return df * (numpy.arange(n) - n // 2)
 
 
@@ -135,9 +155,9 @@ def two_sided_response(transform, n, deltaF, extra_params, P=None, xpy=numpy):
     """Hermitian length-*n* response on the LAL packed grid, from the plugin's f >= 0 values."""
     m = n // 2
     f_nonneg = deltaF * numpy.arange(n - m)          # bins k = m .. n-1  ->  f = 0 .. (n-1-m) dF
-    Fpos = numpy.asarray(transform.evaluate(f_nonneg, extra_params, P=P, xpy=xpy))
-    if hasattr(Fpos, "get"):                          # cupy -> host; the banks are LAL (host)
-        Fpos = Fpos.get()
+    Fpos = transform.evaluate(f_nonneg, extra_params, P=P, xpy=xpy)
+    if hasattr(Fpos, "get") and not isinstance(Fpos, numpy.ndarray):
+        Fpos = Fpos.get()                             # cupy -> host; the banks are LAL (host)
     Fpos = numpy.array(Fpos, dtype=complex).reshape(-1)
     if Fpos.shape != f_nonneg.shape:
         raise ValueError("waveform transform {}: returned shape {} for {} frequencies".format(
@@ -158,9 +178,20 @@ def two_sided_response(transform, n, deltaF, extra_params, P=None, xpy=numpy):
 
 
 def apply_hlm_transform(hlms, hlms_conj, P=None, transform=None, extra_params=None, xpy=numpy):
-    """Multiply every mode of BOTH banks by the same Hermitian F, in place.  Returns the banks."""
+    """Multiply every mode of BOTH banks by the same Hermitian F, in place.  Returns the banks.
+    Any failure is raised as :class:`WaveformTransformError`."""
     if transform is None:
         return hlms, hlms_conj
+    try:
+        return _apply_hlm_transform(hlms, hlms_conj, P, transform, extra_params, xpy)
+    except WaveformTransformError:
+        raise
+    except Exception as exc:
+        raise WaveformTransformError("waveform transform {}: failed at lambda={}: {}: {}".format(
+            getattr(transform, "name", transform), extra_params, type(exc).__name__, exc)) from exc
+
+
+def _apply_hlm_transform(hlms, hlms_conj, P, transform, extra_params, xpy):
     cache = {}
     seen = set()
     for bank in (hlms, hlms_conj):
@@ -172,7 +203,6 @@ def apply_hlm_transform(hlms, hlms_conj, P=None, transform=None, extra_params=No
             if not hasattr(series, "data") or not hasattr(series.data, "data"):
                 raise TypeError("waveform transform: mode {} is not a LAL frequency series "
                                 "({}); this precompute route is not supported".format(key, type(series)))
-            packed_frequencies(series)  # asserts the origin
             grid = (int(series.data.length), float(series.deltaF))
             if grid not in cache:
                 cache[grid] = two_sided_response(transform, grid[0], grid[1], extra_params, P=P, xpy=xpy)

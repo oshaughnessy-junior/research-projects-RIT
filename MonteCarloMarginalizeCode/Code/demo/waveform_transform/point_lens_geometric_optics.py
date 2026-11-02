@@ -14,13 +14,16 @@ Grid columns: ``lens_mass_z`` (redshifted lens mass, solar masses) and ``lens_y`
 Convention: standard sign, H(f) = int h(t) exp(-2 pi i f t) dt, so the second (type-II,
 saddle-point) image arrives LATER by Delta t; the brighter image is undelayed (minimum
 image delay zeroed).  This is the complex conjugate of Takahashi & Nakamura (2003) eq. 17,
-which uses exp(+2 pi i f t).  The sign of the Morse phase in this convention is an open
-item: pin it against a time-domain reference before using this for physics.
+which uses exp(+2 pi i f t): T&N's -i exp(+2 pi i f Delta t) becomes
++i exp(-2 pi i f Delta t) here.  The Morse sign and the delay direction are verified against
+a time-domain reference (PR #518 review); the mu_+-, Delta t formulas match T&N eq. 18.
 
 Validity: geometric optics needs 8 pi G M_Lz f / c^3 >> 1 across the band, i.e. roughly
 M_Lz >~ 1e3 Msun at 20 Hz.  Wave-optics F(w, y) (1F1) is not implemented here.
-Delta t must be well inside the analysis segment and the ILE time window
-(multiplication in the frequency domain is a cyclic convolution).
+Delay limit: multiplication in the frequency domain is a CYCLIC convolution over the
+1/deltaF template buffer, so Delta t must be shorter than the zero padding that follows the
+ringdown in that buffer; otherwise the delayed image wraps around to the start.  Nothing
+guards this (roughly a concern for M_Lz >~ 1e5 Msun).
 """
 import numpy
 

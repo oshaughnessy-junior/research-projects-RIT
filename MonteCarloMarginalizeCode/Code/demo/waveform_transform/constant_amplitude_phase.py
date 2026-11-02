@@ -6,9 +6,11 @@ Constant-amplitude, constant-phase transfer function for ILE's extra-parameter s
     F(f) = lens_amplitude * exp(i lens_phase)          on f >= 0
 
 The seam extends this to f < 0 as conj F(-f), so the applied filter is
-A exp(i phi sgn f) (a real time-domain kernel: amplitude A, Hilbert-type phase phi;
-phi = pi/2 is the Morse phase of a type-II image, sign convention to be pinned by test).
-Sign convention: standard, H(f) = int h(t) exp(-2 pi i f t) dt.
+A exp(i phi sgn f) (a real time-domain kernel: amplitude A, Hilbert-type phase phi).
+Sign convention: standard, H(f) = int h(t) exp(-2 pi i f t) dt.  In this convention
+phi = +pi/2 is the Morse phase of a type-II (saddle-point) image: the conjugate of the
+-i factor in Takahashi & Nakamura (2003) eq. 17, which uses exp(+2 pi i f t).  The sign is
+verified against a time-domain reference (PR #518 review).
 
 |F| is exactly degenerate with luminosity distance (D -> D/A): state the priors on A and D
 together.  Grid columns: lens_amplitude, lens_phase.
