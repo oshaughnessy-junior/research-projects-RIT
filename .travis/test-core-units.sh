@@ -308,6 +308,9 @@ FILES=(
   #    zero-data ILE runs (four REDLINE flags): identity, lens_amp vs scaled distance prior,
   #    non-finite lambda and plugin exceptions abort.
   "$C/test/test_hlm_transform.py"
+  # Injected lensed signal (constant-amplitude and point-lens demos, H1+L1, zero noise) recovered
+  #    through the seam by ILE (four REDLINE flags): argmax, analytic lnL(A) shape, rho^2/2.  ~30 s.
+  "$C/test/test_hlm_transform_injection.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -600,7 +603,8 @@ done
 # PR #518 review fixes add 8 more (31 passed locally, same env) -> PROVISIONAL 1526/1500.
 # PR #518 pseudo_pipe passthrough: +11 (test_waveform_transform_pseudo_build.py, 11 passed
 # locally) -> PROVISIONAL 1537/1511.
-EXPECTED_TESTS=1537
+# test_hlm_transform_injection.py: +2 (2 passed locally) -> PROVISIONAL 1539/1513.
+EXPECTED_TESTS=1539
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -640,7 +644,8 @@ EXPECTED_TESTS=1537
 # PR #181 catch-up merge: +214 passes (provisional, see EXPECTED_TESTS).
 # PR #518 review fixes: +8 passes in test_hlm_transform.py (provisional, see EXPECTED_TESTS).
 # PR #518 pseudo_pipe passthrough: +11 passes (provisional).
-EXPECTED_PASSED=1511
+# test_hlm_transform_injection.py: +2 passes (provisional).
+EXPECTED_PASSED=1513
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
