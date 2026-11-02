@@ -164,6 +164,9 @@ FILES=(
   "$C/test/hyperpipe/tests/test_osg_truncated_frames_helper.py"
   "$C/test/hyperpipe/tests/test_terminal_contract.py"
   "$C/test/hyperpipe/tests/test_worker_argument_staging.py"
+  # pseudo_pipe --internal-ile-supplementary-waveform-transform-* (PR #518): real Hyperpipe
+  # builds (empty cache, no network): flags, NoLoop, OSG staging, refusals.  ~12 s.
+  "$C/test/hyperpipe/tests/test_waveform_transform_pseudo_build.py"
   "$C/test/test_hyperpipeline_io.py"
   # -- hyperpipe pseudo-pipe builder (PR 181).  Every file below was run individually under a
   # runner-like import environment on CIT (IGWN conda python with htcondor/asimov/pesummary
@@ -595,7 +598,9 @@ done
 # test_hlm_transform.py adds 23 tests and no skips (23 passed locally, venv python 3.13 /
 # lalsuite 8, no cupy) -> PROVISIONAL 1518/1492, same re-measure caveat.
 # PR #518 review fixes add 8 more (31 passed locally, same env) -> PROVISIONAL 1526/1500.
-EXPECTED_TESTS=1526
+# PR #518 pseudo_pipe passthrough: +11 (test_waveform_transform_pseudo_build.py, 11 passed
+# locally) -> PROVISIONAL 1537/1511.
+EXPECTED_TESTS=1537
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -634,7 +639,8 @@ EXPECTED_TESTS=1526
 # test_dslice_refine.py adds 10 passes -> 1204.
 # PR #181 catch-up merge: +214 passes (provisional, see EXPECTED_TESTS).
 # PR #518 review fixes: +8 passes in test_hlm_transform.py (provisional, see EXPECTED_TESTS).
-EXPECTED_PASSED=1500
+# PR #518 pseudo_pipe passthrough: +11 passes (provisional).
+EXPECTED_PASSED=1511
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
