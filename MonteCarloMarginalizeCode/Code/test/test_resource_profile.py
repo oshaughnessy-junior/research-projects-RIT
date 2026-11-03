@@ -227,7 +227,9 @@ def test_require_gpus_styles(tmp_path):
     obs = [_obs("pascal-4gb", "memory-failure"),
            _obs("legacy-16gb", "success", **_t(600))]
     exclude = _plan(tmp_path, obs)["require gpus"]
-    assert exclude.startswith("((GlobalMemoryMb >= 16000) && !((Capability >= 6.1)")
+    assert exclude.startswith("((GlobalMemoryMb >= 16000) && (")
+    assert exclude.endswith("|| (!((Capability >= 6.1) && (Capability < 7.0) && (GlobalMemoryMb >= 4000) "
+                            "&& (GlobalMemoryMb <= 8191)))))")
     include = _plan(tmp_path, obs, policy={"requirement style": "include"})["require gpus"]
     assert 'regexp("V100", DeviceName)' in include and "6.1" not in include
 
@@ -254,13 +256,15 @@ def test_apply_plan_to_ini(tmp_path):
                    "ile-jobs-per-worker= 100\nile_jobs_per_worker=7\nsrate = 4096\n"
                    "manual-extra-ile-args= --n-chunk 40000 --pct 50%\n")
     out = tmp_path / "out.ini"
-    rp.apply_plan_to_ini(str(src), str(out), {"jobs per worker": 11, "request memory mb": 7900})
+    rp.apply_plan_to_ini(str(src), str(out), {"jobs per worker": 11, "request memory mb": 7900,
+                                             "workload": {"n chunk": 20000}})
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.optionxform = str
     cfg.read(str(out))
     section = cfg["rift-pseudo-pipe"]
     assert section["ile-jobs-per-worker"] == "11" and "ile_jobs_per_worker" not in section
     assert section["internal-ile-request-memory"] == "7900"
+    assert section["ile-jobs-per-worker-first"] == "11" and section["internal-ile-n-chunk"] == "20000"
     assert section["manual-extra-ile-args"] == "--n-chunk 40000 --pct 50%"
     assert cfg["analysis"]["ifos"] == "['H1','L1']"
 
@@ -326,7 +330,8 @@ def test_harvest_rundir(tmp_path):
     assert ("pascal-4gb", "memory-failure") in by
     crash = by[("pascal-4gb", "crash")]
     assert crash["host memory mb"] == 6000 and crash["draws per point"] == []
-    assert skipped == {"no gpu banner": 1, "no termination": 0, "unclassified device": 1}
+    assert skipped == {"not a grid worker": 0, "no gpu banner": 1, "no termination": 0,
+                       "unclassified device": 1}
     # The harvest round-trips through the loader and feeds the planner.
     root = _write_profile(tmp_path, directory=True)
     os.mkdir(os.path.join(root, "observations"))
@@ -335,3 +340,98 @@ def test_harvest_rundir(tmp_path):
     plan = rp.plan_resources(rp.load_resource_profile(root), WORKLOAD)
     assert "pascal-4gb" not in plan["admitted"]
     assert plan["request memory mb"] == int(-(-6000 * 1.25 // 100) * 100)
+
+
+# -- review regressions ----------------------------------------------------
+
+def test_exclude_style_keeps_admitted_class_inside_broader_excluded_class(tmp_path):
+    classad = pytest.importorskip("classad")
+    classes = [{"label": "a100", "capability": [8.0, 9.0], "memory mb": 40000, "slots": 5,
+                "device names": ["A100"]},
+               {"label": "ampere-other", "capability": [8.0, 9.0], "memory mb": 8000, "slots": 50}]
+    obs = [_obs("a100", "success", **_t(60))]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=classes))
+    plan = rp.plan_resources(profile, WORKLOAD)
+    assert plan["admitted"] == ["a100"]
+    expr = classad.ExprTree(plan["require gpus"])
+    a100 = classad.ClassAd({"Capability": 8.0, "GlobalMemoryMb": 40536, "DeviceName": "NVIDIA A100-SXM4-40GB"})
+    a10 = classad.ClassAd({"Capability": 8.6, "GlobalMemoryMb": 22000, "DeviceName": "NVIDIA A10"})
+    other = classad.ClassAd({"Capability": 12.0, "GlobalMemoryMb": 48000, "DeviceName": "RTX 6000 Ada"})
+    assert [bool(expr.eval(ad)) for ad in (a100, a10, other)] == [True, False, True]
+
+
+def test_success_outweighs_stray_crash(tmp_path):
+    obs = [_obs("legacy-16gb", "success", **_t(60)), _obs("legacy-16gb", "crash"),
+           _obs("modern-24gb", "success", **_t(30))]
+    plan = _plan(tmp_path, obs)
+    assert sorted(plan["admitted"]) == ["legacy-16gb", "modern-24gb"]
+    assert "crash" in _row(plan, "pascal-4gb")["excluded"]
+
+
+def test_device_regex_agrees_between_python_and_classad(tmp_path):
+    classad = pytest.importorskip("classad")
+    classes = [{"label": "rtx", "capability": [7.0, 9.0], "memory mb": 20000, "slots": 5,
+                "device names": [r"RTX\s6000"]}]
+    profile = rp.load_resource_profile(_write_profile(
+        tmp_path, [_obs("rtx", "success", **_t(60))], classes=classes, policy={"requirement style": "include"}))
+    assert rp.classify_device(profile, "Quadro RTX 6000", 7.5) == "rtx"
+    ad = classad.ClassAd({"Capability": 7.5, "GlobalMemoryMb": 24000, "DeviceName": "Quadro RTX 6000"})
+    assert classad.ExprTree(rp.plan_resources(profile, WORKLOAD)["require gpus"]).eval(ad) is True
+
+
+def test_vram_estimate_limited_to_chunk_scaling(tmp_path):
+    obs = [_obs("legacy-16gb", "success", n_chunk=160000, **{"peak vram mb": 12000}),
+           _obs("legacy-16gb", "success", n_chunk=5000, **{"draws per second": [1000]})]
+    plan = _plan(tmp_path, obs, workload={"n chunk": 20000}, draws_per_point=DPP)
+    assert plan["vram need mb"] is None                      # 8x is beyond the default 2x
+    plan = _plan(tmp_path, obs, workload={"n chunk": 20000}, draws_per_point=DPP,
+                 policy={"max chunk scaling": 8})
+    assert plan["vram need mb"] == pytest.approx(1500)
+
+
+@pytest.mark.parametrize("mutate, match", [
+    (lambda d: d["classes"].__setitem__(0, dict(CLASSES[0], capability=[None, 9])), "capability"),
+    (lambda d: d["classes"].__setitem__(0, "pascal"), "mapping"),
+    (lambda d: d["observations"].append(_obs("pascal-4gb", "success", **{"peak vram mb": "4 GB"})), "peak vram"),
+    (lambda d: d.update(policy={"timing quantile": None}), "must be a number"),
+    (lambda d: d.update(policy={"worker wall target hours": "2h"}), "must be a number"),
+    (lambda d: d.update(policy={"admit unprofiled": "yes"}), "boolean"),
+])
+def test_load_rejects_values_that_would_crash_planner(tmp_path, mutate, match):
+    data = {"version": 1, "classes": [dict(c) for c in CLASSES], "observations": []}
+    mutate(data)
+    path = tmp_path / "bad.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(rp.ResourceProfileError, match=match):
+        rp.load_resource_profile(str(path))
+
+
+def test_harvest_review_cases(tmp_path):
+    classes = [{"label": "pascal-4gb", "capability": [6.1, 7.0], "memory mb": 3900, "memory mb max": 6000,
+                "slots": 10},
+               {"label": "pascal-8gb", "capability": [6.1, 7.0], "memory mb": 7900, "slots": 10}]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, classes=classes, policy={"worker setup seconds": 0}))
+    run = tmp_path / "run"
+    gpu_ad = 'ExecuteProps = [ GlobalMemoryMb = 8192 ]\nGpusMemoryUsage = 3100.0\n'
+    ok_log = AD_LOG.format(minutes=10, memory=1000, rc=0).replace('MemoryUsage', gpu_ad + 'MemoryUsage', 1)
+    # exit 0 with a harmless allocator warning: still a success, classified by card memory
+    _ile(run, "ILE-0-5-0", "GeForce GTX 1080", 61, ok_log,
+         err="Allocator (GPU_0_bfc) ran out of memory trying to allocate; not a failure",
+         outputs=["CME_out-0-5-0.xml_0_.dat"])
+    # hyperpipeline row layout: no ntotal column, so no draws
+    _ile(run, "ILE-1-5-0", "GeForce GTX 1080", 61, ok_log)
+    (run / "iteration_1_ile" / "CME_out-1-5-0.xml_0_.dat").write_text("-3.2 0.1 30 25 0.1 0.2 0.35 0.9\n")
+    # extrinsic job: not a grid worker
+    _ile(run, "ILEextr-0-7-0", "GeForce GTX 1080", 61, ok_log)
+    observations, skipped = rp.harvest_rundir(str(run), profile, WORKLOAD)
+    by = {(o["class"], o["outcome"]): o for o in observations}
+    assert set(by) == {("pascal-8gb", "success"), ("pascal-8gb", "failure")}
+    ok = by[("pascal-8gb", "success")]
+    assert ok["peak vram mb"] == 3100.0 and ok["draws per point"] == [600000.0]
+    assert ok["draws per second"] == [pytest.approx(1000.0)]
+    assert skipped["not a grid worker"] == 1
+    root = _write_profile(tmp_path, classes=classes, directory=True)
+    os.mkdir(os.path.join(root, "observations"))
+    with open(os.path.join(root, "observations", "run.yaml"), "w") as f:
+        yaml.safe_dump({"observations": observations}, f)
+    rp.load_resource_profile(root)

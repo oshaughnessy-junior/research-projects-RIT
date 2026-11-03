@@ -113,6 +113,8 @@ def test_build_dag_applies_resource_plan(monkeypatch, tmp_path):
     cfg.read(planned_ini)
     assert cfg["rift-pseudo-pipe"]["ile-jobs-per-worker"] == "11"      # was 30 in the source ini
     assert cfg["rift-pseudo-pipe"]["internal-ile-request-memory"] == "7500"
+    assert cfg["rift-pseudo-pipe"]["ile-jobs-per-worker-first"] == "11"
+    assert cfg["rift-pseudo-pipe"]["internal-ile-n-chunk"] == "40000"
     plan = json.loads((pathlib.Path(production.rundir) / "resource-plan.json").read_text())
     assert plan["admitted"] == ["fast", "slow"]
     assert env["RIFT_REQUIRE_GPUS"] == "({}) && {}".format(user, plan["require gpus"])
@@ -131,6 +133,7 @@ def test_build_dag_without_profile_keeps_builder_call(monkeypatch, tmp_path):
     ("--n-max 100", {}, "found none"),
     ("--n-chunk 40000", {"n chunk": 20000}, r"found \[20000, 40000\]"),
     ("--n-chunk 40000", {"wall": 3}, "unknown keys"),
+    ("--n-chunk 4e4", {}, "must be an integer"),
 ])
 def test_build_dag_rejects_unplannable_ledger(monkeypatch, tmp_path, manual_args, settings, match):
     from asimov.pipeline import PipelineException
@@ -139,5 +142,30 @@ def test_build_dag_rejects_unplannable_ledger(monkeypatch, tmp_path, manual_args
     pipe, _, calls, _ = _pipe(monkeypatch, tmp_path, dict({"path": str(profile)}, **settings),
                               manual_args=manual_args)
     with pytest.raises(PipelineException, match=match):
+        pipe.build_dag()
+    assert calls == []
+
+
+def test_profile_n_chunk_reaches_the_ini(monkeypatch, tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump(PROFILE))
+    pipe, _, calls, _ = _pipe(monkeypatch, tmp_path, {"path": str(profile), "workload label": "bbh",
+                                                      "n chunk": 40000}, manual_args="")
+    pipe.build_dag()
+    (command, _), = calls
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.optionxform = str
+    cfg.read(command[command.index("--use-ini") + 1])
+    assert cfg["rift-pseudo-pipe"]["internal-ile-n-chunk"] == "40000"
+
+
+@pytest.mark.parametrize("key", ["request_memory", "require_gpus"])
+def test_build_dag_refuses_condor_overrides(monkeypatch, tmp_path, key):
+    from asimov.pipeline import PipelineException
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump(PROFILE))
+    pipe, production, calls, _ = _pipe(monkeypatch, tmp_path, {"path": str(profile), "workload label": "bbh"})
+    production.meta["sampler"]["ile"]["condor commands"] = {key: "1"}
+    with pytest.raises(PipelineException, match="override the plan"):
         pipe.build_dag()
     assert calls == []

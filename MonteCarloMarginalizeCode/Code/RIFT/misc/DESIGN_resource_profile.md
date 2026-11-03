@@ -31,11 +31,17 @@ values:
 | admitted classes | `require_gpus` expression, ANDed with any user requirement |
 | points per worker | `ile-jobs-per-worker` in a private copy of the ini |
 | host memory | `internal-ile-request-memory` in the same copy |
+| n chunk | `internal-ile-n-chunk` in the same copy |
 | plan record | `resource-plan.json` in the run directory |
 
 The plan goes into the ini, not onto the command line, because pseudo_pipe
-lets the ini override its command line. The ledger and the source ini are not
-changed. The requirement is set only in the builder's environment, so one
+lets the ini override its command line. Iteration 0 gets the same points per
+worker. n chunk is written too, since the helper would otherwise scale it with
+SNR. The ledger and the source ini are not changed. The copy lives in
+`C01_offline/.rift-resource-plan-*/` and must be kept: the DAG reads it at run
+time. The build refuses ILE `condor commands` that set `request_memory` or
+`require_gpus`, and a container manifest with per-branch ILE profiles, because
+either would replace the planned values in the submit files. The requirement is set only in the builder's environment, so one
 asimov process can build several productions.
 
 ## Profile
@@ -45,7 +51,8 @@ A profile is one file, or a directory with `resources.yaml` and
 so concurrent monitors do not conflict. The schema is in the module docstring.
 
 A *class* is a capability range, a memory floor (and optional ceiling), and
-optional device-name regexes. It also carries `slots`, the number of GPUs a run
+optional device-name regexes. Memory is the advertised `GlobalMemoryMb`, which
+is below the marketed size: a 24 GB Quadro RTX 6000 advertises 22684. It also carries `slots`, the number of GPUs a run
 can usually hold at once, and an optional `relative speed`. Order classes from
 most to least specific: harvest maps a device to the first class it matches.
 
@@ -62,16 +69,18 @@ signatures. n chunk, n eff and a free-form label select timing data.
 
 **Device memory.** For each class, in order:
 
-1. A `memory-failure` or `crash` at the same signature, at an n chunk no
-   larger than the run's, on a class with at least this much memory, excludes
-   the class. A crash counts because the IR1 4 GB failures were segfaults
-   near full memory, not clean out-of-memory errors.
+1. A success at an n chunk no smaller than the run's, on a class with no more
+   memory, *vouches* for the class. Without one, a `memory-failure` or `crash`
+   at an n chunk no larger than the run's, on a class with at least this much
+   memory, excludes the class. A crash counts because the IR1 4 GB failures
+   were segfaults near full memory, not clean out-of-memory errors. Vouching
+   keeps one unrelated crash from barring a class that has run the workload.
 2. If successful runs recorded peak memory, the need is scaled linearly in n
    chunk, `fixed + (peak - fixed) * n / n_obs`, and the largest value is
-   used. The class is admitted if `(1 - vram margin)` of its memory covers
+   used. Peaks more than `max chunk scaling` (default 2) away in n chunk are
+   not used. The class is admitted if `(1 - vram margin)` of its memory covers
    the need.
-3. Otherwise, a success at an n chunk no smaller than the run's, on a class
-   with no more memory, admits the class.
+3. Otherwise a vouching success admits the class.
 4. Otherwise the class is unprofiled and is excluded unless
    `admit unprofiled` is set.
 
@@ -86,8 +95,9 @@ another class by `relative speed`.
 
 **Points per worker.** Point costs are heavy-tailed: one IR1 campaign spans
 0.36M to 52M draws per point. A worker's wall time is the sum over its points,
-so its quantile is taken from 1000 bootstrap sums, not from the per-point
-quantile times N. N is the largest value whose `timing quantile` wall time
+so its quantile is taken from 1000 bootstrap sequences of points, not from the
+per-point quantile times N. The sum for N points is the first N entries of each
+sequence, so the quantile is non-decreasing in N. N is the largest value whose `timing quantile` wall time
 fits `worker wall target hours` less `worker setup seconds`. A class whose
 `timing quantile` point exceeds `max seconds per point` (default 1800 s) is
 excluded.
@@ -102,8 +112,10 @@ pool. Adding many slow cards lowers N and costs the fast cards more setup per
 point. Adding a few costs more than they return.
 
 **Requirement.** The default style, `exclude`, writes a memory floor (the
-smallest admitted class) and negates each class not admitted. Cards no class
-describes can still match, so a new site is not locked out. `include` lists
+smallest admitted class), then allows a card that an admitted class describes
+or that no excluded class describes. Cards no class describes can still match,
+so a new site is not locked out. A specific admitted class inside a broader
+excluded one still matches. `include` lists
 the admitted classes only. Give each class a memory ceiling, or excluding
 "Pascal, 4 GB and up" also excludes a 24 GB Pascal card.
 
@@ -116,9 +128,14 @@ memory is flat in n chunk. With no observation, the run keeps its own value.
 `harvest_rundir` reads each `iteration_*_ile/logs/ILE*.out` for the cupy
 device banner, its condor log (ClassAd or classic format) for wall time,
 memory use and exit status, its `.err` for CUDA out-of-memory messages, and
-the worker's `.dat` outputs for `ntotal`. A worker that fanned out over K GPUs
-(`.gpuK` shards) counts its wall time K times. Peak device memory is not in
-the logs. Record it by hand from a qualification probe.
+the worker's `.dat` outputs for `ntotal`. The ClassAd-format log also gives the
+card's `GlobalMemoryMb`, used to classify it, and `GpusMemoryUsage`, recorded
+as peak device memory for single-GPU workers. A worker that fanned out over K
+GPUs (`.gpuK` shards) counts its wall time K times. Out-of-memory text counts
+only when the worker failed. Rows whose `ntotal` is not a whole number (the
+hyperpipeline row layout) and extrinsic jobs are skipped. Held-then-removed
+workers have no termination record and are skipped, so a host-memory hold is
+not yet recorded.
 
 With `harvest: true` and a directory profile, `after_completion` writes the
 run's observations to the profile. Failures there are logged and do not block

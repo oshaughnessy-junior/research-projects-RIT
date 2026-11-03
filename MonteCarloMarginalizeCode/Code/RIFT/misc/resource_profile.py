@@ -61,6 +61,7 @@ POLICY_DEFAULTS = {
     "jobs per worker max": 200,
     "vram margin": 0.15,
     "vram fixed mb": 0.0,
+    "max chunk scaling": 2.0,
     "host memory margin": 0.25,
     "host memory min mb": 2000,
     "timing quantile": 0.9,
@@ -138,13 +139,21 @@ def normalize_workload(workload):
     return out
 
 
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _validate_class(entry, path):
+    if not isinstance(entry, dict):
+        raise ResourceProfileError("{}: every class must be a mapping".format(path))
     label = entry.get("label")
     if not label or not isinstance(label, str):
         raise ResourceProfileError("{}: every class needs a string label".format(path))
     cap = entry.get("capability")
-    if not (isinstance(cap, (list, tuple)) and len(cap) == 2):
-        raise ResourceProfileError("{}: class {} capability must be [min, max)".format(path, label))
+    if not (isinstance(cap, (list, tuple)) and len(cap) == 2 and _is_number(cap[0])
+            and (cap[1] is None or _is_number(cap[1]))):
+        raise ResourceProfileError("{}: class {} capability must be [min, max) numbers (max may be null)".format(
+            path, label))
     if cap[1] is not None and float(cap[1]) <= float(cap[0]):
         raise ResourceProfileError("{}: class {} capability range is empty".format(path, label))
     mem = entry.get("memory mb")
@@ -177,6 +186,10 @@ def _validate_observation(entry, labels, path):
         raise ResourceProfileError("{}: observation outcome must be one of {}".format(path, OUTCOMES))
     obs = dict(entry)
     obs["workload"] = normalize_workload(entry.get("workload") or {})
+    for key in ("peak vram mb", "host memory mb"):
+        if entry.get(key) is not None and not (_is_number(entry[key]) and entry[key] > 0):
+            raise ResourceProfileError("{}: {} must be a positive number in MB, got {!r}".format(
+                path, key, entry[key]))
     for key in ("draws per point", "draws per second"):
         values = entry.get(key) or []
         if isinstance(values, (int, float)):
@@ -208,6 +221,15 @@ def load_resource_profile(path, policy_overrides=None):
         if unknown:
             raise ResourceProfileError("{}: unknown policy keys {}".format(main, sorted(unknown)))
         policy.update(source)
+    numeric = [k for k, v in POLICY_DEFAULTS.items()
+               if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    for key in numeric:
+        if isinstance(policy[key], bool) or not isinstance(policy[key], (int, float)):
+            raise ResourceProfileError("policy {} must be a number, got {!r}".format(key, policy[key]))
+    if not isinstance(policy["admit unprofiled"], bool):
+        raise ResourceProfileError("policy admit unprofiled must be a YAML boolean")
+    if policy["max chunk scaling"] < 1:
+        raise ResourceProfileError("max chunk scaling must be >= 1")
     if policy["requirement style"] not in ("exclude", "include"):
         raise ResourceProfileError("requirement style must be exclude or include")
     if not 0 <= policy["vram margin"] < 1:
@@ -262,7 +284,8 @@ def _class_selector(c):
     if c.get("memory mb max") is not None:
         terms.append("(GlobalMemoryMb <= {})".format(int(c["memory mb max"])))
     if c["device names"]:
-        terms.append("(" + " || ".join('regexp("{}", DeviceName)'.format(p) for p in c["device names"]) + ")")
+        terms.append("(" + " || ".join('regexp("{}", DeviceName)'.format(p.replace("\\", "\\\\"))
+                                       for p in c["device names"]) + ")")
     return "(" + " && ".join(terms) + ")"
 
 
@@ -288,6 +311,10 @@ def _vram_estimate(profile, workload):
             continue
         if not _same_signature(o["workload"], workload):
             continue
+        ratio = workload["n chunk"] / o["workload"]["n chunk"]
+        limit = float(profile["policy"]["max chunk scaling"])
+        if not 1 / limit <= ratio <= limit:
+            continue
         peak = float(o["peak vram mb"])
         scaled = fixed + (peak - fixed) * workload["n chunk"] / o["workload"]["n chunk"]
         best = scaled if best is None else max(best, scaled)
@@ -298,8 +325,13 @@ def _memory_verdict(profile, c, workload, vram_need):
     """(admit, reason) for the class's device memory; admit is True/False/None (unknown)."""
     mem = c["memory mb"]
     comparable = [o for o in profile["observations"] if _same_signature(o["workload"], workload)]
+    # A success at this n chunk or larger, on a card with no more memory, outweighs
+    # failures: crashes also happen for reasons unrelated to memory.
+    vouched = [o for o in comparable
+               if o["outcome"] == "success" and o["workload"]["n chunk"] >= workload["n chunk"]
+               and _memory_mb(profile, o["class"]) <= mem]
     for o in comparable:
-        if (o["outcome"] in BLOCKING_OUTCOMES and o["workload"]["n chunk"] <= workload["n chunk"]
+        if (not vouched and o["outcome"] in BLOCKING_OUTCOMES and o["workload"]["n chunk"] <= workload["n chunk"]
                 and _memory_mb(profile, o["class"]) >= mem):
             return False, "{} on {} at n chunk {}".format(o["outcome"], o["class"], o["workload"]["n chunk"])
     if vram_need is not None:
@@ -307,10 +339,8 @@ def _memory_verdict(profile, c, workload, vram_need):
         if usable >= vram_need:
             return True, "needs {:.0f} MB, {:.0f} MB usable".format(vram_need, usable)
         return False, "needs {:.0f} MB, only {:.0f} MB usable".format(vram_need, usable)
-    for o in comparable:
-        if (o["outcome"] == "success" and o["workload"]["n chunk"] >= workload["n chunk"]
-                and _memory_mb(profile, o["class"]) <= mem):
-            return True, "succeeded on {} at n chunk {}".format(o["class"], o["workload"]["n chunk"])
+    for o in vouched:
+        return True, "succeeded on {} at n chunk {}".format(o["class"], o["workload"]["n chunk"])
     return None, "no comparable memory evidence"
 
 
@@ -355,28 +385,24 @@ def _draw_rate(profile, c, workload):
     return None, "no draws per second for this signature at or below this n chunk"
 
 
-def _worker_seconds(draws, rate, n, q):
-    """Quantile q of the time to run n points drawn from ``draws``, by bootstrap."""
+def _wall_quantiles(draws, n_max, q):
+    """Quantile q of the draws needed for 1..n_max points, by bootstrap.
+
+    Each bootstrap row is one sequence of points, and the sum for n points is
+    its first n entries, so the quantiles are non-decreasing in n.
+    """
     import numpy as np
     if len(draws) == 1:
-        return n * draws[0] / rate
+        return draws[0] * np.arange(1, n_max + 1)
     rng = np.random.default_rng(0)
-    sums = rng.choice(np.asarray(draws), size=(BOOTSTRAP_SAMPLES, n), replace=True).sum(axis=1)
-    return float(np.quantile(sums, q)) / rate
+    sums = np.cumsum(rng.choice(np.asarray(draws), size=(BOOTSTRAP_SAMPLES, n_max)), axis=1)
+    return np.quantile(sums, q, axis=0)
 
 
-def _points_per_worker(draws, rate, n_min, n_max, budget, q):
-    """Largest n in [n_min, n_max] whose quantile-q runtime fits the budget, or None."""
-    if _worker_seconds(draws, rate, n_min, q) > budget:
-        return None
-    lo, hi = n_min, n_max
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if _worker_seconds(draws, rate, mid, q) <= budget:
-            lo = mid
-        else:
-            hi = mid - 1
-    return lo
+def _points_per_worker(walls, rate, n_min, n_max, budget):
+    """Largest n in [n_min, n_max] whose quantile runtime fits the budget, or None."""
+    fits = [n for n in range(n_min, n_max + 1) if walls[n - 1] / rate <= budget]
+    return fits[-1] if fits else None
 
 
 def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=None):
@@ -401,6 +427,7 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
     if not draws and draws_per_point:
         draws, draws_source = [float(draws_per_point)], "blueprint draws per point"
     mean_draws = sum(draws) / len(draws) if draws else None
+    walls = _wall_quantiles(draws, n_max, q) if draws else None
 
     rows, candidates = [], []
     for c in profile["classes"]:
@@ -417,7 +444,7 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
             row["excluded"] = "timing: " + row["speed"]
         elif row["seconds per point"] > float(policy["max seconds per point"]):
             row["excluded"] = "{:.0f} s per point exceeds max seconds per point".format(row["seconds per point"])
-        elif _points_per_worker(draws, rate, n_min, n_min, budget, q) is None:
+        elif _points_per_worker(walls, rate, n_min, n_min, budget) is None:
             row["excluded"] = "cannot finish {} points within the wall target".format(n_min)
         elif not row["slots"]:
             row["excluded"] = "no slots"
@@ -436,7 +463,7 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
     for k in range(1, len(candidates) + 1):
         admitted = candidates[:k]
         slowest = admitted[-1]["draws per second"]
-        n = _points_per_worker(draws, slowest, n_min, n_max, budget, q)
+        n = _points_per_worker(walls, slowest, n_min, n_max, budget)
         rate = sum(r["slots"] * n / (n * mean_draws / r["draws per second"] + setup) for r in admitted)
         if best is None or rate >= best[2]:
             best = (admitted, n, rate)
@@ -449,11 +476,17 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
     if policy["requirement style"] == "include":
         require = " || ".join(_class_selector(by_label[r["label"]]) for r in admitted)
     else:
+        # A card no excluded class describes may match, so unlisted cards are not
+        # locked out; a card an admitted class describes always may, even when a
+        # broader excluded class also describes it.
         floor = min(r["memory mb"] for r in admitted)
-        terms = ["(GlobalMemoryMb >= {})".format(int(floor))]
-        terms += ["!{}".format(_class_selector(by_label[r["label"]]))
-                  for r in rows if r["label"] not in admitted_labels]
-        require = " && ".join(terms)
+        excluded = ["!" + _class_selector(by_label[r["label"]]) for r in rows if r["label"] not in admitted_labels]
+        allowed = [_class_selector(by_label[r["label"]]) for r in admitted]
+        if excluded:
+            allowed.append("(" + " && ".join(excluded) + ")")
+            require = "(GlobalMemoryMb >= {}) && ({})".format(int(floor), " || ".join(allowed))
+        else:
+            require = "(GlobalMemoryMb >= {})".format(int(floor))
 
     host = [float(o["host memory mb"]) for o in profile["observations"]
             if o.get("host memory mb") is not None and _same_signature(o["workload"], workload)]
@@ -474,7 +507,7 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
         "require gpus": "(" + require + ")",
         "request memory mb": host_request,
         "points per hour": rate * 3600.0,
-        "slowest worker seconds": setup + _worker_seconds(draws, admitted[-1]["draws per second"], n, q),
+        "slowest worker seconds": setup + float(walls[n - 1]) / admitted[-1]["draws per second"],
         "classes": rows,
     }
 
@@ -483,7 +516,8 @@ def apply_plan_to_ini(ini_in, ini_out, plan):
     """Write a copy of the pseudo_pipe ini with the planned values set.
 
     pseudo_pipe lets the ini override its command line, so the plan has to
-    live in the ini rather than on the command line.
+    live in the ini rather than on the command line.  Iteration 0 gets the
+    same points per worker.
     """
     import configparser
     settings = configparser.ConfigParser(interpolation=None)
@@ -493,7 +527,11 @@ def apply_plan_to_ini(ini_in, ini_out, plan):
     if not settings.has_section("rift-pseudo-pipe"):
         raise ResourceProfileError("ini {} has no [rift-pseudo-pipe] section".format(ini_in))
     section = settings["rift-pseudo-pipe"]
-    values = {"ile-jobs-per-worker": int(plan["jobs per worker"])}
+    # n chunk is pinned too: the helper otherwise scales it with SNR, and the
+    # plan's memory and timing evidence holds only at the planned value.
+    values = {"ile-jobs-per-worker": int(plan["jobs per worker"]),
+              "ile-jobs-per-worker-first": int(plan["jobs per worker"]),
+              "internal-ile-n-chunk": int(plan["workload"]["n chunk"])}
     if plan.get("request memory mb"):
         values["internal-ile-request-memory"] = int(plan["request memory mb"])
     for key, value in values.items():
@@ -515,13 +553,22 @@ _CLASSIC = re.compile(r"^(\d{3}) \(\d+\.\d+\.\d+\) (\d{4}-\d\d-\d\d \d\d:\d\d:\d
 
 
 def _parse_condor_log(path):
-    """Return dict(wall, memory_mb, return_value, signal) from the last execution."""
+    """Wall time, memory use, exit status and GPU memory of the last execution.
+
+    GPU fields come from the ClassAd-format events (GlobalMemoryMb of the
+    assigned GPU, GpusMemoryUsage at termination) and are None when absent.
+    """
     import datetime
     try:
         lines = open(path, errors="ignore").read().splitlines()
     except OSError:
         return None
-    out = {"wall": None, "memory_mb": None, "return_value": None, "signal": None}
+    text = "\n".join(lines)
+    gpu_mem = re.findall(r"\bGlobalMemoryMb = (\d+)", text)
+    gpu_peak = re.findall(r"\bGpusMemoryUsage = ([0-9.]+)", text)
+    out = {"wall": None, "memory_mb": None, "return_value": None, "signal": None,
+           "gpu_memory_mb": int(gpu_mem[0]) if gpu_mem else None,
+           "gpu_peak_mb": float(gpu_peak[-1]) if gpu_peak else None}
     start = None
     if any(line.startswith("MyType = ") for line in lines):
         event = {}
@@ -574,35 +621,41 @@ def harvest_rundir(rundir, profile, workload, source=None):
     per second are per GPU, over the wall time less the policy worker setup
     time (at most half the wall): a worker that fanned out over K GPUs
     (``.gpuK`` output shards) ran K points at a time.  Peak device memory is
-    not in the logs; record it by hand from a qualification probe.
+    condor's GpusMemoryUsage, recorded only for workers that used one GPU.
+    Held-then-removed workers have no termination and are skipped.
     """
     workload = normalize_workload(workload)
     setup = float(profile["policy"]["worker setup seconds"])
-    grouped, skipped = {}, {"no gpu banner": 0, "no termination": 0, "unclassified device": 0}
+    grouped, skipped = {}, {"not a grid worker": 0, "no gpu banner": 0, "no termination": 0,
+                            "unclassified device": 0}
     for out_path in sorted(glob.glob(os.path.join(rundir, "iteration_*_ile", "logs", "ILE*-*.out"))):
         stem = os.path.basename(out_path)[:-4]
         try:
             text = open(out_path, errors="ignore").read()
         except OSError:
             continue
+        kind, _, suffix = stem.partition("-")          # ILE-<event>-<cluster>-<proc>
+        prefix = {"ILE": "CME_out", "ILE_puff": "CME_puff_out"}.get(kind)
+        if prefix is None:                             # e.g. ILEextr: not a grid worker
+            skipped["not a grid worker"] += 1
+            continue
         dev, cap = _DEV.search(text), _CAP.search(text)
         if not (dev and cap):
             skipped["no gpu banner"] += 1
-            continue
-        label = classify_device(profile, dev.group(1).strip(), int(cap.group(1)) / 10.0)
-        if label is None:
-            skipped["unclassified device"] += 1
             continue
         log = _parse_condor_log(out_path[:-4] + ".log")
         if not log or log["wall"] is None:
             skipped["no termination"] += 1
             continue
+        label = classify_device(profile, dev.group(1).strip(), int(cap.group(1)) / 10.0,
+                                log["gpu_memory_mb"])
+        if label is None:
+            skipped["unclassified device"] += 1
+            continue
         try:
             err = open(out_path[:-4] + ".err", errors="ignore").read()
         except OSError:
             err = ""
-        kind, _, suffix = stem.partition("-")          # ILE-<event>-<cluster>-<proc>
-        prefix = {"ILE": "CME_out", "ILE_puff": "CME_puff_out"}.get(kind)
         shards, draws = set(), []
         if prefix:
             pattern = os.path.join(os.path.dirname(os.path.dirname(out_path)),
@@ -610,14 +663,19 @@ def harvest_rundir(rundir, profile, workload, source=None):
             for name in glob.glob(pattern):
                 try:
                     row = open(name).read().split()
-                    draws.append(float(row[-2]))      # ... lnL sigma_lnL ntotal neff
+                    ntotal = float(row[-2])           # ... lnL sigma_lnL ntotal neff
                 except (OSError, IndexError, ValueError):
                     continue
+                # ntotal is a whole number of draws; anything else is another row
+                # layout (e.g. RIFT_HYPERPIPELINE_FORMAT has no ntotal column).
+                if ntotal < 1 or ntotal != int(ntotal):
+                    continue
+                draws.append(ntotal)
                 m = re.search(r"\.xml\.gpu([^_]+)_", name)
                 shards.add(m.group(1) if m else "")
-        draws = [d for d in draws if d > 0]
         points = len(draws)
-        if _OOM.search(err):
+        failed = bool(log["signal"]) or log["return_value"] != 0
+        if failed and _OOM.search(err):
             outcome = "memory-failure"
         elif log["signal"] or log["return_value"] in (134, 139):
             outcome = "crash"
@@ -632,9 +690,11 @@ def harvest_rundir(rundir, profile, workload, source=None):
         obs["workers"] += 1
         if log["memory_mb"]:
             obs["host memory mb"] = max(obs.get("host memory mb", 0.0), log["memory_mb"])
+        if log["gpu_peak_mb"] and len(shards) <= 1:   # a fanned-out worker's peak spans GPUs
+            obs["peak vram mb"] = max(obs.get("peak vram mb", 0.0), log["gpu_peak_mb"])
         if outcome == "success":
             obs["draws per point"] += draws
-            if log["wall"] > 0:
+            if log["wall"] > 0 and draws:
                 busy = max(log["wall"] - setup, 0.5 * log["wall"])
-                obs["draws per second"].append(round(sum(draws) / (busy * max(1, len(shards))), 1))
+                obs["draws per second"].append(sum(draws) / (busy * max(1, len(shards))))
     return list(grouped.values()), skipped

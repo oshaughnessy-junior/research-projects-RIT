@@ -37,15 +37,18 @@ def main(argv=None):
     plan.add_argument("--workload", required=True, help="YAML mapping of workload keys")
     plan.add_argument("--draws-per-point", type=float, default=None)
     plan.add_argument("--jobs-per-worker-cap", type=int, default=None)
+    plan.add_argument("--policy", default=None, help="YAML mapping of policy overrides, as in the ledger")
     harvest = sub.add_parser("harvest")
     harvest.add_argument("profile")
     harvest.add_argument("rundir")
     harvest.add_argument("--workload", default=None)
     harvest.add_argument("--output", default=None)
+    harvest.add_argument("--policy", default=None, help="YAML mapping of policy overrides, as in the ledger")
     opts = parser.parse_args(argv)
 
     try:
-        profile = resource_profile.load_resource_profile(opts.profile)
+        policy = yaml.safe_load(opts.policy) if opts.policy else None
+        profile = resource_profile.load_resource_profile(opts.profile, policy)
         if opts.command == "plan":
             result = resource_profile.plan_resources(
                 profile, _workload(opts.workload), draws_per_point=opts.draws_per_point,
@@ -54,7 +57,7 @@ def main(argv=None):
             return 0
         observations, skipped = resource_profile.harvest_rundir(
             opts.rundir, profile, _workload(opts.workload, opts.rundir))
-    except resource_profile.ResourceProfileError as error:
+    except (resource_profile.ResourceProfileError, OSError, yaml.YAMLError, KeyError) as error:
         print("resource profile: {}".format(error), file=sys.stderr)
         return 2
     text = yaml.safe_dump({"observations": observations}, sort_keys=False)

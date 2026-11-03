@@ -655,15 +655,14 @@ class Rift(Pipeline):
         waveform = meta.get("waveform") or {}
         extra = ile.get("manual extra args") or []
         extra = (extra if isinstance(extra, str) else " ".join(str(a) for a in extra)).split()
-        chunks = set()
-        for i, arg in enumerate(extra):
-            if arg == "--n-chunk" and i + 1 < len(extra):
-                chunks.add(int(extra[i + 1]))
-            elif arg.startswith("--n-chunk="):
-                chunks.add(int(arg.split("=", 1)[1]))
-        for value in (pipeline.get("internal-ile-n-chunk"), settings.get("n chunk")):
-            if value is not None:
-                chunks.add(int(value))
+        found = [extra[i + 1] for i, arg in enumerate(extra[:-1]) if arg == "--n-chunk"]
+        found += [arg.split("=", 1)[1] for arg in extra if arg.startswith("--n-chunk=")]
+        found += [v for v in (pipeline.get("internal-ile-n-chunk"), settings.get("n chunk")) if v is not None]
+        try:
+            chunks = {int(v) for v in found}
+        except (TypeError, ValueError):
+            raise PipelineException("ILE n chunk must be an integer; found {}".format(found),
+                                    production=self.production.name)
         if len(chunks) != 1:
             raise PipelineException(
                 "scheduler.resource profile needs one pinned ILE n chunk "
@@ -694,7 +693,25 @@ class Rift(Pipeline):
         if settings is None:
             return ini, None
         from RIFT.misc import resource_profile
+        from RIFT.misc import container_manifest
         ile = (self.production.meta.get("sampler") or {}).get("ile") or {}
+        # Refuse settings that would replace the planned values in the submit files.
+        overrides = [key for key in (ile.get("condor commands") or {})
+                     if str(key).strip().lower() in ("request_memory", "require_gpus")]
+        image = os.environ.get("SINGULARITY_RIFT_IMAGE")
+        if container_manifest.is_container_manifest(image):
+            # The builder runs in the event work_dir, so resolve a relative manifest there.
+            image = os.path.join(self.production.event.work_dir, image)
+        if container_manifest.is_container_manifest(image) and os.path.isfile(image):
+            try:
+                if container_manifest.has_ile_profiles(container_manifest.load_container_manifest(image)):
+                    overrides.append("container manifest ile_exe/request_memory")
+            except container_manifest.ContainerManifestError:
+                pass
+        if overrides:
+            raise PipelineException(
+                "scheduler.resource profile conflicts with {}, which would override the plan".format(overrides),
+                production=self.production.name)
         try:
             profile = resource_profile.load_resource_profile(settings["path"], settings.get("policy"))
             plan = resource_profile.plan_resources(
@@ -712,7 +729,7 @@ class Rift(Pipeline):
             settings_ini.read(ini)
             if settings_ini.has_section("rift-pseudo-pipe"):
                 section = settings_ini["rift-pseudo-pipe"]
-                user = section.get("ile_require_gpus", section.get("ile-require-gpus"))
+                user = section.get("ile_require_gpus")   # the only spelling pseudo_pipe reads
         plan["require gpus composed"] = (
             plan["require gpus"] if not user else "({}) && {}".format(user, plan["require gpus"]))
         self.logger.info("Resource plan: {} points per worker on {}; require_gpus {}".format(
@@ -733,18 +750,18 @@ class Rift(Pipeline):
 
     def _harvest_resource_observations(self):
         """Append this run's ILE observations to a directory resource profile, if asked."""
-        settings = self._resource_profile_settings()
-        if not settings or not settings.get("harvest"):
-            return
-        rundir = self.production.rundir
         try:
+            settings = self._resource_profile_settings()
+            if not settings or not settings.get("harvest"):
+                return
+            rundir = self.production.rundir
             from RIFT.misc import resource_profile
             import yaml
             with open(os.path.join(rundir, "resource-plan.json")) as f:
                 plan = json.load(f)
             if not os.path.isdir(settings["path"]):
                 raise ValueError("harvest needs a directory profile")
-            profile = resource_profile.load_resource_profile(settings["path"])
+            profile = resource_profile.load_resource_profile(settings["path"], settings.get("policy"))
             observations, skipped = resource_profile.harvest_rundir(rundir, profile, plan["workload"])
             target = os.path.join(settings["path"], "observations")
             os.makedirs(target, exist_ok=True)
