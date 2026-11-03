@@ -1122,7 +1122,8 @@ SHARED_PRIOR_SOURCES = {
 SHARED_PRIOR_NAMES = ["s_component_zprior"]
 # Present, with this signature, in CIP and in rift_priors only.
 SHARED_PRIOR_NAMES_LIBRARY_ONLY = ["s_component_zprior_positive", "q_prior"]
-# Present in CIP, rift_priors and GaussianResampling, but not in the EOS driver.
+# Present, with this signature, in CIP, rift_priors and GaussianResampling.  The EOS
+# driver's eta_prior and delta_mc_prior hard-code the default instead.
 SHARED_PRIOR_NAMES_NO_EOS = ["triangle_prior", "eta_prior", "delta_mc_prior"]
 
 
@@ -1163,9 +1164,9 @@ def test_duplicated_priors_match_cip(where):
                  "prior_pp_check_here.py"),
 ], ids=["IntermediateEOSIntegralFromFit", "prior_pp_check_here"])
 def test_delta_mc_prior_copies_with_their_own_signature_match_cip(path):
-    """These two copies differ from CIP's in signature, so they cannot match its AST.
+    """These two copies sit outside SHARED_PRIOR_SOURCES; the EOS driver's hard-codes 1.44.
 
-    Both are the density CIP gets with norm_factor at its 1.44 default.
+    Both must be the density CIP gets with norm_factor at its 1.44 default.
     """
     node = [n for n in _parse_script(path).body
             if isinstance(n, ast.FunctionDef) and n.name == "delta_mc_prior"]
@@ -1182,7 +1183,7 @@ def test_delta_mc_prior_copies_with_their_own_signature_match_cip(path):
 # eta_prior, delta_mc_prior and q_prior are normalized, if at all, by the factors
 # CIP's --eta-range block computes, so a default-argument integral says nothing
 # about them.  Run the block itself and integrate what it installs.  helper_LDG_Events
-# always passes --eta-range to CIP, so this is the production path.
+# passes --eta-range to CIP unless --no-propose-limits is set, so this is the usual path.
 # ---------------------------------------------------------------------------
 
 def _uses_eta_range(test):
@@ -1190,8 +1191,8 @@ def _uses_eta_range(test):
                for node in ast.walk(test))
 
 
-def _eta_range_setup(eta_range, coords=("mc", "delta_mc")):
-    """Run CIP's top-level --eta-range block against the shipped defaults."""
+def _eta_range_setup(eta_range, coords=("mc", "delta_mc"), tree=CIP_TREE):
+    """Run a script's top-level --eta-range block, with that script's own eta priors."""
     namespace = _make_namespace(coords=coords)
     namespace["functools"] = functools
     namespace["scipy"] = types.SimpleNamespace(stats=scipy_stats, special=scipy_special)
@@ -1199,13 +1200,14 @@ def _eta_range_setup(eta_range, coords=("mc", "delta_mc")):
     namespace["prior_map"] = {}
     namespace["prior_range_map"] = {}
     _load_priors(namespace)
-    cdf = [node for node in CIP_TREE.body if isinstance(node, ast.FunctionDef)
-           and node.name == "unscaled_eta_prior_cdf"]
-    assert len(cdf) == 1, "could not find unscaled_eta_prior_cdf in CIP"
-    _exec_in(namespace, cdf[0])
-    blocks = [node for node in CIP_TREE.body
+    own = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+           and node.name in ("unscaled_eta_prior_cdf", "eta_prior", "delta_mc_prior")]
+    assert len(own) == 3, "could not find the eta priors and their cdf"
+    for node in own:
+        _exec_in(namespace, node)
+    blocks = [node for node in tree.body
               if isinstance(node, ast.If) and _uses_eta_range(node.test)]
-    assert len(blocks) == 1, "expected one top-level --eta-range block in CIP"
+    assert len(blocks) == 1, "expected one top-level --eta-range block"
     _exec_in(namespace, blocks[0])
     return namespace["prior_map"], namespace["prior_range_map"]
 
@@ -1256,6 +1258,38 @@ def test_q_prior_default_keeps_the_unit_scale():
     q = np.linspace(0.01, 1, 7)
 
     assert np.allclose(PRIORS["q_prior"](q), 1 / (1 + q) ** 2, rtol=1e-12)
+
+
+def test_gaussian_resampling_q_prior_is_cip_default():
+    """GaussianResampling's q_prior takes no norm_factor, so it cannot match CIP's AST."""
+    tree = _parse_script(SHARED_PRIOR_SOURCES["GaussianResampling"])
+    node = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "q_prior"]
+    assert len(node) == 1, "GaussianResampling no longer defines q_prior"
+    namespace = {"np": np}
+    _exec_in(namespace, node[0])
+    q = np.linspace(0.01, 1, 7)
+
+    assert np.allclose(namespace["q_prior"](q), PRIORS["q_prior"](q), rtol=1e-12)
+
+
+@pytest.mark.parametrize("eta_range", ETA_WINDOWS, ids=str)
+@pytest.mark.parametrize("coord", ["eta", "delta_mc"])
+def test_gaussian_resampling_eta_range_block_normalizes_the_mass_ratio_priors(eta_range, coord):
+    """GaussianResampling carries its own copy of the --eta-range block."""
+    tree = _parse_script(SHARED_PRIOR_SOURCES["GaussianResampling"])
+    prior_map, prior_range_map = _eta_range_setup(eta_range, tree=tree)
+
+    total, _ = _integral_over_range(prior_map[coord], prior_range_map[coord])
+
+    assert total == pytest.approx(1.0, rel=1e-6)
+
+
+def test_eta_prior_default_norm_factor_is_pinned():
+    """Without --eta-range this default sets ln Z, and the copies only compare to each other."""
+    x = np.linspace(0.05, 0.2, 7)
+
+    for name in ("eta_prior", "delta_mc_prior"):
+        assert np.allclose(PRIORS[name](x), PRIORS[name](x, norm_factor=1.44), rtol=1e-12)
 
 
 def test_delta_mc_prior_is_eta_prior_times_the_jacobian():

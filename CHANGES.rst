@@ -8,6 +8,13 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
      accepts a puff argument schedule paired with the CIP batch schedule. Default
      puff behavior is unchanged.
 
+   - Correct the CIP delta_mc prior Jacobian: with delta_mc sampled, raw CIP lnZ decreases by
+     ln(4).  Posteriors and prior-normalized lnB_H do not change; reconcile older raw lnZ
+     before reuse (fork PR #522).
+   - Divide the CIP q prior by its --eta-range norm factor N: (mtot, q) runs on the default q
+     prior gain -2 ln(N) in raw lnZ.  Posteriors and prior-normalized lnB_H do not change
+     (fork PR #523).
+
    - (rc0) O4d base refresh: modern Python/numpy support, portable GPU execution, generic workflow
      backends, hyperpipe and simulation-manager support; distance-likelihood export, parsimonious
      placement preview, waveform utilities and diagnostics (PRs #129, #132, #135, #143).
