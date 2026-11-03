@@ -246,6 +246,7 @@ _ILE_APPEND_OPTS = {
     "--parameter", "--parameter-range", "--sampler-portfolio",
     "--sampler-portfolio-args",
     "--td-gap", "--glitch-basis", "--glitch-basis-file",
+    "--supplementary-waveform-transform-parameter",
 }
 # Clip on |lnL - logZ| when writing the sim_inspiral sampling-prior column.
 # float64 exp() overflows past ~709, and the failure is not a loud one: an inf
@@ -400,7 +401,11 @@ _ILE_ALL_OPTS = {
     "--srate-resample-time-marginalization",
     "--supplementary-likelihood-factor-code",
     "--supplementary-likelihood-factor-function",
-    "--supplementary-likelihood-factor-ini", "--time-marginalization",
+    "--supplementary-likelihood-factor-ini",
+    "--supplementary-waveform-transform-code",
+    "--supplementary-waveform-transform-function",
+    "--supplementary-waveform-transform-ini",
+    "--supplementary-waveform-transform-parameter", "--time-marginalization",
     "--time-posterior-export", "--use-external-EOB", "--use-gwsignal",
     "--use-gwsignal-lmax-nyquist", "--gwsignal-mode-conditioning", "--vectorized", "--verbose",
     "--window-shape", "--zero-likelihood", "--zero-likelihood-data-free",
@@ -550,6 +555,12 @@ def check_critical_and_report(opts, optp):
                                "--supplementary-likelihood-factor-function",
                                "--supplementary-likelihood-factor-ini")):
         fatal.append("supplementary likelihood factors are not implemented")
+    if any(is_set(x) for x in ("--supplementary-waveform-transform-code",
+                               "--supplementary-waveform-transform-function",
+                               "--supplementary-waveform-transform-ini",
+                               "--supplementary-waveform-transform-parameter")):
+        fatal.append("the extra-parameter waveform transform (--supplementary-waveform-transform-*) "
+                     "is not implemented; use integrate_likelihood_extrinsic_batchmode")
     if is_set("--nr-lookup") or is_set("--nr-params") or is_set("--nr-index"):
         fatal.append("NR-waveform templates (--nr-*) are not implemented")
     if any(is_set(x) for x in ("--early-time-multirate", "--early-time-multirate-backend",

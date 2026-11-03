@@ -52,6 +52,14 @@ RULES = [
      "Frequency spacing of a loaded data series, used by the td-gs (finite-covariance "
      "time-domain) set-up. The LISA driver has no td-gs code path; see the TD option "
      "reason below."),
+    # Extra-parameter waveform-transform seam (RIFT/likelihood/hlm_transform.py).
+    (r"^(OPTION:--supplementary-waveform-transform-.*|FUNC:_waveform_transform_extra_rows(\._is_known)?)$", "PHYSICS",
+     "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the "
+     "ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from "
+     "declared Hyperpipe grid columns and echoed into the output row. The LISA driver has "
+     "its own precompute and TDI response; whether F acts before or after the response, "
+     "and whether a lensing-type F is response-independent for LISA, is a physics decision "
+     "to make with LISA-specific validation, not a passthrough to copy."),
     # Ground-based TD operators: only this explicitly reviewed option set.
     (r"^OPTION:--(internal-ile-inner-product|td-subsample|td-calibration-correction-type|td-calibration-fir-half-length|td-highpass|td-u-svd-tol|td-mref|td-piece|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
      "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not "
