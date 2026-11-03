@@ -2,6 +2,7 @@
 
 import configparser
 import glob
+import json
 import os
 import re
 import subprocess
@@ -400,6 +401,7 @@ class Rift(Pipeline):
         return True
 
     def after_completion(self):
+        self._harvest_resource_observations()
         if PESummaryPipeline is None:
             self.logger.info(
                 "Job has completed. PESummary is managed by a separate "
@@ -626,6 +628,138 @@ class Rift(Pipeline):
                         production=self.production.name,
                     )
 
+    _RESOURCE_PROFILE_KEYS = ("path", "workload label", "n chunk", "draws per point", "policy", "harvest")
+
+    def _resource_profile_settings(self):
+        """scheduler.resource profile as a dict, or None when not requested."""
+        value = (self.production.meta.get("scheduler") or {}).get("resource profile")
+        if value in (None, False, ""):
+            return None
+        if isinstance(value, str):
+            value = {"path": value}
+        if not isinstance(value, dict) or not value.get("path"):
+            raise PipelineException("scheduler.resource profile needs a path",
+                                    production=self.production.name)
+        unknown = set(value) - set(self._RESOURCE_PROFILE_KEYS)
+        if unknown:
+            raise PipelineException(
+                "scheduler.resource profile: unknown keys {}".format(sorted(unknown)),
+                production=self.production.name)
+        return value
+
+    def _resource_workload(self, settings):
+        """The footprint-relevant ILE settings of this production."""
+        meta = self.production.meta
+        ile = (meta.get("sampler") or {}).get("ile") or {}
+        pipeline = (meta.get("scheduler") or {}).get("pipeline") or {}
+        waveform = meta.get("waveform") or {}
+        extra = ile.get("manual extra args") or []
+        extra = (extra if isinstance(extra, str) else " ".join(str(a) for a in extra)).split()
+        chunks = set()
+        for i, arg in enumerate(extra):
+            if arg == "--n-chunk" and i + 1 < len(extra):
+                chunks.add(int(extra[i + 1]))
+            elif arg.startswith("--n-chunk="):
+                chunks.add(int(arg.split("=", 1)[1]))
+        for value in (pipeline.get("internal-ile-n-chunk"), settings.get("n chunk")):
+            if value is not None:
+                chunks.add(int(value))
+        if len(chunks) != 1:
+            raise PipelineException(
+                "scheduler.resource profile needs one pinned ILE n chunk "
+                "(sampler.ile.manual extra args, internal-ile-n-chunk or resource profile.n chunk); "
+                "found {}".format(sorted(chunks) or "none"),
+                production=self.production.name)
+        return {
+            "label": settings.get("workload label"),
+            "n chunk": chunks.pop(),
+            "n eff": ile.get("n eff", 10),
+            "sample rate": (meta.get("likelihood") or {}).get("sample rate"),
+            "q pregrid factor": ile.get("q time pregrid factor", 1),
+            "ifos": len(meta.get("interferometers") or []),
+            "approximant": waveform.get("approximant"),
+            "lmax": waveform.get("maximum mode", 4),
+            "time resampling": pipeline.get("internal-ile-srate-time-resampling"),
+        }
+
+    def _apply_resource_profile(self, ini, dryrun=False):
+        """Plan ILE matching from the resource profile; return (ini to build from, plan).
+
+        Sets RIFT_REQUIRE_GPUS to the planned expression ANDed with any
+        user requirement, and writes the planned points per worker and host
+        memory into a private copy of the ini (pseudo_pipe lets the ini
+        override its command line).  See RIFT/misc/DESIGN_resource_profile.md.
+        """
+        settings = self._resource_profile_settings()
+        if settings is None:
+            return ini, None
+        from RIFT.misc import resource_profile
+        ile = (self.production.meta.get("sampler") or {}).get("ile") or {}
+        try:
+            profile = resource_profile.load_resource_profile(settings["path"], settings.get("policy"))
+            plan = resource_profile.plan_resources(
+                profile, self._resource_workload(settings),
+                draws_per_point=settings.get("draws per point"),
+                jobs_per_worker_cap=ile.get("jobs per worker"))
+        except resource_profile.ResourceProfileError as error:
+            raise PipelineException("Resource profile: {}".format(error),
+                                    production=self.production.name) from error
+        user = os.environ.get("RIFT_REQUIRE_GPUS")
+        if user is None and os.path.isfile(ini):
+            # pseudo_pipe reads the ini requirement only when the environment has none.
+            settings_ini = configparser.ConfigParser(interpolation=None)
+            settings_ini.optionxform = str
+            settings_ini.read(ini)
+            if settings_ini.has_section("rift-pseudo-pipe"):
+                section = settings_ini["rift-pseudo-pipe"]
+                user = section.get("ile_require_gpus", section.get("ile-require-gpus"))
+        plan["require gpus composed"] = (
+            plan["require gpus"] if not user else "({}) && {}".format(user, plan["require gpus"]))
+        self.logger.info("Resource plan: {} points per worker on {}; require_gpus {}".format(
+            plan["jobs per worker"], ", ".join(plan["admitted"]), plan["require gpus composed"]))
+        if dryrun:
+            print(json.dumps(plan, indent=1, default=str))
+            return ini, plan
+        if not os.path.isfile(ini):
+            raise PipelineException("Resource profile needs the rendered INI; missing " + ini,
+                                    production=self.production.name)
+        directory = tempfile.mkdtemp(prefix=".rift-resource-plan-", dir=os.path.dirname(ini))
+        planned_ini = os.path.join(directory, os.path.basename(ini))
+        resource_profile.apply_plan_to_ini(ini, planned_ini, plan)
+        plan["ini"] = planned_ini
+        with open(os.path.join(directory, "resource-plan.json"), "w") as f:
+            json.dump(plan, f, indent=1, default=str)
+        return planned_ini, plan
+
+    def _harvest_resource_observations(self):
+        """Append this run's ILE observations to a directory resource profile, if asked."""
+        settings = self._resource_profile_settings()
+        if not settings or not settings.get("harvest"):
+            return
+        rundir = self.production.rundir
+        try:
+            from RIFT.misc import resource_profile
+            import yaml
+            with open(os.path.join(rundir, "resource-plan.json")) as f:
+                plan = json.load(f)
+            if not os.path.isdir(settings["path"]):
+                raise ValueError("harvest needs a directory profile")
+            profile = resource_profile.load_resource_profile(settings["path"])
+            observations, skipped = resource_profile.harvest_rundir(rundir, profile, plan["workload"])
+            target = os.path.join(settings["path"], "observations")
+            os.makedirs(target, exist_ok=True)
+            name = "{}-{}-{}.yaml".format(self.production.event.name, self.production.name,
+                                          os.path.basename(os.path.normpath(rundir)))
+            path = os.path.join(target, name)
+            if os.path.lexists(path):
+                raise ValueError("refusing to replace " + path)
+            with open(path, "w") as f:
+                yaml.safe_dump({"observations": observations}, f, sort_keys=False)
+            self.logger.info("Resource profile: wrote {} observations to {}; skipped {}".format(
+                len(observations), path, skipped))
+        except Exception as error:   # never block completion on bookkeeping
+            self.logger.warning("Resource profile harvest failed: {}".format(error))
+
     def before_config(self, dryrun=False):
         """
         - Convert the text-based PSD to an XML psd if the xml doesn't exist already.
@@ -844,6 +978,8 @@ class Rift(Pipeline):
             print(" rift.py :adding environment variables before starting pipeline ", dict_like,type(dict_like))
             for key in dict_like:
                 os.environ[key] = '{}'.format(dict_like[key])
+
+        ini, resource_plan = self._apply_resource_profile(ini, dryrun=dryrun)
                         
         try:
             calibration = config.get("general", "calibration")
@@ -1006,8 +1142,12 @@ class Rift(Pipeline):
             self.logger.info(" ".join(command))
 
             with set_directory(self.production.event.work_dir):
+                builder = {}
+                if resource_plan is not None:
+                    # Builder only: one asimov process builds many productions.
+                    builder["env"] = dict(os.environ, RIFT_REQUIRE_GPUS=resource_plan["require gpus composed"])
                 pipe = subprocess.Popen(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                    command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **builder
                 )
                 out, err = pipe.communicate()
                 # very large amount of information for asimov log !
@@ -1043,6 +1183,9 @@ class Rift(Pipeline):
                     # invocation succeeded at the builder's fresh-directory guard.
                     # Never capture on a failed builder, even if a stale DAG exists.
                     self._capture_build_environment()
+                    if resource_plan is not None:
+                        shutil.copy(os.path.join(os.path.dirname(resource_plan["ini"]), "resource-plan.json"),
+                                    os.path.join(rundir, "resource-plan.json"))
                     if self.production.event.repository:
                         # with set_directory(os.path.abspath(self.production.rundir)):
                         self._stage_xml_psds(rundir=rundir)
