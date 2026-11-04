@@ -2,6 +2,7 @@
 """RIFT.misc.resource_profile: profile loading, ILE resource planning, ini rewrite, harvest."""
 
 import configparser
+import math
 import os
 
 import pytest
@@ -475,7 +476,7 @@ def test_harvest_rundir(tmp_path):
     assert ("pascal-4gb", "memory-failure") in by
     crash = by[("pascal-4gb", "crash")]
     assert crash["host memory mb"] == 6000 and crash["draws per point"] == []
-    assert skipped == {"not a grid worker": 0, "no gpu banner": 1, "no termination": 0,
+    assert skipped == {"not a grid worker": 0, "no gpu banner": 1, "no termination": 0, "host memory hold": 0,
                        "unclassified device": 1}
     # The harvest round-trips through the loader and feeds the planner.
     root = _write_profile(tmp_path, directory=True)
@@ -597,3 +598,117 @@ def test_harvest_fan_out_failure_and_zero_usage(tmp_path):
     with open(os.path.join(root, "observations", "run.yaml"), "w") as f:
         yaml.safe_dump({"observations": observations}, f)
     rp.load_resource_profile(root)
+
+
+# -- adversarial review, 2026-11-04 -------------------------------------------
+
+def _two_pascal(first_excluded=True):
+    specific = {"label": "gtx1050", "capability": [6.0, 7.0], "memory mb": 3900, "memory mb max": 5000,
+                "device names": ["1050"], "slots": 100, "memory family": "f"}
+    broad = {"label": "pascal", "capability": [6.0, 7.0], "memory mb": 3900, "slots": 100, "memory family": "f"}
+    return [specific, broad] if first_excluded else [broad, specific]
+
+
+@pytest.mark.parametrize("style", ["exclude", "include"])
+def test_admitted_selector_leaves_out_an_earlier_excluded_class(tmp_path, style):
+    observations = [_obs("pascal", "success", **_t(10))]
+    path = _write_profile(tmp_path, observations, {"requirement style": style}, _two_pascal())
+    plan = rp.plan_resources(rp.load_resource_profile(path), WORKLOAD)
+    assert plan["admitted"] == ["pascal"]
+    assert 'regexp("1050", DeviceName)' in plan["require gpus"]
+    assert '&& !((Capability >= 6.0)' in plan["require gpus"]
+
+
+def test_an_excluded_class_listed_later_does_not_touch_the_admitted_one():
+    profile = {"classes": [dict(c, **{"device names": c.get("device names", [])}) for c in _two_pascal(False)]}
+    selector = rp._admitted_selector(profile, profile["classes"][0], {"pascal"})
+    assert selector == rp._class_selector(profile["classes"][0])
+
+
+@pytest.mark.parametrize("code", [139, 245, 134, 250])
+def test_every_form_of_a_signalled_exit_is_a_crash(code):
+    assert code in rp.CRASH_RETURN_VALUES
+
+
+def test_family_fit_is_raised_over_the_class_own_few_samples(tmp_path):
+    classes = _family_classes()
+    thin = [[1e6 * (i + 1), 3800.0, None] for i in range(7)]
+    wide = [[1e6 * (i + 1), 500.0 + 10.0 * (i + 1), None] for i in range(40)]
+    label = classes[0]["label"]
+    other = classes[1]["label"]
+    observations = [_obs(label, "success", **dict(_t(10), **{"memory samples": thin})),
+                    _obs(other, "success", **dict(_t(10), **{"memory samples": wide}))]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, observations, classes=classes))
+    fits = rp._memory_models(profile, profile["classes"][0], rp.normalize_workload(WORKLOAD), 1)
+    assert fits and fits[-1][0][0] >= 3800.0 - 10.0
+
+
+def test_host_request_without_a_fit_follows_the_draws(tmp_path):
+    samples = [[1e6 * (i + 1), 1000.0, 1000.0 + 500.0 * (i + 1)] for i in range(7)]
+    workload = rp.normalize_workload(WORKLOAD)
+    profile = rp.load_resource_profile(_write_profile(
+        tmp_path, [_obs("modern-24gb", "success", **dict(_t(10), **{"memory samples": samples}))]))
+    by_label = {c["label"]: c for c in profile["classes"]}
+    request = rp._host_request(profile, workload, [{"label": "modern-24gb"}], by_label, 14e6)
+    assert request == 1000 * math.ceil((1000.0 + 500.0 * 14) * 1.25 / 1000)
+
+
+def test_admit_unprofiled_keeps_the_host_ceiling(tmp_path):
+    observations = [_obs("pascal-4gb", "success", **dict(_t(10), **{"memory samples": _growing(500, 1000, column=2)}))]
+    plan = _plan(tmp_path, observations, policy={"admit unprofiled": True})
+    assert _row(plan, "pascal-4gb")["points limit"] is None or plan["request memory mb"] <= 16000
+
+
+def test_device_fit_is_per_gpu_and_host_fit_is_total(tmp_path):
+    samples = [[2e6 * (i + 1), 500.0 + 100.0 * (i + 1), 500.0 + 100.0 * (i + 1), 2] for i in range(8)]
+    profile = rp.load_resource_profile(_write_profile(
+        tmp_path, [_obs("modern-24gb", "success", **dict(_t(10), **{"memory samples": samples}))]))
+    c, workload = profile["classes"][2], rp.normalize_workload(WORKLOAD)
+    device, host = (rp._memory_models(profile, c, workload, column)[0][0][1] for column in (1, 2))
+    assert device == pytest.approx(2 * host)
+
+
+def test_null_memory_ceiling_means_none():
+    profile = {"classes": [{"label": "x", "capability": [6.0, 7.0], "memory mb": 1000, "memory mb max": None,
+                            "device names": []}]}
+    assert rp.classify_device(profile, "card", 6.5, 5000) == "x"
+
+
+def test_exactly_the_stated_survivors_set_a_failure_aside(tmp_path):
+    samples = [[5e6, None, None]] * 8 + [[5e6 + 1, None, None]]
+    observations = [_obs("pascal-4gb", "crash", **{"failure draws": [4e6]}),
+                    _obs("pascal-4gb", "success", **{"memory samples": samples})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, observations))
+    ceiling, reason = rp._draw_ceiling(profile, profile["classes"][0], rp.normalize_workload(WORKLOAD))
+    assert ceiling > 4e6, reason
+    observations[1]["memory samples"] = samples[:8]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, observations))
+    ceiling, reason = rp._draw_ceiling(profile, profile["classes"][0], rp.normalize_workload(WORKLOAD))
+    assert ceiling == 4e6, reason
+
+
+def test_draw_rate_takes_the_low_quantile(tmp_path):
+    rates = [100.0 * (i + 1) for i in range(10)]
+    profile = rp.load_resource_profile(_write_profile(
+        tmp_path, [_obs("modern-24gb", "success", **{"draws per second": rates})]))
+    rate, _ = rp._draw_rate(profile, profile["classes"][2], rp.normalize_workload(WORKLOAD))
+    assert rate == 100.0
+
+
+def test_failed_workers_do_not_enter_a_memory_fit(tmp_path):
+    observations = [_obs("modern-24gb", "failure", **{"memory samples": _growing(500, 1000)}),
+                    _obs("modern-24gb", "success", **_t(10))]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, observations))
+    fits = rp._memory_models(profile, profile["classes"][2], rp.normalize_workload(WORKLOAD), 1)
+    assert fits and all(fit[1] == pytest.approx(0, abs=1e-9) for fit, _ in fits)
+
+
+def test_harvest_counts_host_memory_holds_apart(tmp_path):
+    logs = tmp_path / "iteration_0_ile" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "ILE-1-2-0.out").write_text("Device 0 Name                : Card\nDevice 0 Compute Capability  : 120\n")
+    (logs / "ILE-1-2-0.log").write_text("012 (2.0.0) 2026-10-30 10:00:00 Job was held.\n"
+                                        "\tJob memory usage exceeded request_memory\n")
+    profile = rp.load_resource_profile(_write_profile(tmp_path, []))
+    _, skipped = rp.harvest_rundir(str(tmp_path), profile, WORKLOAD)
+    assert skipped["host memory hold"] == 1 and skipped["no termination"] == 0

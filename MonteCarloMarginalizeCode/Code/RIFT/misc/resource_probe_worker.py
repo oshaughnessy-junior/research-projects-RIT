@@ -23,7 +23,8 @@ pci=c.cuda.runtime.deviceGetPCIBusId(0);pci=pci.decode() if isinstance(pci,bytes
 c.asnumpy(c.fft.fft(c.arange(64,dtype=c.float64)))
 print(json.dumps(dict(pci_bus_id=pci,name=p['name'].decode(),sm=10*p['major']+p['minor'],vram_bytes=p['totalGlobalMem'],
  driver=c.cuda.runtime.driverGetVersion(),runtime=c.cuda.runtime.runtimeGetVersion(),cupy=c.__version__)))"""
-OOM = re.compile(r"OutOfMemoryError|cudaErrorMemoryAllocation|CUFFT_ALLOC_FAILED|CUBLAS_STATUS_ALLOC_FAILED")
+OOM = re.compile(r"OutOfMemoryError|cudaErrorMemoryAllocation|CUDA_ERROR_OUT_OF_MEMORY|out of memory|"
+                 r"CUFFT_ALLOC_FAILED|CUBLAS_STATUS_ALLOC_FAILED", re.I)
 
 
 class NvmlMemory(ctypes.Structure):
@@ -79,7 +80,7 @@ def monitor(child, bus_id, sampled, stop, series):
 def read_points(directory):
     """Finished points: ILE writes one .dat per point, ending ... lnL sigma ntotal neff."""
     points, finite = [], True
-    for path in directory.glob("CME*.dat"):
+    for path in directory.glob("CME*_.dat"):      # not the _cal.dat companions
         for line in path.read_text().splitlines():
             try:
                 values = [float(x) for x in line.split()]
@@ -89,6 +90,15 @@ def read_points(directory):
                 finite = finite and all(math.isfinite(x) for x in values)
                 points.append({"file": path.name, "mtime": path.stat().st_mtime, "draws": values[-2]})
     return sorted(points, key=lambda p: p["mtime"]), finite
+
+
+def find_gpu():
+    """(device record, error text) from a child process, so this one holds no CUDA context."""
+    found = subprocess.run([sys.executable, "-c", GPU_PROBE], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+    if found.returncode:
+        return None, found.stderr[-2000:]
+    return json.loads(found.stdout.strip().splitlines()[-1]), None
 
 
 def main():
@@ -112,13 +122,12 @@ def main():
     os.environ["PYTHONFAULTHANDLER"] = "1"
     os.environ["CUPY_CACHE_DIR"] = str(root / "cupy-cache")
     os.environ["CUDA_CACHE_PATH"] = str(root / "cuda-cache")
-    found = subprocess.run([sys.executable, "-c", GPU_PROBE], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True)
-    if found.returncode:
-        receipt["gpu_probe_error"] = found.stderr[-2000:]
+    gpu, error = find_gpu()
+    if error:
+        receipt["gpu_probe_error"] = error
         save()
         return 3
-    gpu = receipt["gpu"] = json.loads(found.stdout.strip().splitlines()[-1])
+    receipt["gpu"] = gpu
     save()
 
     arguments = list(probe["arguments"])

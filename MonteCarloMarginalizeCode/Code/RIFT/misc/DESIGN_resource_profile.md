@@ -19,7 +19,7 @@ it relaxed, 4 GB cards crash and a slow card gates the iteration.
 
 ## Evidence: memory follows draws, not n chunk
 
-Numbers are from the IR1 v0 archive (rc13, Q2, 4096 Hz) and personal probes
+Numbers come from the IR1 v0 archive (rc13, Q2, 4096 Hz) and personal probes
 (2026-11-02/03). Inputs and scripts are in
 `~/data_products/ir1_resource_profile/` on CIT. Device memory is condor
 `GpusMemoryUsage`, host memory is `MemoryUsage`, and x is millions of draws in
@@ -64,11 +64,11 @@ profile and the workload into these values:
 The plan goes into the ini, not onto the command line, because pseudo_pipe
 lets the ini override its command line. Iteration 0 gets the same points per
 worker. n chunk is written too, since the helper would otherwise scale it with
-SNR. The ledger and the source ini are not changed. The copy lives in a
-`.rift-resource-plan-*` directory beside the rendered ini and must be kept: the
-DAG reads it at run time. The build refuses ILE `condor commands` that set `request_memory` or
-`require_gpus`, and a container manifest with per-branch ILE profiles, because
-either would replace the planned values in the submit files.
+SNR. The ledger and source ini stay unchanged. The copy lives in a
+`.rift-resource-plan-*` directory beside the rendered ini. The build refuses ILE
+`condor commands` that set `request_memory` or `require_gpus`, and a container
+manifest with per-branch ILE profiles. After the build it compares `ILE.sub`
+with the plan and refuses any difference, because other keys also reach ILE.
 
 ## Profile
 
@@ -82,7 +82,7 @@ is below the marketed size: a 24 GB Quadro RTX 6000 advertises 22684. A class
 also carries `slots` (only the ratios between classes affect the plan), an
 optional `relative speed`, and an optional `memory family`. Classes in a family
 run the same image and share a memory fit. Order classes from most to least
-specific: harvest maps a device to the first class it matches.
+specific: a device belongs to the first class it matches.
 
 An *observation* is one class, one outcome (`success`, `memory-failure`,
 `crash`, `failure`) and one workload. It may add draws per point, draws per
@@ -117,10 +117,11 @@ timing data.
 4. Without a fit, the most draws a worker on a card with no more memory has
    completed.
 
-Draws count per GPU for a worker that fanned out. Classes with no stated family
+Device draws count per GPU for a worker that fanned out; host fits use a
+worker's total. Classes with no stated family
 share failures but not successes. With no device evidence the class is excluded
 unless `admit unprofiled` is set. The ceiling is compared with the
-`timing quantile` worker, so about 10% of workers may pass it by default: they
+`timing quantile` worker, so about 10% of workers may pass it: they
 lose only their remaining points.
 
 **Cost.** Seconds per point are draws per point divided by draws per second.
@@ -151,14 +152,14 @@ and larger pool.
 **Requirement.** The default style, `exclude`, writes a memory floor (the
 smallest admitted class), then allows a card that an admitted class describes
 or that no excluded class describes. Cards no class describes can still match,
-so a new site is not locked out. A specific admitted class inside a broader
-excluded one still matches. `include` lists
-the admitted classes only. Give each class a memory ceiling, or excluding
+so a new site still runs. `include` lists
+the admitted classes only. An admitted selector leaves out excluded classes
+listed before it. Give each class a memory ceiling, or excluding
 "Pascal, 4 GB and up" also excludes a 24 GB Pascal card.
 
 **Host memory.** The largest need over the admitted classes at the planned
 worker's draws, times `1 + host memory margin`, rounded up to 100 MB. A class
-with no host fit uses its own largest observed value. With neither, the run
+with no host fit follows the line through its extreme workers. With neither, the run
 keeps its own request. A class with only an observed value can exceed
 `host memory max mb`. RIFT doubles the request for `ILE_extr.sub`, so the limit
 does not bound extrinsic jobs.
@@ -174,8 +175,9 @@ device memory for single-GPU workers. A worker that fanned out over K
 GPUs (`.gpuK` shards) counts its wall time K times. Out-of-memory text counts
 only when the worker failed. Rows whose `ntotal` is not a whole number (the
 hyperpipeline row layout) and extrinsic jobs are skipped. Held-then-removed
-workers have no termination record and are skipped, so a host-memory hold is
-not yet recorded.
+workers have no termination record or outputs, so they are skipped. Harvest
+counts host-memory holds apart: host fits see only survivors, and read low near
+the old request.
 
 With `harvest: true` and a directory profile, `after_completion` writes the
 run's observations to the profile and logs any failure. The CLI does the same.
@@ -190,8 +192,7 @@ run's observations to the profile and logs any failure. The CLI does the same.
 - `slots` is an operator estimate.
 - A memory fit describes a card under one image. A class moved to another image
   needs a new `memory family` and new samples.
-- Draws per second are assumed non-decreasing in n chunk. IR1 fixed-budget
-  trials agree: Blackwell ran about 6400 draws/s at 10000 and 9600 at 40000.
+- Draws per second are assumed non-decreasing in n chunk.
 - A requirement that pins a class (`Capability == 6.1`) is ANDed with the plan
   and can match nothing. Drop such pins when using a profile.
 - `require_gpus` does not reach a class that needs a separate opt-in. Those

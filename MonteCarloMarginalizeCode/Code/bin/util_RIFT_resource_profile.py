@@ -6,6 +6,7 @@
     util_RIFT_resource_profile.py survey PROFILE_DIR [--manifest family.yaml] [--pool HOST]
     util_RIFT_resource_profile.py emit-probes PROFILE_DIR --case DIR --arguments ile.args --label L --out DIR
     util_RIFT_resource_profile.py collect-probes PROFILE_DIR --probes DIR --output FILE
+    util_RIFT_resource_profile.py refresh-speeds PROFILE_DIR
 
 ``plan`` prints the plan as JSON.  ``harvest`` reads the workload from
 RUNDIR/resource-plan.json, else RUNDIR/ILE.sub, unless --workload is given, and
@@ -13,7 +14,8 @@ writes the observations as YAML to --output (default: stdout).  With a directory
 profile, put that file under PROFILE/observations/.  ``survey`` creates or
 updates PROFILE_DIR/resources.yaml from condor_status.  ``emit-probes`` writes
 one bounded ILE job per class, and ``collect-probes`` turns their receipts into
-observations.  See containers/README.md and RIFT/misc/DESIGN_resource_profile.md.
+observations.  ``refresh-speeds`` sets relative speeds from the observations.
+See containers/README.md and RIFT/misc/DESIGN_resource_profile.md.
 """
 
 import argparse
@@ -43,6 +45,7 @@ def _write_observations(observations, output):
         if os.path.lexists(output):
             print("refusing to replace {}".format(output), file=sys.stderr)
             return 2
+        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
         with open(output, "w") as f:
             f.write(text)
     else:
@@ -69,12 +72,19 @@ def _survey(opts):
     os.makedirs(opts.profile, exist_ok=True)
     report["inventory"] = build.save_inventory(os.path.join(opts.profile, "surveys"), rows, devices)
     build.write_resources(main, data)
-    profile = resource_profile.load_resource_profile(opts.profile)
-    report["relative speed set"] = build.refresh_relative_speeds(data, profile)
-    if report["relative speed set"]:
-        build.write_resources(main, data)
-        resource_profile.load_resource_profile(opts.profile)
+    resource_profile.load_resource_profile(opts.profile)
     print(json.dumps(report, indent=1))
+    return 0
+
+
+def _refresh_speeds(opts, profile):
+    main = os.path.join(opts.profile, "resources.yaml")
+    with open(main) as f:
+        data = yaml.safe_load(f)
+    labels = build.refresh_relative_speeds(data, profile)
+    if labels:
+        build.write_resources(main, data)
+    print(json.dumps({"relative speed set": labels}, indent=1))
     return 0
 
 
@@ -110,7 +120,8 @@ def main(argv=None):
     survey = sub.add_parser("survey")
     survey.add_argument("profile", help="profile directory; resources.yaml is created or updated")
     survey.add_argument("--manifest", default=None, help="container family manifest: sets each memory family")
-    survey.add_argument("--constraint", default="GPUs_DeviceName =!= undefined")
+    survey.add_argument("--constraint", default=build.DEFAULT_CONSTRAINT,
+                        help="default leaves out slots that need a job-side opt-in")
     survey.add_argument("--pool", action="append", help="collector to query; repeat to merge several")
     survey.add_argument("--keep-slots", action="store_true", help="keep the slots of existing classes")
     survey.add_argument("--inventory", default=None, help="saved condor_status -af:t output, instead of a query")
@@ -126,7 +137,7 @@ def main(argv=None):
     emit.add_argument("--points", type=int, default=10)
     emit.add_argument("--event", type=int, default=0)
     emit.add_argument("--n-chunk", type=int, default=None)
-    emit.add_argument("--n-eff", type=float, default=None)
+    emit.add_argument("--n-eff", type=int, default=None)
     emit.add_argument("--n-max", type=int, default=None)
     emit.add_argument("--python", default="python3", help="interpreter inside the image, as an absolute path")
     emit.add_argument("--ile", default="integrate_likelihood_extrinsic_batchmode")
@@ -140,6 +151,8 @@ def main(argv=None):
     collect.add_argument("profile")
     collect.add_argument("--probes", required=True, help="the --out directory of emit-probes")
     collect.add_argument("--output", default=None)
+    refresh = sub.add_parser("refresh-speeds")
+    refresh.add_argument("profile")
     opts = parser.parse_args(argv)
 
     try:
@@ -147,6 +160,8 @@ def main(argv=None):
             return _survey(opts)
         policy = yaml.safe_load(opts.policy) if getattr(opts, "policy", None) else None
         profile = resource_profile.load_resource_profile(opts.profile, policy)
+        if opts.command == "refresh-speeds":
+            return _refresh_speeds(opts, profile)
         if opts.command == "emit-probes":
             return _emit(opts, profile)
         if opts.command == "collect-probes":
@@ -162,8 +177,8 @@ def main(argv=None):
             return 0
         observations, skipped = resource_profile.harvest_rundir(
             opts.rundir, profile, _workload(opts.workload, opts.rundir))
-    except (resource_profile.ResourceProfileError, ContainerManifestError, OSError, yaml.YAMLError,
-            KeyError) as error:
+    except (resource_profile.ResourceProfileError, ContainerManifestError, OSError, ValueError,
+            yaml.YAMLError, KeyError) as error:
         print("resource profile: {}".format(error), file=sys.stderr)
         return 2
     code = _write_observations(observations, opts.output)

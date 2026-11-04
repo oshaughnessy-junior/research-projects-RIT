@@ -338,13 +338,15 @@ for s in probes/*/probe.sub; do (cd "$(dirname "$s")" && condor_submit probe.sub
 # 4. Receipts into observations, then refresh relative speeds.
 containers/resource_profile.sh collect-probes profile --probes probes \
   --output profile/observations/probes-YYYYMMDD.yaml
-containers/resource_profile.sh survey profile --keep-slots
+containers/resource_profile.sh refresh-speeds profile
 ```
 
 `CASE_DIR` holds the ILE inputs, and `ile.args` holds an ILE command line with
 paths relative to it. `emit-probes` refuses a command line that does not reach
 NoLoop. Set `--points` to a real worker size, because memory can grow with the
-draws a worker has run.
+draws a worker has run. Observations carry no `--n-max`, so use a separate
+`--label` for a probe capped below production. Set `PYTHON` to an interpreter
+with pyyaml.
 
 `survey` behaves as follows:
 
@@ -356,8 +358,12 @@ draws a worker has run.
   against the others, or use `--keep-slots`.
 - With `--manifest`, each class's `memory family` is the image selection gives
   it. A class moved to another image is reported. Its old observations still
-  apply, so collect new ones.
-- `condor_status` cannot see cards behind a job-side opt-in. Add those classes
-  by hand. `emit-probes` never adds such an attribute.
+  apply, so collect new ones. A branch with `select_requirements` cannot be
+  evaluated here, so such a class keeps its family and `emit-probes` needs
+  `--image`.
+- It leaves out slots a run cannot reach: START opens with a job-side opt-in
+  (`TARGET.SGNL_GPU =?= true`, the SPIIR flag) or is plain `false`. Use
+  `--constraint` for a pool that spells this differently. `emit-probes` never
+  sets such an attribute.
 - It rewrites `resources.yaml` without comments, keeps the last version as
   `resources.yaml.previous`, and saves the inventory under `surveys/`.

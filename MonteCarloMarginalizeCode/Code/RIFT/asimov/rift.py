@@ -695,9 +695,13 @@ class Rift(Pipeline):
         from RIFT.misc import resource_profile
         from RIFT.misc import container_manifest
         ile = (self.production.meta.get("sampler") or {}).get("ile") or {}
+        if settings.get("harvest") and not os.path.isdir(settings["path"]):
+            raise PipelineException("scheduler.resource profile: harvest needs a directory profile",
+                                    production=self.production.name)
         # Refuse settings that would replace the planned values in the submit files.
+        # check_built_run tests the result; this says why before any build.
         overrides = [key for key in (ile.get("condor commands") or {})
-                     if str(key).strip().lower() in ("request_memory", "require_gpus")]
+                     if re.sub(r"^(\+|my\.)|_", "", str(key).strip().lower()) in ("requestmemory", "requiregpus")]
         image = os.environ.get("SINGULARITY_RIFT_IMAGE")
         if container_manifest.is_container_manifest(image):
             # The builder runs in the event work_dir, so resolve a relative manifest there.
@@ -748,6 +752,18 @@ class Rift(Pipeline):
             json.dump(plan, f, indent=1, default=str)
         return planned_ini, plan
 
+    def _check_resource_plan(self, rundir, plan):
+        """Refuse a built run whose ILE.sub does not carry the plan."""
+        from RIFT.misc import resource_profile, resource_profile_build
+        try:
+            differences = resource_profile_build.check_built_run(rundir, plan)
+        except resource_profile.ResourceProfileError as error:
+            differences = [str(error)]
+        if differences:
+            self.production.status = "stuck"
+            raise PipelineException("Resource plan does not match the built run: {}".format(differences),
+                                    production=self.production.name)
+
     def _harvest_resource_observations(self):
         """Append this run's ILE observations to a directory resource profile, if asked."""
         try:
@@ -770,8 +786,13 @@ class Rift(Pipeline):
             path = os.path.join(target, name)
             if os.path.lexists(path):
                 raise ValueError("refusing to replace " + path)
-            with open(path, "w") as f:
+            if not observations:
+                self.logger.info("Resource profile: no observations; skipped {}".format(skipped))
+                return
+            # A partial file would stop every later build that loads this profile.
+            with open(path + ".partial", "w") as f:
                 yaml.safe_dump({"observations": observations}, f, sort_keys=False)
+            os.replace(path + ".partial", path)
             self.logger.info("Resource profile: wrote {} observations to {}; skipped {}".format(
                 len(observations), path, skipped))
         except Exception as error:   # never block completion on bookkeeping
@@ -1196,6 +1217,8 @@ class Rift(Pipeline):
                         raise PipelineException(f"DAG file could not be created.\n{command}\n{out}\n\n{err}",
                             production=self.production.name,
                         )
+                    if resource_plan is not None:
+                        self._check_resource_plan(rundir, resource_plan)
                     # Capture directly at the final location only after this
                     # invocation succeeded at the builder's fresh-directory guard.
                     # Never capture on a failed builder, even if a stale DAG exists.

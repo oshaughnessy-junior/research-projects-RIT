@@ -32,6 +32,13 @@ PROFILE = {
 }
 
 
+ILE_SUB = """arguments = "--n-chunk {n_chunk} --n-eff 20 --srate 4096 --q-time-pregrid-factor {q} --channel-name H1=a --channel-name L1=b --approx SEOBNRv5PHM --l-max 4 --srate-resample-time-marginalization 32768"
+request_memory = {memory}M
+require_gpus = {require}
+"""
+built_q = {"value": 2}
+
+
 def _pipe(monkeypatch, tmp_path, resource_profile, manual_args="--n-chunk 40000"):
     _require_supported_asimov()
     _require_htcondor()
@@ -83,13 +90,21 @@ def _pipe(monkeypatch, tmp_path, resource_profile, manual_args="--n-chunk 40000"
             return super().__new__(cls)
 
         def __init__(self, command, stdout=None, stderr=None, env=None):
-            self.command = command
+            self.command, self.env = command, env
             calls.append((command, env))
 
         def communicate(self):
             rundir = pathlib.Path(self.command[self.command.index("--use-rundir") + 1])
             rundir.mkdir(parents=True)
             (rundir / "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag").write_text("# test\n")
+            cfg = configparser.ConfigParser(interpolation=None)
+            cfg.optionxform = str
+            cfg.read(self.command[self.command.index("--use-ini") + 1])
+            pipe_ini = cfg["rift-pseudo-pipe"] if cfg.has_section("rift-pseudo-pipe") else {}
+            (rundir / "ILE.sub").write_text(ILE_SUB.format(
+                n_chunk=pipe_ini.get("internal-ile-n-chunk", 40000), q=built_q["value"],
+                memory=pipe_ini.get("internal-ile-request-memory", 1000),
+                require=(self.env or {}).get("RIFT_REQUIRE_GPUS", "")))
             return b"fake builder", None
 
     monkeypatch.setattr(rift_module.subprocess, "Popen", FakePopen)
@@ -170,3 +185,53 @@ def test_build_dag_refuses_condor_overrides(monkeypatch, tmp_path, key):
     with pytest.raises(PipelineException, match="override the plan"):
         pipe.build_dag()
     assert calls == []
+
+
+@pytest.mark.parametrize("key", ["MY.RequestMemory", "+RequireGPUs", "request_memory"])
+def test_build_dag_refuses_each_spelling_of_an_override(monkeypatch, tmp_path, key):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump(PROFILE))
+    pipe, production, calls, _ = _pipe(monkeypatch, tmp_path, {"path": str(profile), "workload label": "bbh"})
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
+    production.meta["sampler"]["ile"]["condor commands"] = {key: "1"}
+    with pytest.raises(PipelineException, match="override the plan"):
+        pipe.build_dag()
+    assert calls == []
+
+
+def test_build_dag_refuses_a_run_that_does_not_match_the_plan(monkeypatch, tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump(PROFILE))
+    pipe, _, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(profile), "workload label": "bbh"})
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
+    monkeypatch.setitem(built_q, "value", 4)
+    with pytest.raises(PipelineException, match="q pregrid factor"):
+        pipe.build_dag()
+
+
+def test_harvest_needs_a_directory_profile_before_the_build(monkeypatch, tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump(PROFILE))
+    pipe, _, calls, _ = _pipe(monkeypatch, tmp_path, {"path": str(profile), "workload label": "bbh", "harvest": True})
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
+    with pytest.raises(PipelineException, match="directory profile"):
+        pipe.build_dag()
+    assert calls == []
+
+
+def test_completion_harvest_writes_one_whole_file_and_skips_an_empty_one(monkeypatch, tmp_path):
+    root = tmp_path / "profile"
+    root.mkdir()
+    (root / "resources.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, production, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(root), "workload label": "bbh", "harvest": True})
+    pipe.build_dag()
+    from RIFT.misc import resource_profile
+    observation = {"class": "fast", "outcome": "success", "workload": WORKLOAD}
+    monkeypatch.setattr(resource_profile, "harvest_rundir", lambda *a: ([], {}))
+    pipe._harvest_resource_observations()
+    assert not (root / "observations").exists() or not list((root / "observations").iterdir())
+    monkeypatch.setattr(resource_profile, "harvest_rundir", lambda *a: ([observation], {}))
+    pipe._harvest_resource_observations()
+    (written,) = (root / "observations").iterdir()
+    assert written.suffix == ".yaml"
+    assert len(resource_profile.load_resource_profile(str(root))["observations"]) == 3

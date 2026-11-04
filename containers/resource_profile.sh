@@ -13,9 +13,11 @@ Usage:
   containers/resource_profile.sh harvest PROFILE_DIR RUNDIR --output PROFILE_DIR/observations/NAME.yaml
   containers/resource_profile.sh emit-probes PROFILE_DIR --case DIR --arguments FILE --label L --out DIR
   containers/resource_profile.sh collect-probes PROFILE_DIR --probes DIR --output PROFILE_DIR/observations/NAME.yaml
+  containers/resource_profile.sh refresh-speeds PROFILE_DIR
   containers/resource_profile.sh plan PROFILE_DIR --workload FILE
 
 Each command passes its arguments to bin/util_RIFT_resource_profile.py.
+Set PYTHON to an interpreter with pyyaml; the CIT system python3 is too old.
 See containers/README.md section 5.
 EOF
 }
@@ -26,7 +28,7 @@ case "${cmd}" in
         usage
         exit 0
         ;;
-    survey|harvest|emit-probes|collect-probes|plan)
+    survey|harvest|emit-probes|collect-probes|refresh-speeds|plan)
         export PYTHONPATH="${CODE}${PYTHONPATH:+:${PYTHONPATH}}"
         exec "${PYTHON}" "${CODE}/bin/util_RIFT_resource_profile.py" "$@"
         ;;

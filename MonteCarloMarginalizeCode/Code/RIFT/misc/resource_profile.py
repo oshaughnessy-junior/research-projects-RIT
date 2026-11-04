@@ -86,6 +86,9 @@ BOOTSTRAP_SAMPLES = 1000
 OUTCOMES = ("success", "memory-failure", "crash", "failure")
 # Outcomes that cap the draws a worker may run on a class.
 BLOCKING_OUTCOMES = ("memory-failure", "crash")
+# Exit codes of a signalled ILE: a shell gives 128 + signal, and the fan-out
+# launcher's sys.exit(p.wait()) gives 256 - signal (SIGABRT, SIGBUS, SIGSEGV).
+CRASH_RETURN_VALUES = (134, 135, 139, 250, 249, 245)
 # A memory fit needs this many workers, spanning this factor in draws.
 MIN_FIT_SAMPLES = 8
 MIN_FIT_SPAN = 2.0
@@ -287,7 +290,7 @@ def classify_device(profile, device_name, capability, memory_mb=None):
         if capability < float(lo) or (hi is not None and capability >= float(hi)):
             continue
         if memory_mb is not None and (memory_mb < c["memory mb"]
-                                      or memory_mb > c.get("memory mb max", float("inf"))):
+                                      or memory_mb > (c.get("memory mb max") or float("inf"))):
             continue
         if c["device names"] and not any(re.search(p, device_name or "") for p in c["device names"]):
             continue
@@ -308,6 +311,31 @@ def _class_selector(c):
         terms.append("(" + " || ".join('regexp("{}", DeviceName)'.format(p.replace("\\", "\\\\"))
                                        for p in c["device names"]) + ")")
     return "(" + " && ".join(terms) + ")"
+
+
+def _may_overlap(a, b):
+    """Could one card match both classes?  Device-name regexes are not compared."""
+    (a_lo, a_hi), (b_lo, b_hi) = a["capability"], b["capability"]
+    top = float("inf")
+    return (float(a_lo) < (top if b_hi is None else float(b_hi))
+            and float(b_lo) < (top if a_hi is None else float(a_hi))
+            and a["memory mb"] <= (b.get("memory mb max") or top)
+            and b["memory mb"] <= (a.get("memory mb max") or top))
+
+
+def _admitted_selector(profile, c, admitted_labels):
+    """Selector of an admitted class, less the excluded classes listed before it.
+
+    A device belongs to the first class it matches, so a card described by an
+    earlier excluded class is excluded even if this class also describes it.
+    """
+    earlier = []
+    for other in profile["classes"]:
+        if other["label"] == c["label"]:
+            break
+        if other["label"] not in admitted_labels and _may_overlap(other, c):
+            earlier.append("!" + _class_selector(other))
+    return "(" + " && ".join([_class_selector(c)] + earlier) + ")" if earlier else _class_selector(c)
 
 
 def _same_signature(a, b):
@@ -356,7 +384,8 @@ def _memory_models(profile, c, workload, column):
     by_label = {k["label"]: k for k in profile["classes"]}
 
     def pairs(keep):
-        return [(sample[0], sample[column]) for o in profile["observations"]
+        # Device memory follows the draws on one GPU; host memory holds all of a worker's.
+        return [(sample[0] / (sample[3] if column == 1 else 1), sample[column]) for o in profile["observations"]
                 if o["outcome"] == "success" and keep(by_label[o["class"]])
                 and _same_signature(o["workload"], workload)
                 for sample in o["memory samples"] if sample[column] is not None]
@@ -367,8 +396,12 @@ def _memory_models(profile, c, workload, column):
         found.append((_fit_memory(own), "{} workers on {}".format(len(own), c["label"])))
     if c.get("memory family") is not None:
         family = pairs(lambda k: _same_family(k, c))
-        if _fit_memory(family) is not None:
-            found.append((_fit_memory(family), "{} workers in family {}".format(len(family), c["memory family"])))
+        fit = _fit_memory(family)
+        if fit is not None:
+            # The family's envelope can pass under this class's few samples.
+            base = max([fit[0]] + [memory - fit[1] * draws for draws, memory in own])
+            found.append(((base,) + tuple(fit[1:]),
+                          "{} workers in family {}".format(len(family), c["memory family"])))
     return found
 
 
@@ -410,7 +443,7 @@ def _draw_ceiling(profile, c, workload):
     ceilings = []
     for i, (draws, o) in enumerate(failures):
         survivors = sum(r >= draws for r in reaches)
-        if survivors < odds * (len(failures) - i):
+        if survivors < odds * (len(failures) - i) - 1e-6:
             ceilings.append((draws, "{} on {} after {:.3g} draws, {} workers got further".format(
                 o["outcome"], o["class"], draws, survivors)))
             break
@@ -424,13 +457,17 @@ def _draw_ceiling(profile, c, workload):
         ceilings.append((max(reaches), "completed {:.3g} draws, no memory fit".format(max(reaches))))
     if not ceilings:
         return None, "no comparable memory evidence"
-    # Host memory grows the same way, and a larger request matches fewer slots.
+    return min(ceilings + _host_ceilings(profile, c, workload), key=lambda item: item[0])
+
+
+def _host_ceilings(profile, c, workload):
+    """(draws, reason) per host memory fit: a larger request matches fewer slots."""
+    policy = profile["policy"]
     allowed = float(policy["host memory max mb"]) / (1 + float(policy["host memory margin"]))
-    for (base, slope, _), source in _memory_models(profile, c, workload, 2):
-        ceilings.append((_draws_allowed(allowed, base, slope),
-                         "host {:.0f} MB + {:.3g} MB per Mdraw ({}), {:.0f} MB allowed".format(
-                             base, slope * 1e6, source, allowed)))
-    return min(ceilings, key=lambda item: item[0])
+    return [(_draws_allowed(allowed, base, slope),
+             "host {:.0f} MB + {:.3g} MB per Mdraw ({}), {:.0f} MB allowed".format(
+                 base, slope * 1e6, source, allowed))
+            for (base, slope, _), source in _memory_models(profile, c, workload, 2)]
 
 
 def _samples(profile, workload, key, keys, label=None):
@@ -503,9 +540,16 @@ def _host_request(profile, workload, admitted, by_label, draws):
         if fits:
             needs += [base + slope * draws for (base, slope, _), _ in fits]
         else:
-            needs += [float(o["host memory mb"]) for o in profile["observations"]
-                      if o.get("host memory mb") is not None and o["class"] == r["label"]
-                      and _same_signature(o["workload"], workload)]
+            own = [o for o in profile["observations"]
+                   if o["class"] == r["label"] and _same_signature(o["workload"], workload)]
+            needs += [float(o["host memory mb"]) for o in own if o.get("host memory mb") is not None]
+            # Too few workers to fit: follow the line through the extreme workers.
+            pairs = sorted((s[0], s[2]) for o in own if o["outcome"] == "success"
+                           for s in o["memory samples"] if s[2] is not None)
+            if pairs:
+                (low, low_mb), (high, high_mb) = pairs[0], pairs[-1]
+                slope = max(0.0, (high_mb - low_mb) / (high - low)) if high > low else 0.0
+                needs += [max(mb for _, mb in pairs), high_mb + slope * (draws - high)]
     if not needs:
         return None
     request = max(float(policy["host memory min mb"]), max(needs) * (1 + float(policy["host memory margin"])))
@@ -546,7 +590,7 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
         row["max worker draws"] = ceiling
         row["seconds per point"] = _quantile(draws, q) / rate if (rate and draws) else None
         if ceiling is None and policy["admit unprofiled"]:
-            ceiling = float("inf")
+            ceiling = min([d for d, _ in _host_ceilings(profile, c, workload)] + [float("inf")])
         limit = None
         if ceiling is None:
             row["excluded"] = "memory: " + row["memory"]
@@ -591,18 +635,18 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
         if r["label"] not in admitted_labels and "excluded" not in r:
             r["excluded"] = "its limit of {} points is below the throughput-optimal {}".format(r["points limit"], n)
     by_label = {c["label"]: c for c in profile["classes"]}
+    selectors = [_admitted_selector(profile, by_label[r["label"]], admitted_labels) for r in admitted]
     if policy["requirement style"] == "include":
-        require = " || ".join(_class_selector(by_label[r["label"]]) for r in admitted)
+        require = " || ".join(selectors)
     else:
         # A card no excluded class describes may match, so unlisted cards are not
-        # locked out; a card an admitted class describes always may, even when a
-        # broader excluded class also describes it.
+        # locked out; a card whose first class is an admitted one always may,
+        # even when a broader excluded class listed later also describes it.
         floor = min(r["memory mb"] for r in admitted)
         excluded = ["!" + _class_selector(by_label[r["label"]]) for r in rows if r["label"] not in admitted_labels]
-        allowed = [_class_selector(by_label[r["label"]]) for r in admitted]
         if excluded:
-            allowed.append("(" + " && ".join(excluded) + ")")
-            require = "(GlobalMemoryMb >= {}) && ({})".format(int(floor), " || ".join(allowed))
+            selectors.append("(" + " && ".join(excluded) + ")")
+            require = "(GlobalMemoryMb >= {}) && ({})".format(int(floor), " || ".join(selectors))
         else:
             require = "(GlobalMemoryMb >= {})".format(int(floor))
     worker_draws = float(walls[n - 1])
@@ -646,7 +690,7 @@ def apply_plan_to_ini(ini_in, ini_out, plan):
     if plan.get("request memory mb"):
         values["internal-ile-request-memory"] = int(plan["request memory mb"])
     for key, value in values.items():
-        section.pop(key.replace("-", "_"), None)   # pseudo_pipe reads either spelling
+        settings.remove_option("rift-pseudo-pipe", key.replace("-", "_"))   # pseudo_pipe reads either spelling
         section[key] = str(value)
     with open(ini_out, "w") as f:
         settings.write(f)
@@ -659,6 +703,7 @@ _DEV = re.compile(r"Device 0 Name\s*:\s*(.+)")
 _CAP = re.compile(r"Device 0 Compute Capability\s*:\s*(\d+)")
 _OOM = re.compile(r"OutOfMemoryError|cudaErrorMemoryAllocation|CUDA_ERROR_OUT_OF_MEMORY|out of memory",
                   re.IGNORECASE)
+_HOST_HOLD = "memory usage exceeded request_memory"
 _AD_LINE = re.compile(r'^(\w+)\s*=\s*"?(.*?)"?\s*$')
 _CLASSIC = re.compile(r"^(\d{3}) \(\d+\.\d+\.\d+\) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
 
@@ -734,11 +779,12 @@ def harvest_rundir(rundir, profile, workload, source=None):
     (``.gpuK`` output shards) ran K points at a time.  Memory samples pair a
     worker's total draws with condor's GpusMemoryUsage (single-GPU workers
     only) and MemoryUsage.
-    Held-then-removed workers have no termination and are skipped.
+    Held-then-removed workers have no termination and are skipped; those held
+    for host memory are counted apart, because the host fits never see them.
     """
     workload = normalize_workload(workload)
     setup = float(profile["policy"]["worker setup seconds"])
-    grouped, skipped = {}, {"not a grid worker": 0, "no gpu banner": 0, "no termination": 0,
+    grouped, skipped = {}, {"not a grid worker": 0, "no gpu banner": 0, "no termination": 0, "host memory hold": 0,
                             "unclassified device": 0}
     for out_path in sorted(glob.glob(os.path.join(rundir, "iteration_*_ile", "logs", "ILE*-*.out"))):
         stem = os.path.basename(out_path)[:-4]
@@ -757,7 +803,11 @@ def harvest_rundir(rundir, profile, workload, source=None):
             continue
         log = _parse_condor_log(out_path[:-4] + ".log")
         if not log or log["wall"] is None:
-            skipped["no termination"] += 1
+            try:
+                held = _HOST_HOLD in open(out_path[:-4] + ".log", errors="ignore").read()
+            except OSError:
+                held = False
+            skipped["host memory hold" if held else "no termination"] += 1
             continue
         label = classify_device(profile, dev[-1].strip(), int(cap[-1]) / 10.0, log["gpu_memory_mb"])
         if label is None:
@@ -790,7 +840,7 @@ def harvest_rundir(rundir, profile, workload, source=None):
         failed = bool(log["signal"]) or log["return_value"] != 0
         if failed and _OOM.search(err):
             outcome = "memory-failure"
-        elif log["signal"] or log["return_value"] in (134, 139):
+        elif log["signal"] or log["return_value"] in CRASH_RETURN_VALUES:
             outcome = "crash"
         elif log["return_value"] == 0 and points:
             outcome = "success"

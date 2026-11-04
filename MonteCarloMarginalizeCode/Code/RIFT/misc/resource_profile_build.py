@@ -28,6 +28,7 @@ import statistics
 import subprocess
 
 from RIFT.misc import resource_profile as rp
+from RIFT.misc.container_manifest import has_ile_profiles, selection_order
 
 __all__ = [
     "SURVEY_FIELDS",
@@ -36,14 +37,28 @@ __all__ = [
     "summarize_inventory",
     "update_resources",
     "refresh_relative_speeds",
+    "DEFAULT_CONSTRAINT",
     "workload_from_arguments",
     "workload_from_rundir",
+    "check_built_run",
     "emit_probes",
     "collect_probes",
 ]
 
 SURVEY_FIELDS = ("Name", "GPUs_DeviceName", "GPUs_Capability", "GPUs_GlobalMemoryMb",
                  "GPUs_DriverVersion", "DetectedGPUs")
+# Slots a run cannot reach: START opens with a job-side opt-in, or is plain false.
+# Evaluating Start here cannot tell them apart, since glidein START is false without
+# a job.  condor_status prints =?= as "is".  Nothing here ever sets such an attribute.
+# Character classes, because condor keeps both backslashes of an escaped dot.
+OPT_IN_START = "^(false$|TARGET[.][A-Za-z0-9_]+ (is|=[?]=) true)"
+ANY_GPU = "GPUs_DeviceName =!= undefined"
+DEFAULT_CONSTRAINT = '{} && !regexp("{}", unparse(Start))'.format(ANY_GPU, OPT_IN_START)
+# ILE options the workload signature reads; optparse also accepts --key=value.
+WORKLOAD_OPTIONS = ("--n-chunk", "--n-eff", "--srate", "--q-time-pregrid-factor", "--channel-name",
+                    "--approx", "--l-max", "--srate-resample-time-marginalization")
+# A new class's memory bounds allow for a driver reporting slightly different memory.
+MEMORY_TOLERANCE = 0.02
 # Every ILE command line must reach the NoLoop likelihood (RIFT AGENTS.md REDLINE).
 NOLOOP_FLAGS = ("--time-marginalization", "--vectorized", "--gpu", "--force-xpy")
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource_probe_worker.py")
@@ -62,7 +77,7 @@ def parse_inventory(text):
     return rows
 
 
-def survey_pool(constraint="GPUs_DeviceName =!= undefined", pool=None):
+def survey_pool(constraint=DEFAULT_CONSTRAINT, pool=None):
     """Query condor_status.  Device names hold spaces and DetectedGPUs holds commas."""
     if shutil.which("condor_status") is None:
         raise rp.ResourceProfileError("condor_status not found on PATH")
@@ -121,14 +136,19 @@ def _slug(name):
 
 
 def _image_label(manifest, capability):
-    """The manifest container that selection gives a card, as a memory family."""
+    """The manifest container selection gives a card, or None if that cannot be told here.
+
+    A branch with select_requirements is a ClassAd test on the slot, which this
+    function cannot evaluate.
+    """
     if manifest is None:
         return None
-    for c in manifest["containers"]:     # sorted by cuda_capability_min, descending
-        low = c.get("cuda_capability_min")
-        if low is not None and capability >= float(low):
-            return c["label"]
-    return manifest.get("fallback")
+    for c in selection_order(manifest):
+        low = c["cuda_capability_min"]
+        if low is not None and capability < float(low):
+            continue
+        return None if c.get("select_requirements") else c["label"]
+    return manifest["fallback"]
 
 
 def update_resources(resources, devices, manifest=None, keep_slots=False):
@@ -153,7 +173,8 @@ def update_resources(resources, devices, manifest=None, keep_slots=False):
                 count += 1
                 label = "{}-{}".format(base, count)
             entry = {"label": label, "capability": [device["capability"], round(device["capability"] + 0.1, 1)],
-                     "memory mb": device["memory mb"], "memory mb max": device["memory mb max"],
+                     "memory mb": int(device["memory mb"] * (1 - MEMORY_TOLERANCE)),
+                     "memory mb max": int(device["memory mb max"] * (1 + MEMORY_TOLERANCE)) + 1,
                      "device names": [_exact_name(device["name"])], "slots": 0}
             classes.append(entry)
             lookup["classes"].append(entry)
@@ -178,8 +199,9 @@ def refresh_relative_speeds(resources, profile):
     """Set ``relative speed`` from observed draws per second.  Returns the labels set.
 
     Rates are comparable only at one signature and n chunk, so this uses the
-    group of those shared by the most classes.  The class with the most rates
-    keeps its speed (or takes 1), which keeps other classes on the same scale.
+    group of those shared by the most classes.  The class in the group with the
+    most rates and a speed keeps it, which keeps other classes on the same
+    scale.  With no speed in the group and one elsewhere, nothing is set.
     """
     groups = {}
     for o in profile["observations"]:
@@ -194,7 +216,10 @@ def refresh_relative_speeds(resources, profile):
     if len(group) < 2:
         return []
     by_label = {c["label"]: c for c in resources["classes"]}
-    reference = max(group, key=lambda label: len(group[label]))
+    anchored = [label for label in group if by_label[label].get("relative speed")]
+    if not anchored and any(c.get("relative speed") for c in resources["classes"]):
+        return []
+    reference = max(anchored or group, key=lambda label: len(group[label]))
     scale = (by_label[reference].get("relative speed") or 1.0) / statistics.median(group[reference])
     for label, rates in group.items():
         by_label[label]["relative speed"] = round(statistics.median(rates) * scale, 3)
@@ -203,6 +228,10 @@ def refresh_relative_speeds(resources, profile):
 
 def workload_from_arguments(arguments, label):
     """Workload keys from an ILE argument list.  The last value of a repeated option wins."""
+    joined = [a for a in arguments if a.split("=", 1)[0] in WORKLOAD_OPTIONS and "=" in a]
+    if joined:
+        raise rp.ResourceProfileError("write ILE options as separate words, not {}".format(joined))
+
     def last(name):
         values = [arguments[i + 1] for i, a in enumerate(arguments[:-1]) if a == name]
         return values[-1] if values else None
@@ -216,22 +245,51 @@ def workload_from_arguments(arguments, label):
             "lmax": last("--l-max"), "time resampling": last("--srate-resample-time-marginalization")}
 
 
+def _read_ile_sub(rundir):
+    """(submit file text, ILE arguments) of a built run."""
+    try:
+        with open(os.path.join(rundir, "ILE.sub")) as f:
+            text = f.read()
+    except OSError as exc:
+        raise rp.ResourceProfileError("{}: no ILE.sub: {}".format(rundir, exc)) from exc
+    found = re.search(r'^arguments\s*=\s*"(.*)"\s*$', text, re.M)
+    if not found:
+        raise rp.ResourceProfileError("{}: ILE.sub has no arguments line".format(rundir))
+    # condor's new argument syntax doubles a quote inside a quoted word
+    return text, shlex.split(found.group(1).replace("''", "'"))
+
+
 def workload_from_rundir(rundir, label=None):
     """A run's workload: its ``resource-plan.json``, else its ``ILE.sub`` arguments."""
     plan = os.path.join(rundir, "resource-plan.json")
     if os.path.exists(plan):
         with open(plan) as f:
             return json.load(f)["workload"]
-    try:
-        with open(os.path.join(rundir, "ILE.sub")) as f:
-            found = re.search(r'^arguments\s*=\s*"(.*)"\s*$', f.read(), re.M)
-    except OSError as exc:
-        raise rp.ResourceProfileError("{}: no resource-plan.json or ILE.sub: {}".format(rundir, exc)) from exc
-    if not found:
-        raise rp.ResourceProfileError("{}: ILE.sub has no arguments line".format(rundir))
-    # condor's new argument syntax doubles a quote inside a quoted word
-    arguments = shlex.split(found.group(1).replace("''", "'"))
+    _, arguments = _read_ile_sub(rundir)
     return workload_from_arguments(arguments, label or os.path.basename(os.path.normpath(rundir)))
+
+
+def check_built_run(rundir, plan):
+    """Differences between a plan and the ``ILE.sub`` the builder wrote, as text.
+
+    The plan is made from ledger keys, and other keys can reach ILE too.  Memory
+    and speed evidence holds only if the job runs what was planned.
+    """
+    text, arguments = _read_ile_sub(rundir)
+    built = rp.normalize_workload(workload_from_arguments(arguments, None))
+    planned = rp.normalize_workload(plan["workload"])
+    differences = ["{}: planned {}, built {}".format(key, planned[key], built[key])
+                   for key in rp.SIGNATURE_KEYS + ("n chunk",) if planned[key] != built[key]]
+    if "integrate_likelihood_extrinsic_jax" in text:
+        differences.append("JAX ILE: profile evidence is for the batchmode executable")
+    memory = re.search(r"^request_memory\s*=\s*(\d+)", text, re.M | re.I)
+    wanted = plan.get("request memory mb")
+    if wanted and (memory is None or int(memory.group(1)) != int(wanted)):
+        differences.append("request_memory: planned {}, built {}".format(wanted, memory and memory.group(1)))
+    require = re.search(r"^require_gpus\s*=\s*(.*)$", text, re.M | re.I)
+    if require is None or plan["require gpus"] not in require.group(1):
+        differences.append("require_gpus does not carry the plan")
+    return differences
 
 
 SUBMIT = """universe = container
@@ -268,11 +326,15 @@ def emit_probes(profile, case, arguments, out, label, image=None, manifest=None,
     ``case`` is a directory of ILE inputs, and ``arguments`` an ILE argument
     list whose paths are relative to it.  Each job runs ``points`` points on one
     GPU of its class, so the memory it records matches a worker of that size.
-    A class needing a separate opt-in attribute gets none here: add it by hand.
+    Jobs never set a job-side opt-in attribute.
     """
     missing = [flag for flag in NOLOOP_FLAGS if flag not in arguments]
     if missing:
         raise rp.ResourceProfileError("ILE arguments must reach NoLoop; missing {}".format(missing))
+    if manifest is not None and has_ile_profiles(manifest):
+        raise rp.ResourceProfileError("this manifest sets per-image ILE profiles; pass image and ile instead")
+    # collect_probes needs this workload: fail here, before any GPU time is spent
+    workload_from_arguments(list(arguments) + (["--n-chunk", str(n_chunk)] if n_chunk else []), label)
     if not os.path.isdir(case):
         raise rp.ResourceProfileError("case directory not found: {}".format(case))
     wanted = [c for c in profile["classes"] if classes is None or c["label"] in classes]
@@ -291,6 +353,8 @@ def emit_probes(profile, case, arguments, out, label, image=None, manifest=None,
         chosen = image
         if manifest is not None and image is None:
             family = _image_label(manifest, float(c["capability"][0]))
+            if family is None:
+                raise rp.ResourceProfileError("cannot tell the image of class {}; pass image".format(c["label"]))
             chosen = next(m["image"] for m in manifest["containers"] if m["label"] == family)
         if chosen is None:
             raise rp.ResourceProfileError("emit_probes needs an image or a manifest")
@@ -318,8 +382,12 @@ def collect_probes(out, profile):
 
     The class comes from the device the job reports, not the job it was
     emitted for, and a job with no receipt or no known device is skipped.
+    Draws per second run from the end of the first point to the end of the last,
+    so the rate leaves out startup and compilation.  A job that stopped before
+    any point says nothing about memory, so it carries no failure draws.
     """
-    setup = float(profile["policy"]["worker setup seconds"])
+    if not os.path.isdir(out):
+        raise rp.ResourceProfileError("probe directory not found: {}".format(out))
     observations, skipped = [], []
     for directory in sorted(glob.glob(os.path.join(out, "*", ""))):
         path = os.path.join(directory, "results", "receipt.json")
@@ -332,35 +400,40 @@ def collect_probes(out, profile):
             skipped.append(directory)
             continue
         gpu, run = receipt.get("gpu"), receipt.get("run")
-        label = gpu and rp.classify_device(profile, gpu["name"], gpu["sm"] / 10.0)
+        label = gpu and rp.classify_device(profile, gpu["name"], gpu["sm"] / 10.0, gpu["vram_bytes"] // 1048576)
         if not label or not run or not run.get("arguments"):
             skipped.append(directory)
             continue
-        draws = [p["draws"] for p in run["points"]]
+        points = sorted((p for p in run["points"] if p["draws"] >= 1), key=lambda p: p["mtime"])
+        draws = [p["draws"] for p in points]
         memory = run["sampled_memory"]
         device = memory.get("gpu_peak_used_mb") or None
         host = (memory.get("host_peak_rss_kb") or 0) / 1024.0 or None
-        wall, code = run["wall_seconds"], run["returncode"]
+        code = run["returncode"]
+        complete = code == 0 and run["all_finite"] and len(draws) == probe["points"]
         o = {"class": label, "workload": workload_from_arguments(run["arguments"], probe["label"]),
              "source": path}
-        if code in (0, TIMEOUT_RETURNCODE):
+        if complete or (code == TIMEOUT_RETURNCODE and run["all_finite"]):
             o["outcome"] = "success"
             if draws:
                 o["draws per point"] = draws
                 o["memory samples"] = [[sum(draws), device, host, 1]]
-                if code == 0:
-                    o["draws per second"] = [sum(draws) / (wall - min(setup, wall / 2.0))]
-        else:
-            o["outcome"] = "memory-failure" if run.get("gpu_oom") else "crash" if code < 0 else "failure"
+            span = points[-1]["mtime"] - points[0]["mtime"] if points else 0
+            if len(points) > 1 and span > 0:
+                o["draws per second"] = [sum(draws[1:]) / span]
+        elif draws and (run.get("gpu_oom") or code < 0):
+            o["outcome"] = "memory-failure" if run.get("gpu_oom") else "crash"
             o["failure draws"] = [sum(draws)]
             if host:
                 o["host memory mb"] = host
+        else:
+            o["outcome"] = "failure"
         observations.append(o)
     return observations, skipped
 
 
 def write_resources(path, data):
-    """Replace ``path`` atomically, keeping the previous file as ``path.previous``."""
+    """Replace ``path`` atomically, keeping the file it replaces as ``path.previous``."""
     import yaml
     temporary = path + ".new"
     with open(temporary, "w") as f:
