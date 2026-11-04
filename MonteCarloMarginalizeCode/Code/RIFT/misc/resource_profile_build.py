@@ -393,7 +393,7 @@ def collect_probes(out, profile):
     emitted for, and a job with no receipt or no known device is skipped.
     Draws per second run from the end of the first point to the end of the last,
     so the rate leaves out startup and compilation.  A job that stopped before
-    any point says nothing about memory, so it carries no failure draws.
+    any point carries no failure draws, and blocks its class only on a GPU OOM.
     """
     if not os.path.isdir(out):
         raise rp.ResourceProfileError("probe directory not found: {}".format(out))
@@ -419,11 +419,12 @@ def collect_probes(out, profile):
         device = memory.get("gpu_peak_used_mb") or None
         host = (memory.get("host_peak_rss_kb") or 0) / 1024.0 or None
         code = run["returncode"]
-        usable = run["all_finite"] and not run.get("gpu_oom") and not run.get("noloop_lost")
-        complete = code == 0 and usable and len(draws) == probe["points"]
+        noloop = not run.get("noloop_lost")
+        complete = code == 0 and run["all_finite"] and noloop and len(draws) == probe["points"]
         o = {"class": label, "workload": workload_from_arguments(run["arguments"], probe["label"]),
              "source": path}
-        if complete or (code == TIMEOUT_RETURNCODE and usable and draws):
+        if complete or (code == TIMEOUT_RETURNCODE and run["all_finite"] and noloop
+                        and not run.get("gpu_oom") and draws):
             o["outcome"] = "success"
             if draws:
                 o["draws per point"] = draws
@@ -431,7 +432,7 @@ def collect_probes(out, profile):
             span = points[-1]["mtime"] - points[0]["mtime"] if points else 0
             if len(points) > 1 and span > 0:
                 o["draws per second"] = [sum(draws[1:]) / span]
-        elif run.get("gpu_oom") or (draws and code < 0):
+        elif noloop and (run.get("gpu_oom") or (draws and code < 0)):
             o["outcome"] = "memory-failure" if run.get("gpu_oom") else "crash"
             if draws:
                 o["failure draws"] = [sum(draws)]

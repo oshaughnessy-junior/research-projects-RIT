@@ -358,10 +358,17 @@ def test_collect_a_timeout_needs_clean_points(tmp_path, kwargs):
     assert observation["outcome"] != "success"
 
 
-def test_collect_a_run_off_noloop_is_no_evidence(tmp_path):
-    _receipt(tmp_path, "a", 0, noloop_lost=True)
+@pytest.mark.parametrize("code, kwargs", [(0, {}), (1, {"oom": True}), (-11, {})])
+def test_collect_a_run_off_noloop_is_no_evidence(tmp_path, code, kwargs):
+    _receipt(tmp_path, "a", code, noloop_lost=True, **kwargs)
     (observation,), _ = _collect(tmp_path)
     assert observation["outcome"] == "failure" and "draws per second" not in observation
+
+
+def test_collect_oom_text_in_a_complete_run_is_a_success(tmp_path):
+    _receipt(tmp_path, "a", 0, oom=True)
+    (observation,), _ = _collect(tmp_path)
+    assert observation["outcome"] == "success"
 
 
 def test_collect_a_crash_before_any_point_caps_nothing(tmp_path):

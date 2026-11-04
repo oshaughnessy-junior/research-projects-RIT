@@ -464,14 +464,34 @@ def _draw_ceiling(profile, c, workload):
     return min(ceilings + _host_ceilings(profile, c, workload), key=lambda item: item[0])
 
 
+def _host_line(pairs):
+    """(base, slope) through the extreme workers of (draws, MB) pairs too few to fit, or None."""
+    if not pairs or pairs[-1][0] < MIN_FIT_SPAN * pairs[0][0]:
+        return None
+    (low, low_mb), (high, high_mb) = pairs[0], pairs[-1]
+    slope = max(0.0, (high_mb - low_mb) / (high - low))
+    return high_mb - slope * high, slope
+
+
+def _own_host_pairs(profile, c, workload):
+    return sorted((s[0], s[2]) for o in profile["observations"]
+                  if o["class"] == c["label"] and o["outcome"] == "success"
+                  and _same_signature(o["workload"], workload)
+                  for s in o["memory samples"] if s[2] is not None)
+
+
 def _host_ceilings(profile, c, workload):
-    """(draws, reason) per host memory fit: a larger request matches fewer slots."""
+    """(draws, reason) per host memory line: a larger request matches fewer slots."""
     policy = profile["policy"]
     allowed = float(policy["host memory max mb"]) / (1 + float(policy["host memory margin"]))
+    models = [(fit[:2], source) for fit, source in _memory_models(profile, c, workload, 2)]
+    line = None if models else _host_line(_own_host_pairs(profile, c, workload))
+    if line:
+        models.append((line, "extreme workers on {}".format(c["label"])))
     return [(_draws_allowed(allowed, base, slope),
              "host {:.0f} MB + {:.3g} MB per Mdraw ({}), {:.0f} MB allowed".format(
                  base, slope * 1e6, source, allowed))
-            for (base, slope, _), source in _memory_models(profile, c, workload, 2)]
+            for (base, slope), source in models]
 
 
 def _samples(profile, workload, key, keys, label=None):
@@ -544,8 +564,7 @@ def _host_request(profile, workload, admitted, by_label, draws):
         fits = _memory_models(profile, by_label[r["label"]], workload, 2)
         own = [o for o in profile["observations"]
                if o["class"] == r["label"] and _same_signature(o["workload"], workload)]
-        pairs = sorted((s[0], s[2]) for o in own if o["outcome"] == "success"
-                       for s in o["memory samples"] if s[2] is not None)
+        pairs = _own_host_pairs(profile, by_label[r["label"]], workload)
         if not (fits and pairs):  # a value with no draws would outweigh the fit at small workers
             needs += [float(o["host memory mb"]) for o in own if o.get("host memory mb") is not None]
         if fits:
@@ -554,11 +573,10 @@ def _host_request(profile, workload, admitted, by_label, draws):
             # Too few workers to fit: follow the line through the extreme workers,
             # if they span enough to set a slope, up to what a job may request.
             if pairs:
-                (low, low_mb), (high, high_mb) = pairs[0], pairs[-1]
                 needs.append(max(mb for _, mb in pairs))
-                if high >= MIN_FIT_SPAN * low:
-                    slope = max(0.0, (high_mb - low_mb) / (high - low))
-                    needs.append(min(high_mb + slope * (draws - high), allowed))
+            line = _host_line(pairs)
+            if line:
+                needs.append(min(line[0] + line[1] * draws, allowed))
     if not needs:
         return None
     request = max(float(policy["host memory min mb"]), max(needs) * (1 + float(policy["host memory margin"])))

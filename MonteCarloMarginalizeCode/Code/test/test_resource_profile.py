@@ -774,3 +774,11 @@ def test_device_name_with_a_backslash_is_refused(tmp_path):
         {"label": "a", "capability": [8, 9], "memory mb": 1000, "device names": ["^A1\\.5$"]}], "observations": []}))
     with pytest.raises(rp.ResourceProfileError, match="backslash"):
         rp.load_resource_profile(str(path))
+
+
+def test_thin_host_line_limits_the_worker(tmp_path):
+    samples = [[1e6, 1000.0, 2000.0], [3e6, 1000.0, 6000.0]]
+    observation = _obs("modern-24gb", "success", **dict(_t(10), **{"memory samples": samples}))
+    profile = rp.load_resource_profile(_write_profile(tmp_path, [observation]))
+    (ceiling, reason), = rp._host_ceilings(profile, profile["classes"][2], rp.normalize_workload(WORKLOAD))
+    assert ceiling == pytest.approx(6.4e6) and "extreme workers" in reason   # 12800 MB at 2000 MB per Mdraw
