@@ -7173,7 +7173,7 @@ for indx in numpy.arange(len(P_list)):
  except Exception as exception_failure:
   if isinstance(exception_failure, QTimePregridError):
     raise
-  if factored_likelihood.time_quad.is_gpu_resource_error(exception_failure):
+  if factored_likelihood.time_quadrature_module.is_gpu_resource_error(exception_failure):
     # A broken GPU context must never become a skipped intrinsic point or a
     # successful empty product, including under legacy soft-failure options.
     raise

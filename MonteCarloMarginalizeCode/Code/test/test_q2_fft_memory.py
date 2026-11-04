@@ -87,7 +87,7 @@ def test_worker_resource_failure_raises_before_empty_or_soft_success():
     probe = ast.Module(body=handler.body, type_ignores=[])
     from types import SimpleNamespace
     scope = dict(QTimePregridError=type('QTimePregridError', (Exception,), {}),
-                 factored_likelihood=SimpleNamespace(time_quad=tq))
+                 factored_likelihood=SimpleNamespace(time_quadrature_module=tq))
     class ByteCountError(RuntimeError):
         pass
     ByteCountError.__module__ = 'cupy.cuda.memory'
