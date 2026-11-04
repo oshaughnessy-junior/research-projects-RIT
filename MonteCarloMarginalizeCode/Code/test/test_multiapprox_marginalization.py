@@ -32,6 +32,7 @@ BIN = CODE / "bin"
 CLEANILE = BIN / "util_CleanILE.py"
 COMBINE = BIN / "util_CombineApproximantPosteriors.py"
 BUILDER = BIN / "create_event_parameter_pipeline_BasicMultiApproxIteration"
+BASIC_BUILDER = BIN / "create_event_parameter_pipeline_BasicIteration"
 MODEL_RX = r"approx_(.+?)_consolidated"
 
 
@@ -707,3 +708,88 @@ def test_every_job_directory_exists(multiapprox_rundir):
             if target and not os.path.isdir(target):
                 problems.append("{}: missing directory {}".format(submit, target))
     assert not problems, "\n  ".join(sorted(set(problems)))
+
+
+# --------------------------------------------------------------------------
+# a CIP schedule that does not match --n-iterations
+# --------------------------------------------------------------------------
+#
+# pseudo_pipe sets --n-iterations from the schedule unless
+# --internal-force-iterations overrides it.  A short schedule must extend its
+# last line, so every requested iteration has a fit.
+
+def _build_cip_schedule(rundir, builder, prefixes, n_iterations):
+    """Build a DAG whose CIP line i carries the marker --sigma-cut 0.(i+1)."""
+    pytest.importorskip("RIFT.lalsimutils")
+    (rundir / "args_ile.txt").write_text(
+        "X --n-eff 20 --time-marginalization --vectorized --gpu --force-xpy "
+        "--approx placeholder\n")
+    (rundir / "args_test.txt").write_text("X --method lame --parameter mc\n")
+    (rundir / "args_cip_list.txt").write_text("".join(
+        "{} --no-plots --fit-method rf --parameter mc --sigma-cut 0.{}\n".format(p, i + 1)
+        for i, p in enumerate(prefixes)))
+    grid = _run(["-c",
+                 "import RIFT.lalsimutils as u\n"
+                 "p=u.ChooseWaveformParams(); p.m1=30*u.lsu_MSUN; p.m2=20*u.lsu_MSUN\n"
+                 "u.ChooseWaveformParams_array_to_xml([p],'proposed-grid')\n"], rundir)
+    if grid.returncode:
+        pytest.skip("cannot build a seed grid: {}".format(grid.stderr[-400:]))
+    cmd = [builder,
+           "--input-grid", "proposed-grid.xml.gz",
+           "--ile-exe", str(BIN / "integrate_likelihood_extrinsic_batchmode"),
+           "--ile-args", str(rundir / "args_ile.txt"),
+           "--cip-args-list", str(rundir / "args_cip_list.txt"),
+           "--test-args", str(rundir / "args_test.txt"),
+           "--n-samples-per-job", "2",
+           "--request-memory-CIP", "4096", "--request-memory-ILE", "4096",
+           "--working-directory", str(rundir),
+           "--n-iterations", str(n_iterations), "--n-copies", "1",
+           "--last-iteration-extrinsic",
+           "--last-iteration-extrinsic-nsamples", "4"]
+    if builder == BUILDER:
+        cmd += ["--approx", "IMRPhenomXPHM", "--approx", "SEOBNRv4PHM"]
+    else:
+        cmd += ["--n-iterations-subdag-max", "1"]
+    build = _run(cmd, rundir)
+    assert build.returncode == 0, build.stdout[-1500:] + build.stderr[-1500:]
+
+
+def _cip_line_per_iteration(rundir, n_iterations):
+    """The CIP list line each iteration fits with; None where no line runs."""
+    jobs, macros, _ = _dag_facts(rundir)
+    line = {}
+    for node, sub in jobs.items():
+        match = re.fullmatch(r"CIP_(\d+)\.sub", Path(sub).name)
+        if match:
+            line[int(macros[node]["macroiteration"])] = int(match.group(1))
+    return [line.get(it) for it in range(n_iterations)]
+
+
+@pytest.mark.parametrize("builder", [BUILDER, BASIC_BUILDER],
+                         ids=["multiapprox", "basic"])
+@pytest.mark.parametrize("prefixes,n_iterations,expected", [
+    (["1", "2"], 5, [0, 1, 1, 1, 1]),            # short: last line extends
+    (["2"], 5, [0, 0, 0, 0, 0]),
+    (["1", "1", "1"], 5, [0, 1, 2, 2, 2]),
+    (["1", "G2"], 5, [0, 1, 1, 1, 1]),
+    (["1", "0"], 3, [0, 1, 1]),
+    (["2", "2"], 4, [0, 0, 1, 1]),               # exact: nothing to extend
+    (["4", "4"], 6, [0, 0, 0, 0, 1, 1]),         # long: the tail never runs
+    (["1", "1", "1"], 2, [0, 1]),
+])
+def test_cip_schedule_covers_every_iteration(tmp_path, builder, prefixes,
+                                             n_iterations, expected):
+    _build_cip_schedule(tmp_path, builder, prefixes, n_iterations)
+    assert _cip_line_per_iteration(tmp_path, n_iterations) == expected
+
+    # The terminal job must use the line the final iteration fit with, not the
+    # last line of the file: the two differ when the schedule is long.
+    terminal = "CIP_terminal.sub" if builder == BUILDER else "CIP_prior.sub"
+    text = (tmp_path / terminal).read_text()
+    assert re.findall(r"--sigma-cut (\S+)", text) == ["0.{}".format(expected[-1] + 1)]
+
+
+def test_extension_lands_after_a_run_to_convergence_stage(tmp_path):
+    """A Z stage holds exactly one iteration, whatever the requested total."""
+    _build_cip_schedule(tmp_path, BASIC_BUILDER, ["1", "Z", "2"], 6)
+    assert _cip_line_per_iteration(tmp_path, 6) == [0, None, 2, 2, 2, 2]
