@@ -15,4 +15,5 @@ python -m pytest -q \
     MonteCarloMarginalizeCode/Code/test/test_asimov_bootstrap_source.py \
     MonteCarloMarginalizeCode/Code/test/test_eccentric_bootstrap.py \
     MonteCarloMarginalizeCode/Code/test/test_asimov_rift_ledger_options.py \
-    MonteCarloMarginalizeCode/Code/test/test_resource_profile.py
+    MonteCarloMarginalizeCode/Code/test/test_resource_profile.py \
+    MonteCarloMarginalizeCode/Code/test/test_resource_profile_build.py

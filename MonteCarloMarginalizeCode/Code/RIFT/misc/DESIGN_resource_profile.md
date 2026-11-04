@@ -2,7 +2,8 @@
 
 Code: `resource_profile.py` (this directory); asimov hook
 `RIFT/asimov/rift.py` (`scheduler: resource profile:`); CLI
-`bin/util_RIFT_resource_profile.py`. Tests: `test/test_resource_profile.py`,
+`bin/util_RIFT_resource_profile.py`. Builder: `resource_profile_build.py`,
+workflow in `containers/README.md`. Tests: `test/test_resource_profile*.py`,
 `test/asimov_integration/test_asimov_rift_resource_profile.py`.
 
 ## Problem
