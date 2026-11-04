@@ -720,7 +720,7 @@ def test_every_job_directory_exists(multiapprox_rundir):
 # --internal-force-iterations overrides it.  A short schedule must extend its
 # last line, so every requested iteration has a fit.
 
-def _build_cip_schedule(rundir, builder, prefixes, n_iterations):
+def _build_cip_schedule(rundir, builder, prefixes, n_iterations, extra=(), check=True):
     """Build a DAG whose CIP line i carries the marker --sigma-cut 0.(i+1)."""
     pytest.importorskip("RIFT.lalsimutils")
     (rundir / "args_ile.txt").write_text(
@@ -757,16 +757,18 @@ def _build_cip_schedule(rundir, builder, prefixes, n_iterations):
         cmd += ["--approx", "IMRPhenomXPHM", "--approx", "SEOBNRv4PHM"]
     elif builder == BASIC_BUILDER:
         cmd += ["--n-iterations-subdag-max", "1"]
-    build = _run(cmd, rundir)
-    assert build.returncode == 0, build.stdout[-1500:] + build.stderr[-1500:]
+    build = _run(cmd + list(extra), rundir)
+    if check:
+        assert build.returncode == 0, build.stdout[-1500:] + build.stderr[-1500:]
+    return build
 
 
-def _cip_line_per_iteration(rundir, n_iterations):
+def _cip_line_per_iteration(rundir, n_iterations, sub_pattern=r"CIP_(\d+)\.sub"):
     """The CIP list line each iteration fits with; None where no line runs."""
     jobs, macros, _ = _dag_facts(rundir)
     line = {}
     for node, sub in jobs.items():
-        match = re.fullmatch(r"CIP_(\d+)\.sub", Path(sub).name)
+        match = re.fullmatch(sub_pattern, Path(sub).name)
         if match:
             line[int(macros[node]["macroiteration"])] = int(match.group(1))
     return [line.get(it) for it in range(n_iterations)]
@@ -776,6 +778,7 @@ def _cip_line_per_iteration(rundir, n_iterations):
                          ids=["multiapprox", "basic", "alternate"])
 @pytest.mark.parametrize("prefixes,n_iterations,expected", [
     (["1", "2"], 5, [0, 1, 1, 1, 1]),            # short: last line extends
+    (["2", "2"], 5, [0, 0, 1, 1, 1]),            # one iteration short
     (["2"], 5, [0, 0, 0, 0, 0]),
     (["1", "1", "1"], 5, [0, 1, 2, 2, 2]),
     (["1", "G2"], 5, [0, 1, 1, 1, 1]),
@@ -797,14 +800,62 @@ def test_cip_schedule_covers_every_iteration(tmp_path, builder, prefixes,
         assert re.findall(r"--sigma-cut (\S+)", text) == ["0.{}".format(expected[-1] + 1)]
 
 
-def test_extension_lands_after_a_run_to_convergence_stage(tmp_path):
+@pytest.mark.parametrize("prefixes,n_iterations,expected", [
+    (["1", "Z", "2"], 6, [0, None, 2, 2, 2, 2]),
+    (["1", "Z"], 2, [0, None]),
+])
+def test_extension_lands_after_a_run_to_convergence_stage(tmp_path, prefixes,
+                                                          n_iterations, expected):
     """A Z stage holds exactly one iteration, whatever the requested total."""
-    _build_cip_schedule(tmp_path, BASIC_BUILDER, ["1", "Z", "2"], 6)
-    assert _cip_line_per_iteration(tmp_path, 6) == [0, None, 2, 2, 2, 2]
+    _build_cip_schedule(tmp_path, BASIC_BUILDER, prefixes, n_iterations)
+    assert _cip_line_per_iteration(tmp_path, n_iterations) == expected
+
+
+def test_basic_builder_cannot_extend_a_run_to_convergence_stage(tmp_path):
+    """A short schedule ending in Z stops the build; no iterations are invented."""
+    build = _build_cip_schedule(tmp_path, BASIC_BUILDER, ["1", "Z"], 5, check=False)
+    assert build.returncode != 0
+    assert "IndexError" in build.stderr
+    # It stops at the terminal lookup, before any subdag is written.
+    assert "cip_args_for_iteration[opts.n_iterations-1]" in build.stderr
+
+
+@pytest.mark.parametrize("builder", [BUILDER, ALTERNATE_BUILDER],
+                         ids=["multiapprox", "alternate"])
+@pytest.mark.parametrize("prefixes,n_iterations,expected", [
+    (["1", "Z"], 5, [0, 1, 1, 1, 1]),
+    (["1", "Z", "2"], 6, [0, 1, 2, 2, 2, 2]),
+])
+def test_builders_without_a_convergence_stage_treat_z_as_one_fit(
+        tmp_path, builder, prefixes, n_iterations, expected):
+    """Z counts as an ordinary line here, so a final Z line repeats as a fixed fit."""
+    _build_cip_schedule(tmp_path, builder, prefixes, n_iterations)
+    assert _cip_line_per_iteration(tmp_path, n_iterations) == expected
+
+
+@pytest.mark.parametrize("builder", [BUILDER, BASIC_BUILDER, ALTERNATE_BUILDER],
+                         ids=["multiapprox", "basic", "alternate"])
+def test_cip_schedule_extends_with_exploded_jobs(tmp_path, builder):
+    _build_cip_schedule(tmp_path, builder, ["1", "2"], 5,
+                        extra=["--cip-explode-jobs", "2"])
+    workers = _cip_line_per_iteration(tmp_path, 5, r"CIP_worker(\d+)\.sub")
+    assert workers == [0, 1, 1, 1, 1]
+
+
+def test_puff_stage_follows_the_extended_cip_line(tmp_path):
+    puff_list = tmp_path / "args_puff_list.txt"
+    puff_list.write_text("1 --parameter mc --puff-factor 2\n"
+                         "2 --parameter mc --puff-factor 3\n")
+    _build_cip_schedule(tmp_path, BASIC_BUILDER, ["1", "2"], 5, extra=[
+        "--puff-exe", str(BIN / "util_ParameterPuffball.py"),
+        "--puff-args-list", str(puff_list),
+        "--puff-cadence", "1", "--puff-max-it", "9"])
+    assert _cip_line_per_iteration(tmp_path, 5, r"PUFF_(\d+)\.sub") == [0, 1, 1, 1, 1]
 
 
 @pytest.mark.parametrize("prefixes,n_iterations,line", [
     (["1", "2"], 5, 1),
+    (["2", "2"], 5, 1),
     (["2"], 5, 0),
     (["1", "1", "1"], 5, 2),
     (["1", "0"], 3, 1),
