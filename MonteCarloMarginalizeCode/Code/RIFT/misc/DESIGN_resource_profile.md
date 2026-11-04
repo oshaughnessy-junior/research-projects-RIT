@@ -13,9 +13,8 @@ GPU requirement (`RIFT_REQUIRE_GPUS`). The pool is not uniform. Cards differ
 by 8x in memory (4 to 32 GB) and several-fold in draws per second, and the small, slow cards are
 the most numerous.
 
-The IR1 review runs showed both failure modes. With a high-memory requirement,
-throughput depends on a few large cards. With the requirement relaxed, 4 GB
-cards crash near full memory, and a slow card gates the whole iteration.
+With a high-memory requirement, throughput depends on a few large cards. With
+it relaxed, 4 GB cards crash and a slow card gates the iteration.
 
 ## Evidence: memory follows draws, not n chunk
 
@@ -38,8 +37,14 @@ at 10000, 20000 and 40000 alike, after 3 to 7 million completed draws. It grew
 faster than the A10 fit: 4021 MB at 6.7 million draws, where that fit predicts
 2492 MB.
 
-All CUDA 11.8 cards are older than the one CUDA 12.9 card, so image and card
-are confounded. The cause is not established.
+The image sets the growth. One 10-point group ran three times
+under each image on A100s (2026-11-04), including a swap of the two physical
+GPUs. Under CUDA 11.8 device memory grew 272 to 465 MB and host memory 466 to
+554 MB per million draws. Under CUDA 12.9 both stopped rising by the fourth
+point, near 1100 MB host and at most 1754 MB device. The images differ in one
+Python package, `cupy-cuda11x` against `cupy-cuda12x`, both 13.6.0. Which
+library holds the memory is not established. Records are in
+`image-control-20261104/` under the directory above.
 
 ## What this adds
 
@@ -62,8 +67,7 @@ SNR. The ledger and the source ini are not changed. The copy lives in a
 `.rift-resource-plan-*` directory beside the rendered ini and must be kept: the
 DAG reads it at run time. The build refuses ILE `condor commands` that set `request_memory` or
 `require_gpus`, and a container manifest with per-branch ILE profiles, because
-either would replace the planned values in the submit files. The requirement is set only in the builder's environment, so one
-asimov process can build several productions.
+either would replace the planned values in the submit files.
 
 ## Profile
 
@@ -121,8 +125,7 @@ lose only their remaining points.
 **Cost.** Seconds per point are draws per point divided by draws per second.
 Draws per point (ILE `ntotal`) depend on the event, the iteration and n eff,
 not on the card. They are pooled over all classes. Draws per second depend on
-the card and n chunk, not on the point. Splitting the two keeps a fast card
-that served hard late-iteration points from looking slow. A class takes the
+the card and n chunk, not on the point. A class takes the
 low quantile (`1 - timing quantile`) of its own rates. If it has none, it takes
 the rate measured at a smaller n chunk (assumed slower), or a rate scaled from
 another class by `relative speed`.
@@ -142,8 +145,7 @@ pool throughput is
     sum_c slots_c * N / (N * mean_draws / rate_c + setup)
 
 The planner keeps the N with the highest throughput; ties go to the smaller N
-and larger pool. A numerous small card joins only if the N it sustains beats
-the larger cards without it.
+and larger pool.
 
 **Requirement.** The default style, `exclude`, writes a memory floor (the
 smallest admitted class), then allows a card that an admitted class describes
@@ -183,14 +185,13 @@ run's observations to the profile and logs any failure. The CLI does the same.
   needs either per-class ILE nodes or an ILE wall-time budget. ILE already
   processes a worker's points in order, so a truncated worker drops an
   unbiased subset (`--sampler-sequential-warmstart` help); the budget is the
-  missing piece. The container manifest's per-branch `request_memory`
-  already selects host memory at match time.
+  missing piece.
 - `slots` is an operator estimate.
+- A memory fit describes a card under one image. A class moved to another image
+  needs a new `memory family` and new samples.
 - Draws per second are assumed non-decreasing in n chunk. IR1 fixed-budget
   trials agree: Blackwell ran about 6400 draws/s at 10000 and 9600 at 40000.
 - A requirement that pins a class (`Capability == 6.1`) is ANDed with the plan
   and can match nothing. Drop such pins when using a profile.
 - `require_gpus` does not reach a class that needs a separate opt-in. Those
   attributes stay in the blueprint.
-- Multi-GPU fan-out makes workers finish sooner than planned. The plan is
-  conservative there.
