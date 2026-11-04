@@ -46,6 +46,7 @@ N_SAMPLES_PER_JOB = 5
 SEED_GRID_POINTS = 4
 N_TERMINAL_EVENTS = 4  # --last-iteration-extrinsic-nsamples
 TERMINAL_SAMPLES_PER_ILE = 3
+GWSIGNAL_MODELS = {"SEOBNRv4PHM"}  # the DAG fixture's --approx-gwsignal
 
 
 def _env():
@@ -678,6 +679,17 @@ def _is_ile(sub):
     return _is_loop_ile(sub) or sub == "ILE_extr.sub"
 
 
+def _check_ile(build, node, output, directory):
+    """An ILE node runs its own model and writes where the next stage reads."""
+    model = build.macros[node]["macroapprox"]
+    args = _submit_field(build, node, "arguments")
+    assert re.findall(r"--approx (\S+)", args)[-1] == model
+    assert ("--use-gwsignal" in args.split()) == (model in GWSIGNAL_MODELS)
+    assert _rel(build, _submit_field(build, node, "initialdir")) == directory
+    assert _file_arg(build, args, "--output-file").startswith(
+        "{}-{}".format(output, build.macros[node]["macroevent"]))
+
+
 def _grid_writer(build, it):
     """The node that puts overlap-grid-(it+1) in the run directory."""
     keep = (lambda s: s == "join_grids.sub") if build.explode else _is_loop_cip
@@ -758,6 +770,8 @@ def test_each_iteration_fits_the_net_of_its_own_evaluations(build):
         for node in _at_iteration(build, it, lambda s: s == "ILE.sub"):
             args = _submit_field(build, node, "arguments")
             assert _file_arg(build, args, "--sim-xml") == "overlap-grid-{}.xml.gz".format(it)
+            _check_ile(build, node, "CME_out", "approx_{}_iteration_{}_ile".format(
+                macros[node]["macroapprox"], it))
             if it > 0:
                 assert _grid_writer(build, it - 1) in _ancestors(node, parents), (
                     "ILE {} can start before overlap-grid-{} exists".format(it, it))
@@ -794,6 +808,7 @@ def test_puffed_points_reach_the_net_of_the_iteration_that_evaluates_them(build)
             it = macros[node]["macroiteration"]
             args = _submit_field(build, node, "arguments")
             assert _file_arg(build, args, "--sim-xml") == "puffball-{}.xml.gz".format(it)
+            _check_ile(build, node, "CME_out", "approx_{}_iteration_{}_ile".format(model, it))
             assert written[it] in _ancestors(node, parents)
 
 
@@ -952,6 +967,8 @@ def test_each_model_keeps_its_own_extrinsic_chain(build):
         extrinsic = _of_model(build, model, "ILE_extr.sub")
         converts = _of_model(build, model, "convert_extr.sub")
         assert _events(build, extrinsic) == batches
+        for node in extrinsic:
+            _check_ile(build, node, "EXTR_out", directory)
         assert len(converts) == N_GROUP * len(batches)
         for node in converts:
             event = macros[node]["macroevent"]
@@ -971,15 +988,6 @@ def test_each_model_keeps_its_own_extrinsic_chain(build):
     assert parents[combine] == cats
     target = re.search(r"--n-output-samples (\d+)", _submit_field(build, combine, "arguments"))
     assert int(target.group(1)) == len(batches) * N_GROUP * TERMINAL_SAMPLES_PER_ILE
-
-
-def test_each_ile_node_uses_its_models_generator_route(build):
-    routes = {model: set() for model in build.models}
-    for node, sub in build.jobs.items():
-        if _is_ile(sub):
-            routes[build.macros[node]["macroapprox"]].add(
-                build.macros[node]["macrogwsignal"].strip())
-    assert routes == {"IMRPhenomXPHM": {""}, "SEOBNRv4PHM": {"--use-gwsignal"}}
 
 
 def test_terminal_extrinsic_export_is_a_bounded_fair_draw(multiapprox_rundir):
