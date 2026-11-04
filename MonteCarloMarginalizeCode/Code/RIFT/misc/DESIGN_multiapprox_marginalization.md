@@ -51,7 +51,7 @@ model label from each input filename and switches on a **two-level** combine:
 * **within** a model, replicas estimate one number → ntot-weighted linear mean;
 * **across** models, the quantity itself differs → marginalize with p(m).
 
-Flat pooling of everything (the behaviour without the flag) uses
+Flat pooling of everything (the behaviour without the flag) silently uses
 *replica counts* as model weights. On a two-model point where one model has two
 replicas and the other one, with lnL 100 and 104, flat pooling gives 102.937
 where uniform-prior marginalization gives 103.325: **0.39 nats**, growing with
@@ -71,7 +71,7 @@ one model and not another, or one model's ILE failing.
 
 This is reported (never silent) and `--require-all-approx` drops such points
 instead. Dropping is not free either. It biases toward regions where the
-*worst-resolved* model converged, so it is a choice.
+*worst-resolved* model converged, so it is a choice, not a default.
 
 ## Iteration index of each net and grid
 
@@ -81,10 +81,12 @@ No net or grid is read at the wrong iteration.
 
 | stage | reads | writes |
 |---|---|---|
-| loop ILE, iteration `it` | `overlap-grid-it`, `puffball-it` | `approx_<A>_consolidated_it.composite` |
+| loop ILE, iteration `it` | `overlap-grid-it` | `approx_<A>_iteration_it_ile/` |
+| puff ILE, iteration `it` | `puffball-it` | `approx_<A>_iteration_it_ile/` |
+| join, iteration `it` | `approx_<A>_iteration_it_ile/` | `approx_<A>_consolidated_it.composite` |
 | `unify.sh`, iteration `it` | composites 0 to `it`, every model | `all.net` |
 | loop CIP, iteration `it` | `all.net` | `overlap-grid-(it+1)` |
-| `unify_model.sh` | composites 0 to `n-1` of `<A>` | `approx_<A>_all.net` |
+| `unify_model.sh` | composites 0 to `n-1` of `<A>` (prefix names: see Known limits) | `approx_<A>_all.net` |
 | terminal CIP, iteration `n-1` | `approx_<A>_all.net` | `approx_<A>_overlap-grid-n` and its annotation |
 | extrinsic ILE, iteration `n` | `approx_<A>_overlap-grid-n` | per-model extrinsic samples |
 | combine, iteration `n` | samples and `approx_<A>_overlap-grid-n+annotation.dat` | `extrinsic_posterior_samples.dat` |
@@ -92,14 +94,17 @@ No net or grid is read at the wrong iteration.
 The last fits run at iteration `n-1` and write index `n`, so a net one index
 behind its grid is correct. No loop ILE evaluates index `n`. The last loop CIP
 and the terminal CIPs fit the same evaluations. `overlap-grid-n` is the final
-`L_marg` posterior, and in a terminal run only convert and test read it.
+`L_marg` posterior. Convert reads it, and PUFF reads it when PUFF runs at
+iteration `n-1`.
 
 `all.net` is one file rewritten every iteration, and `approx_<A>_all.net` is a
 glob. Their names do not show which evaluations a reader gets, so only the DAG
 edges do. `test_each_iteration_fits_the_net_of_its_own_evaluations` and
-`test_terminal_stage_uses_every_evaluation_and_one_grid_index` check those edges
-and the filenames they carry. Without them, a CIP ordered after the previous
-iteration's unify passed every test.
+`test_terminal_stage_uses_every_evaluation_and_one_grid_index` check those edges,
+the glob of each unify and the filename it writes. They run on two builds: `n` = 2
+with cadence 1, and `n` = 3 with cadence 2, exploded CIP, a grid job and OSG
+transfer. Without them, a CIP ordered after the previous iteration's unify passed
+every test.
 
 Index `n` is fixed at build time. A DAG cut short by hand keeps `n` on its
 terminal products while its nets hold fewer iterations. The builder cannot do
@@ -107,7 +112,9 @@ this itself, since it forces `--always-succeed` on terminal runs. The 2026-08-29
 C1-missing seed-1 run predates that. Built with `--n-iterations 7`, it stopped at
 the convergence gate after iteration 5, and an edited rescue DAG ran the terminal
 stage. Its `approx_<A>_overlap-grid-7` files therefore come from iterations 0 to
-5, and no ILE ran on `overlap-grid-6`.
+5, and no ILE ran on `overlap-grid-6`. The evidence is on CIT, in
+`~/LVK/RIFT_roboto_paper_multiapprox/analyses/multi_approx/runs/C1-missing-seed1/`:
+`sidecars/RUN_PROVENANCE.md` lines 226 to 255 and `condor_history_min.json`.
 
 ## Prior work
 
@@ -123,22 +130,31 @@ weighted recombination), not the idea of waveform marginalization.
 * `p(m)` is uniform unless `--approx-prior` is given, and applies at both the
   in-loop marginalization and the final mixture. They are the same p(m) and are
   passed to both from one option.
-* The last puffball is never evaluated. PUFF runs for `it <= puff-max-it` and
-  writes `puffball-(it+1)`, while puff ILE runs for `it <= puff-max-it` and reads
-  `puffball-it`. BasicIteration has the same gates. The cost is one local job.
+* A puffball written at iteration `puff-max-it` or `n-1` is never evaluated.
+  PUFF writes `puffball-(it+1)`, and puff ILE reads it only if `it+1` is at most
+  `puff-max-it` and `n-1`. With cadence 2, `puff-max-it` 3 and `n` = 4, every
+  puffball is evaluated. The cost is one local job. BasicIteration has the same
+  PUFF gate.
+* With `--start-iteration` above 0, the first iteration can schedule puff ILE on
+  a puffball no job in the DAG writes. `--start-iteration 1` emits `ILE_puff` on
+  `puffball-1`, and it fails unless that file survives from an earlier run. The
+  gate here is `it>0`. BasicIteration uses `it>it_start`.
+* A model name that is a prefix of another corrupts the per-model net. The
+  `unify_model.sh` glob `approx_<A>_*.composite` for `IMRPhenomPv2` also matches
+  `approx_IMRPhenomPv2_NRTidal_consolidated_0.composite`.
 * A `--cip-args-list` covering fewer than `--n-iterations` iterations stops the
   build with an IndexError. The extension assigns `n - sum` to the last count
-  instead of adding it. BasicIteration has the same line.
+  instead of adding it. BasicIteration has the same line, but a later block
+  extends its job list.
 * A large ln Z gap between waveform models usually means the models disagree by
   far more than the statistical error, not that one is right. The combiner
   warns above 0.99 mixture weight.
 
 ## Also fixed here
 
-This builder is not reachable from `util_RIFT_pseudo_pipe.py` (`--pipeline-builder`
-offers only BasicIteration, AlternateIteration and Hyperpipe) and asimov drives
-pseudo_pipe, so it is a hand-run `bin/` script with no caller, which is how the
-following survived. All were read off an emitted two-approximant DAG.
+`util_RIFT_pseudo_pipe.py` reaches this builder through `--pipeline-builder
+BasicMultiApproxIteration`, and `--approx-extra` selects it. All of the following
+were read off an emitted two-approximant DAG.
 
 * The terminal extrinsic stage read `overlap-grid-<n_iterations-1>` while the
   final CIP wrote `overlap-grid-<n_iterations>`: a guard,

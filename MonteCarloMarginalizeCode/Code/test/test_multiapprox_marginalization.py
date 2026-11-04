@@ -15,14 +15,20 @@ The DAG tests build with TWO approximants on purpose.  With one, every
 cross-model path is vacuously satisfied -- which is how this builder kept a
 severed grid handoff, an approximant-blind extrinsic stage, and a submit file
 naming a directory that was never created.
+
+Two builds run the iteration-index tests.  With puff cadence 1 every puff gate
+passes, and two iterations cannot show a fault that starts at iteration 2, so
+cadence_build uses three iterations, cadence 2 and an exploded CIP.
 """
 
+import fnmatch
 import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -34,6 +40,7 @@ COMBINE = BIN / "util_CombineApproximantPosteriors.py"
 BUILDER = BIN / "create_event_parameter_pipeline_BasicMultiApproxIteration"
 MODEL_RX = r"approx_(.+?)_consolidated"
 N_ITERATIONS = 2  # the DAG fixture's --n-iterations
+N_GROUP = 2  # the DAG fixture's --ile-n-events-to-analyze
 
 
 def _env():
@@ -314,26 +321,24 @@ def _dag_facts(rundir):
     return jobs, macros, parents
 
 
-@pytest.fixture(scope="module")
-def multiapprox_rundir(tmp_path_factory):
+def _build_multiapprox(rundir, n_iterations, options):
     """Build a two-approximant DAG from synthetic inputs.
 
-    Self-contained on purpose: this builder has no caller (pseudo_pipe's
-    --pipeline-builder does not offer it), so the test must supply the
-    args_*.txt and grid a user would.
+    Self-contained on purpose: the test supplies the args_*.txt and grid that
+    pseudo_pipe would write, so it needs no event data.  CIP line i carries the
+    marker --sigma-cut 0.(i+1).
     """
     pytest.importorskip("RIFT.lalsimutils")
-    rundir = tmp_path_factory.mktemp("multiapprox")
     (rundir / "args_ile.txt").write_text(
         "integrate_likelihood_extrinsic_batchmode --fmin-template 20.0 "
         "--n-max 100 --n-eff 17 "
         "--time-marginalization --distance-marginalization "
         "--distance-marginalization-lookup-table distance_lookup.npz "
         "--approx placeholder\n")
-    (rundir / "args_cip_list.txt").write_text(
-        "1   --no-plots --fit-method rf --parameter mc --parameter delta_mc --n-output-samples 5\n"
-        "1   --no-plots --fit-method rf --parameter mc --parameter delta_mc "
-        "--n-output-samples=5 --posterior-unique-draw\n")
+    cip_line = "1   --no-plots --fit-method rf --parameter mc --parameter delta_mc {} --sigma-cut 0.{}\n"
+    (rundir / "args_cip_list.txt").write_text("".join(
+        cip_line.format("--n-output-samples 5", i + 1) for i in range(n_iterations - 1))
+        + cip_line.format("--n-output-samples=5 --posterior-unique-draw", n_iterations))
     # Deliberately omit --always-succeed.  pseudo_pipe normally adds it for a
     # terminal-extrinsic run, but the builder is also a public/direct entry
     # point and must preserve the terminal fork itself.
@@ -367,18 +372,56 @@ def multiapprox_rundir(tmp_path_factory):
                   "--ile-n-events-to-analyze", "2", "--n-samples-per-job", "5",
                   "--request-memory-CIP", "4096", "--request-memory-ILE", "4096",
                   "--working-directory", str(rundir),
-                  "--n-iterations", str(N_ITERATIONS), "--n-copies", "1",
+                  "--n-iterations", str(n_iterations), "--n-copies", "1",
                   "--approx-gwsignal", "SEOBNRv4PHM",
                   "--puff-args", str(rundir / "args_puff.txt"),
-                  "--puff-cadence", "1", "--puff-max-it", "1",
                   "--last-iteration-extrinsic",
                   "--last-iteration-extrinsic-nsamples", "4",
                   "--last-iteration-extrinsic-samples-per-ile", "3",
                   "--last-iteration-extrinsic-samples-per-ile-internal", "7",
-                  "--plot-args", str(rundir / "args_plot.txt")], rundir)
+                  "--plot-args", str(rundir / "args_plot.txt")] + options, rundir)
     if build.returncode:
         pytest.fail("builder failed:\n{}".format(build.stdout[-3000:]))
+
+
+@pytest.fixture(scope="module")
+def multiapprox_rundir(tmp_path_factory):
+    rundir = tmp_path_factory.mktemp("multiapprox")
+    _build_multiapprox(rundir, N_ITERATIONS,
+                       ["--puff-cadence", "1", "--puff-max-it", "1"])
     return rundir
+
+
+def _read_build(rundir, n, puff_cadence, puff_max_it, explode):
+    jobs, macros, parents = _dag_facts(rundir)
+    models = {macros[x]["macroapprox"] for x, s in jobs.items() if s == "ILE.sub"}
+    assert len(models) == 2, sorted(models)
+    return SimpleNamespace(rundir=rundir, n=n, puff_cadence=puff_cadence,
+                           puff_max_it=puff_max_it, explode=explode, jobs=jobs,
+                           macros=macros, parents=parents, models=models)
+
+
+@pytest.fixture(scope="module")
+def two_iteration_build(multiapprox_rundir):
+    return _read_build(multiapprox_rundir, N_ITERATIONS, 1, 1, False)
+
+
+@pytest.fixture(scope="module")
+def cadence_build(tmp_path_factory):
+    """Three iterations, puff cadence 2, exploded CIP, a grid job and OSG transfer."""
+    rundir = tmp_path_factory.mktemp("multiapprox_cadence")
+    (rundir / "args_grid.txt").write_text("X --mc-range [1,2]\n")
+    _build_multiapprox(rundir, 3,
+                       ["--puff-cadence", "2", "--puff-max-it", "2",
+                        "--cip-explode-jobs", "2",
+                        "--gridinit-args", str(rundir / "args_grid.txt"),
+                        "--use-osg"])
+    return _read_build(rundir, 3, 2, 2, True)
+
+
+@pytest.fixture(scope="module", params=["two_iteration_build", "cadence_build"])
+def build(request):
+    return request.getfixturevalue(request.param)
 
 
 def test_every_model_reads_one_shared_grid(multiapprox_rundir):
@@ -540,14 +583,14 @@ def test_extrinsic_stage_reads_the_grid_the_run_finished_on(multiapprox_rundir):
     assert next(iter(extrinsic)) == max(written, key=int)
 
 
-def _resolved_args(rundir, node, jobs, macros):
-    """The node's submit-file arguments with its DAG macros substituted."""
-    text = (rundir / jobs[node]).read_text()
-    found = re.search(r'^arguments\s*=\s*"(.*)"$', text, re.M)
-    args = found.group(1) if found else ""
-    for key, value in macros.get(node, {}).items():
-        args = args.replace("$({})".format(key), value)
-    return args
+def _submit_field(build, node, key):
+    """One field of the node's submit file, with its DAG macros substituted."""
+    text = (build.rundir / build.jobs[node]).read_text()
+    found = re.search(r"^{}\s*=\s*(.*)$".format(key), text, re.M)
+    value = found.group(1).strip().strip('"') if found else ""
+    for name, macro in build.macros.get(node, {}).items():
+        value = value.replace("$({})".format(name), macro)
+    return value
 
 
 def _file_arg(args, flag):
@@ -566,141 +609,292 @@ def _ancestors(node, parents):
     return seen
 
 
-def _at_iteration(jobs, macros, it, keep):
-    return {n for n, sub in jobs.items()
-            if keep(sub) and macros.get(n, {}).get("macroiteration") == str(it)}
+def _only(nodes):
+    assert len(nodes) == 1, sorted(nodes)
+    return next(iter(nodes))
+
+
+def _at_iteration(build, it, keep):
+    return {n for n, sub in build.jobs.items()
+            if keep(sub) and build.macros.get(n, {}).get("macroiteration") == str(it)}
+
+
+def _of_model(build, model, sub):
+    return {n for n, s in build.jobs.items()
+            if s == sub and build.macros[n].get("macroapprox") == model}
 
 
 def _is_loop_cip(sub):
     return re.fullmatch(r"CIP(_\d+)?\.sub", sub) is not None
 
 
-def test_each_iteration_fits_the_net_of_its_own_evaluations(multiapprox_rundir):
+def _is_cip_worker(sub):
+    return re.fullmatch(r"CIP_worker\d*\.sub", sub) is not None
+
+
+def _is_loop_ile(sub):
+    return sub in ("ILE.sub", "ILE_puff.sub")
+
+
+def _is_ile(sub):
+    return _is_loop_ile(sub) or sub == "ILE_extr.sub"
+
+
+def _grid_writer(build, it):
+    """The node that puts overlap-grid-(it+1) in the run directory."""
+    keep = (lambda s: s == "join_grids.sub") if build.explode else _is_loop_cip
+    return _only(_at_iteration(build, it, keep))
+
+
+def _composite_name(model, it):
+    return "approx_{}_consolidated_{}.composite".format(model, it)
+
+
+def _net_inputs(build, node):
+    """Composites a unify node pools: its glob, over those already written."""
+    script = build.rundir / os.path.basename(_submit_field(build, node, "executable"))
+    call = [line for line in script.read_text().splitlines() if "util_CleanILE" in line][-1]
+    pattern = os.path.basename(call.split()[-1])
+    if pattern == "$1":
+        pattern = _submit_field(build, node, "arguments")
+    written = {os.path.basename(_submit_field(build, join, "arguments").split()[1]) + ".composite"
+               for join in _ancestors(node, build.parents) if build.jobs[join] == "join.sub"}
+    return {name for name in written if fnmatch.fnmatchcase(name, pattern)}
+
+
+def test_each_iteration_fits_the_net_of_its_own_evaluations(build):
     """Iteration N: every model's ILE on overlap-grid-N -> composites N -> all.net
     -> one CIP -> overlap-grid-N+1.  all.net is one file rewritten every
     iteration, so its name cannot show which iteration a reader gets; only the
     DAG edge does.  A CIP not ordered after its own unify fits the previous
-    iteration's L_marg, and every macro in the DAG still looks right.  Each link
-    is checked by the filename it carries, not by the macro alone.
+    iteration's L_marg, and every macro in the DAG still looks right.  A join
+    that does not wait for all its ILE jobs writes a partial composite.
     """
-    rundir = multiapprox_rundir
-    jobs, macros, parents = _dag_facts(rundir)
-    models = {macros[n]["macroapprox"] for n, s in jobs.items() if s == "ILE.sub"}
-    assert len(models) == 2, sorted(models)
-
+    jobs, macros, parents = build.jobs, build.macros, build.parents
     ile_iterations = {macros[n]["macroiteration"] for n, s in jobs.items()
                       if s == "ILE.sub"}
-    assert ile_iterations == {str(i) for i in range(N_ITERATIONS)}
+    assert ile_iterations == {str(i) for i in range(build.n)}
 
-    for it in range(N_ITERATIONS):
-        joins = _at_iteration(jobs, macros, it, lambda s: s == "join.sub")
-        assert {macros[n]["macroapprox"] for n in joins} == models
+    for it in range(build.n):
+        joins = _at_iteration(build, it, lambda s: s == "join.sub")
+        assert {macros[n]["macroapprox"] for n in joins} == build.models
         for node in joins:
             model = macros[node]["macroapprox"]
-            args = _resolved_args(rundir, node, jobs, macros).split()
+            args = _submit_field(build, node, "arguments").split()
             assert [os.path.basename(a) for a in args] == [
                 "approx_{}_iteration_{}_ile".format(model, it),
                 "approx_{}_consolidated_{}".format(model, it)]
-            for parent in parents[node]:
-                assert macros[parent]["macroiteration"] == str(it)
-                assert macros[parent]["macroapprox"] == model
+            evaluations = {x for x in _at_iteration(build, it, _is_loop_ile)
+                           if macros[x]["macroapprox"] == model}
+            assert evaluations and parents[node] == evaluations
 
-        unify = _at_iteration(jobs, macros, it, lambda s: s == "unify.sub")
-        assert len(unify) == 1, sorted(unify)
-        unify = unify.pop()
-        assert {p for p in parents[unify] if jobs[p] == "join.sub"} == joins
+        unify = _only(_at_iteration(build, it, lambda s: s == "unify.sub"))
+        assert parents[unify] == joins
+        assert os.path.basename(_submit_field(build, unify, "output")) == "all.net"
+        assert _net_inputs(build, unify) == {
+            _composite_name(m, i) for m in build.models for i in range(it + 1)}
 
-        fit = _at_iteration(jobs, macros, it, _is_loop_cip)
-        assert len(fit) == 1, sorted(fit)
-        fit = fit.pop()
+        fit = _only(_at_iteration(build, it, _is_loop_cip))
         assert unify in parents[fit], "CIP {} fits a stale all.net".format(it)
-        args = _resolved_args(rundir, fit, jobs, macros)
+        args = _submit_field(build, fit, "arguments")
         assert _file_arg(args, "--fname") == "all.net"
         assert _file_arg(args, "--fname-output-samples") == "overlap-grid-{}".format(it + 1)
+        assert "--sigma-cut 0.{} ".format(it + 1) in args
 
-        for node in _at_iteration(jobs, macros, it, lambda s: s == "ILE.sub"):
-            args = _resolved_args(rundir, node, jobs, macros)
+        for node in _at_iteration(build, it, lambda s: s == "ILE.sub"):
+            args = _submit_field(build, node, "arguments")
             assert _file_arg(args, "--sim-xml") == "overlap-grid-{}.xml.gz".format(it)
             if it > 0:
-                earlier = _at_iteration(jobs, macros, it - 1, _is_loop_cip)
-                assert earlier <= _ancestors(node, parents), (
+                assert _grid_writer(build, it - 1) in _ancestors(node, parents), (
                     "ILE {} can start before overlap-grid-{} exists".format(it, it))
 
 
-def test_puffed_points_reach_the_net_of_the_iteration_that_evaluates_them(multiapprox_rundir):
-    """PUFF after CIP N writes puffball-N+1; iteration N+1 evaluates and joins it."""
-    rundir = multiapprox_rundir
-    jobs, macros, parents = _dag_facts(rundir)
+def test_puffed_points_reach_the_net_of_the_iteration_that_evaluates_them(build):
+    """PUFF after the fit of iteration N writes puffball-N+1, and iteration N+1
+    evaluates it.  A puffball with no later iteration to evaluate it may or may
+    not be written; the design doc lists that as a known limit.
+    """
+    jobs, macros, parents = build.jobs, build.macros, build.parents
     written = {}
     for node, sub in jobs.items():
         if sub == "PUFF.sub":
-            args = _resolved_args(rundir, node, jobs, macros)
             n = macros[node]["macroiterationnext"]
+            args = _submit_field(build, node, "arguments")
             assert _file_arg(args, "--inj-file") == "overlap-grid-{}.xml.gz".format(n)
             assert _file_arg(args, "--inj-file-out") == "puffball-{}".format(n)
+            assert _grid_writer(build, int(n) - 1) in _ancestors(node, parents)
             written[n] = node
-    evaluated = [n for n, s in jobs.items() if s == "ILE_puff.sub"]
-    assert evaluated, "fixture did not build the puff lane"
-    for node in evaluated:
-        it = macros[node]["macroiteration"]
-        args = _resolved_args(rundir, node, jobs, macros)
-        assert _file_arg(args, "--sim-xml") == "puffball-{}.xml.gz".format(it)
-        assert written[it] in _ancestors(node, parents)
-        joins = _at_iteration(jobs, macros, it, lambda s: s == "join.sub")
-        assert any(node in parents[j] and
-                   macros[j]["macroapprox"] == macros[node]["macroapprox"]
-                   for j in joins)
+
+    scheduled = {str(i + 1) for i in range(build.n - 1)
+                 if i + 1 <= build.puff_max_it and i % build.puff_cadence == 0}
+    assert scheduled, "fixture did not build the puff lane"
+    for model in build.models:
+        evaluated = _of_model(build, model, "ILE_puff.sub")
+        assert {macros[x]["macroiteration"] for x in evaluated} == scheduled
+        for node in evaluated:
+            it = macros[node]["macroiteration"]
+            args = _submit_field(build, node, "arguments")
+            assert _file_arg(args, "--sim-xml") == "puffball-{}.xml.gz".format(it)
+            assert written[it] in _ancestors(node, parents)
 
 
-def test_terminal_stage_uses_every_evaluation_and_one_grid_index(multiapprox_rundir):
+def test_convergence_lane_compares_the_two_newest_grids(build):
+    """Convert runs on each new grid; test starts at the second one."""
+    macros, parents = build.macros, build.parents
+    for it in range(build.n):
+        convert = _only(_at_iteration(build, it + 1, lambda s: s == "convert.sub"))
+        assert _grid_writer(build, it) in _ancestors(convert, parents)
+        source = _submit_field(build, convert, "arguments").split()[-1]
+        assert os.path.basename(source) == "overlap-grid-{}.xml.gz".format(it + 1)
+        target = _submit_field(build, convert, "output")
+        assert os.path.basename(target) == "posterior_samples-{}.dat".format(it + 1)
+
+        tests = _at_iteration(build, it + 1, lambda s: s == "test.sub")
+        if it == 0:
+            assert not tests, "no earlier grid to compare with"
+            continue
+        test = _only(tests)
+        assert convert in parents[test]
+        args = _submit_field(build, test, "arguments")
+        assert [os.path.basename(a) for a in re.findall(r"--samples (\S+)", args)] == [
+            "posterior_samples-{}.dat".format(it + 1),
+            "posterior_samples-{}.dat".format(it)]
+
+
+def test_every_stage_of_an_iteration_precedes_the_next(build):
+    """A stage dropped from this chain still runs, so no filename shows the race."""
+    jobs, macros, parents = build.jobs, build.macros, build.parents
+    for it in range(build.n):
+        stage = _at_iteration(build, it, lambda s: _is_loop_cip(s) or _is_cip_worker(s)
+                              or s == "join_grids.sub")
+        stage |= _at_iteration(build, it + 1, lambda s: s in ("convert.sub", "test.sub"))
+        stage |= {x for x, s in jobs.items() if s == "PUFF.sub"
+                  and macros[x]["macroiterationnext"] == str(it + 1)}
+        following = _at_iteration(build, it + 1, _is_loop_ile)
+        if it + 1 == build.n:
+            following = {x for x, s in jobs.items() if s == "unify_model.sub"}
+        assert following
+        for node in following:
+            assert stage <= _ancestors(node, parents)
+
+
+def test_exploded_fit_writes_the_next_grid(cadence_build):
+    """fit -> workers -> join_grids, all at one index; join_grids writes the grid."""
+    build = cadence_build
+    for it in range(build.n):
+        fit = _only(_at_iteration(build, it, _is_loop_cip))
+        worker = _only(_at_iteration(build, it, _is_cip_worker))
+        join = _grid_writer(build, it)
+        assert build.parents[worker] == {fit}
+        assert build.parents[join] == {worker}
+
+        grid = "overlap-grid-{}".format(it + 1)
+        args = _submit_field(build, worker, "arguments")
+        assert _file_arg(args, "--fname") == "all.net"
+        assert _file_arg(args, "--fname-output-samples") == grid + "-$(process)"
+
+        args = _submit_field(build, join, "arguments").split()
+        assert os.path.basename(args[0]) == grid + ".xml.gz"
+        assert {os.path.basename(a) for a in args[1:]} == {
+            grid + ".xml.gz", grid + "-0.xml.gz", grid + "-1.xml.gz"}
+
+
+def test_first_iteration_waits_for_the_grid_job(cadence_build):
+    build = cadence_build
+    grid = _only({x for x, s in build.jobs.items() if s == "grid.sub"})
+    first = _at_iteration(build, 0, lambda s: s == "ILE.sub")
+    assert first and all(grid in build.parents[x] for x in first)
+
+
+def test_osg_transfers_carry_the_grid_each_ile_evaluates(cadence_build):
+    build = cadence_build
+    for node, sub in build.jobs.items():
+        if _is_ile(sub):
+            transfers = _submit_field(build, node, "transfer_input_files").split(",")
+            grid = _file_arg(_submit_field(build, node, "arguments"), "--sim-xml")
+            assert grid in {os.path.basename(x) for x in transfers}, sub
+
+
+def test_terminal_stage_uses_every_evaluation_and_one_grid_index(build):
     """The terminal fit sits at iteration n-1 and writes index n, like the last
     loop CIP: it fits the same evaluations, so overlap-grid-n has had no ILE.
 
     The per-model net is a glob, so nothing in its name says which composites it
-    saw.  It sees them all only if the DAG orders it after every join of that
-    model.  From there one index n must carry the CIP output, the extrinsic
-    input and the evidence the mixture is weighted by.
+    saw.  It sees all of that model's composites, and no other model's, only if
+    the glob and the DAG order agree.  From there one index n must carry the CIP
+    output, the extrinsic input and the evidence the mixture is weighted by.
     """
-    rundir = multiapprox_rundir
-    jobs, macros, parents = _dag_facts(rundir)
-    n = N_ITERATIONS
-    models = {macros[x]["macroapprox"] for x, s in jobs.items() if s == "ILE.sub"}
-    combine = [x for x, s in jobs.items() if s == "combine_models.sub"]
-    assert len(combine) == 1
-    combine_args = _resolved_args(rundir, combine[0], jobs, macros)
+    jobs, macros, parents = build.jobs, build.macros, build.parents
+    n = build.n
+    combine = _only({x for x, s in jobs.items() if s == "combine_models.sub"})
+    combine_args = _submit_field(build, combine, "arguments")
+    mixture = {}
+    for entry in re.findall(r"--model (\S+)", combine_args):
+        label, samples, evidence = entry.split(":")
+        mixture[label] = (os.path.basename(samples), os.path.basename(evidence))
+    assert set(mixture) == build.models
 
-    for model in models:
-        def mine(suffix):
-            return {x for x, s in jobs.items() if s == suffix
-                    and macros[x].get("macroapprox") == model}
+    for model in build.models:
+        net = _only(_of_model(build, model, "unify_model.sub"))
+        fit = _only(_of_model(build, model, "CIP_terminal.sub"))
 
-        net = mine("unify_model.sub")
-        fit = mine("CIP_terminal.sub")
-        assert len(net) == 1 and len(fit) == 1
-        net, fit = net.pop(), fit.pop()
-
-        before_net = _ancestors(net, parents)
-        assert mine("join.sub") <= before_net
-        assert len(mine("join.sub")) == n
-        assert _at_iteration(jobs, macros, n - 1, _is_loop_cip) <= before_net, (
+        assert os.path.basename(_submit_field(build, net, "output")) == (
+            "approx_{}_all.net".format(model))
+        assert _net_inputs(build, net) == {_composite_name(model, i) for i in range(n)}
+        assert _at_iteration(build, n - 1, _is_loop_cip) <= _ancestors(net, parents), (
             "the fork must follow the last marginalized fit")
 
         assert net in parents[fit]
         assert macros[fit]["macroiteration"] == str(n - 1)
-        args = _resolved_args(rundir, fit, jobs, macros)
+        args = _submit_field(build, fit, "arguments")
         grid = "approx_{}_overlap-grid-{}".format(model, n)
         assert _file_arg(args, "--fname") == "approx_{}_all.net".format(model)
         assert _file_arg(args, "--fname-output-samples") == grid
         assert _file_arg(args, "--fname-output-integral") == grid
+        assert "--sigma-cut 0.{} ".format(n) in args
 
-        extrinsic = mine("ILE_extr.sub")
+        extrinsic = _of_model(build, model, "ILE_extr.sub")
         assert extrinsic
         for node in extrinsic:
-            args = _resolved_args(rundir, node, jobs, macros)
+            args = _submit_field(build, node, "arguments")
             assert _file_arg(args, "--sim-xml") == grid + ".xml.gz"
             assert fit in parents[node]
-        assert "{}/extrinsic_posterior_samples_{}.dat:".format(rundir, model) in combine_args
-        assert "{}/{}+annotation.dat".format(rundir, grid) in combine_args
+        assert mixture[model] == ("extrinsic_posterior_samples_{}.dat".format(model),
+                                  grid + "+annotation.dat")
+
+
+def test_each_model_keeps_its_own_extrinsic_chain(build):
+    """ILE_extr -> convert_extr -> cat -> combine, with no batch dropped."""
+    macros, parents = build.macros, build.parents
+    cats = set()
+    for model in build.models:
+        directory = "approx_{}_iteration_{}_ile".format(model, build.n)
+        extrinsic = _of_model(build, model, "ILE_extr.sub")
+        converts = _of_model(build, model, "convert_extr.sub")
+        assert extrinsic and len(converts) == N_GROUP * len(extrinsic)
+        for node in converts:
+            event = macros[node]["macroevent"]
+            assert parents[node] == {x for x in extrinsic if macros[x]["macroevent"] == event}
+            source = _submit_field(build, node, "arguments").split()[-1]
+            assert source.split("/")[-2:] == [directory, "EXTR_out-{}.xml_{}_.xml.gz".format(
+                event, macros[node]["macroindx"])]
+
+        cat = _only(_of_model(build, model, "cat.sub"))
+        assert parents[cat] == converts
+        assert os.path.basename(_submit_field(build, cat, "arguments").split()[0]) == directory
+        cats.add(cat)
+
+    combine = _only({x for x, s in build.jobs.items() if s == "combine_models.sub"})
+    assert parents[combine] == cats
+
+
+def test_each_ile_node_uses_its_models_generator_route(build):
+    routes = {model: set() for model in build.models}
+    for node, sub in build.jobs.items():
+        if _is_ile(sub):
+            routes[build.macros[node]["macroapprox"]].add(build.macros[node]["macrogwsignal"])
+    assert all(len(found) == 1 for found in routes.values()), routes
+    assert routes["IMRPhenomXPHM"] != routes["SEOBNRv4PHM"]
 
 
 def test_terminal_extrinsic_export_is_a_bounded_fair_draw(multiapprox_rundir):
