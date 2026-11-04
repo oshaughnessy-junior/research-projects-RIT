@@ -33,6 +33,8 @@ CLEANILE = BIN / "util_CleanILE.py"
 COMBINE = BIN / "util_CombineApproximantPosteriors.py"
 BUILDER = BIN / "create_event_parameter_pipeline_BasicMultiApproxIteration"
 BASIC_BUILDER = BIN / "create_event_parameter_pipeline_BasicIteration"
+ALTERNATE_BUILDER = BIN / "create_event_parameter_pipeline_AlternateIteration"
+NR_BUILDER = BIN / "create_event_nr_pipeline_with_cip"
 MODEL_RX = r"approx_(.+?)_consolidated"
 
 
@@ -743,12 +745,17 @@ def _build_cip_schedule(rundir, builder, prefixes, n_iterations):
            "--n-samples-per-job", "2",
            "--request-memory-CIP", "4096", "--request-memory-ILE", "4096",
            "--working-directory", str(rundir),
-           "--n-iterations", str(n_iterations), "--n-copies", "1",
-           "--last-iteration-extrinsic",
-           "--last-iteration-extrinsic-nsamples", "4"]
+           "--n-iterations", str(n_iterations), "--n-copies", "1"]
+    if builder == NR_BUILDER:
+        (rundir / "args_refine.txt").write_text("X --parameter mc\n")
+        cmd += ["--nr-refine-args", str(rundir / "args_refine.txt"),
+                "--nr-refine-exe", "/bin/true"]
+    else:
+        cmd += ["--last-iteration-extrinsic",
+                "--last-iteration-extrinsic-nsamples", "4"]
     if builder == BUILDER:
         cmd += ["--approx", "IMRPhenomXPHM", "--approx", "SEOBNRv4PHM"]
-    else:
+    elif builder == BASIC_BUILDER:
         cmd += ["--n-iterations-subdag-max", "1"]
     build = _run(cmd, rundir)
     assert build.returncode == 0, build.stdout[-1500:] + build.stderr[-1500:]
@@ -765,8 +772,8 @@ def _cip_line_per_iteration(rundir, n_iterations):
     return [line.get(it) for it in range(n_iterations)]
 
 
-@pytest.mark.parametrize("builder", [BUILDER, BASIC_BUILDER],
-                         ids=["multiapprox", "basic"])
+@pytest.mark.parametrize("builder", [BUILDER, BASIC_BUILDER, ALTERNATE_BUILDER],
+                         ids=["multiapprox", "basic", "alternate"])
 @pytest.mark.parametrize("prefixes,n_iterations,expected", [
     (["1", "2"], 5, [0, 1, 1, 1, 1]),            # short: last line extends
     (["2"], 5, [0, 0, 0, 0, 0]),
@@ -784,12 +791,28 @@ def test_cip_schedule_covers_every_iteration(tmp_path, builder, prefixes,
 
     # The terminal job must use the line the final iteration fit with, not the
     # last line of the file: the two differ when the schedule is long.
-    terminal = "CIP_terminal.sub" if builder == BUILDER else "CIP_prior.sub"
-    text = (tmp_path / terminal).read_text()
-    assert re.findall(r"--sigma-cut (\S+)", text) == ["0.{}".format(expected[-1] + 1)]
+    terminal = {BUILDER: "CIP_terminal.sub", BASIC_BUILDER: "CIP_prior.sub"}.get(builder)
+    if terminal:
+        text = (tmp_path / terminal).read_text()
+        assert re.findall(r"--sigma-cut (\S+)", text) == ["0.{}".format(expected[-1] + 1)]
 
 
 def test_extension_lands_after_a_run_to_convergence_stage(tmp_path):
     """A Z stage holds exactly one iteration, whatever the requested total."""
     _build_cip_schedule(tmp_path, BASIC_BUILDER, ["1", "Z", "2"], 6)
     assert _cip_line_per_iteration(tmp_path, 6) == [0, None, 2, 2, 2, 2]
+
+
+@pytest.mark.parametrize("prefixes,n_iterations,line", [
+    (["1", "2"], 5, 1),
+    (["2"], 5, 0),
+    (["1", "1", "1"], 5, 2),
+    (["1", "0"], 3, 1),
+    (["4", "4"], 6, 1),
+    (["1", "1", "1"], 2, 1),
+])
+def test_nr_builder_fits_once_with_the_line_for_the_last_iteration(
+        tmp_path, prefixes, n_iterations, line):
+    """The NR builder refines in the loop and runs CIP once, at iteration n."""
+    _build_cip_schedule(tmp_path, NR_BUILDER, prefixes, n_iterations)
+    assert _cip_line_per_iteration(tmp_path, n_iterations + 1) == n_iterations * [None] + [line]

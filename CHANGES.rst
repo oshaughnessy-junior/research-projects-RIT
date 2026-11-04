@@ -15,8 +15,9 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
      prior gain -2 ln(N) in raw lnZ.  Posteriors and prior-normalized lnB_H do not change
      (fork PR #523).
    - Extend the last CIP line by the shortfall when --cip-args-list is shorter than
-     --n-iterations.  BasicMultiApproxIteration no longer stops with IndexError; the
-     BasicIteration DAG is unchanged (fork PR #525).
+     --n-iterations.  BasicMultiApproxIteration and AlternateIteration no longer stop with
+     IndexError; BasicIteration and create_event_nr_pipeline_with_cip DAGs are unchanged
+     (fork PR #525).
 
    - (rc0) O4d base refresh: modern Python/numpy support, portable GPU execution, generic workflow
      backends, hyperpipe and simulation-manager support; distance-likelihood export, parsimonious
