@@ -1181,7 +1181,8 @@ Targeting reasonably high tolerance (of order 1e-6)</p>
 <dt class="sig sig-object py" id="RIFT.likelihood.rift_priors.delta_mc_prior">
 <span class="sig-prename descclassname"><span class="pre">RIFT.likelihood.rift_priors.</span></span><span class="sig-name descname"><span class="pre">delta_mc_prior</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">norm_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.44</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.likelihood.rift_priors.delta_mc_prior" title="Link to this definition"></a></dt>
 <dd><p>delta_mc = sqrt(1-4eta)  &lt;-&gt; eta = 1/4(1-delta^2)
-Transform the prior above</p>
+Transform the prior above: <a href="#id55"><span class="problematic" id="id56">|d eta/d delta|</span></a> = delta/2, and the 1/sqrt(1-4eta) = 1/delta
+of eta_prior cancels the delta, leaving eta^(-6/5)/(2 norm_factor)</p>
 </dd></dl>
 
 <dl class="py function">
