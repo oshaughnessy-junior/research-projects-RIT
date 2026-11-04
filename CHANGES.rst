@@ -14,6 +14,9 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
    - Divide the CIP q prior by its --eta-range norm factor N: (mtot, q) runs on the default q
      prior gain -2 ln(N) in raw lnZ.  Posteriors and prior-normalized lnB_H do not change
      (fork PR #523).
+   - Anchor the multi-approximant per-model unify glob at _consolidated_.  It also matched models
+     whose name extends the model's own (IMRPhenomPv2, IMRPhenomPv2_NRTidal), so the shorter model's
+     terminal CIP fit both.  Other model pairs do not change.
 
    - (rc0) O4d base refresh: modern Python/numpy support, portable GPU execution, generic workflow
      backends, hyperpipe and simulation-manager support; distance-likelihood export, parsimonious
