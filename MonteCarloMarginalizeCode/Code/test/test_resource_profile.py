@@ -15,11 +15,11 @@ WORKLOAD = {"label": "bbh", "n chunk": 40000, "n eff": 20, "sample rate": 4096,
 
 CLASSES = [
     {"label": "pascal-4gb", "capability": [6.1, 7.0], "memory mb": 4000, "memory mb max": 8191,
-     "slots": 400, "relative speed": 0.3},
+     "slots": 400, "relative speed": 0.3, "memory family": "f"},
     {"label": "legacy-16gb", "capability": [7.0, 9.0], "memory mb": 16000, "slots": 40,
-     "relative speed": 1.0, "device names": ["V100", "T4", "A100"]},
+     "relative speed": 1.0, "device names": ["V100", "T4", "A100"], "memory family": "f"},
     {"label": "modern-24gb", "capability": [9.0, 12.1], "memory mb": 24000, "slots": 10,
-     "relative speed": 2.0},
+     "relative speed": 2.0, "memory family": "f"},
 ]
 
 
@@ -39,7 +39,7 @@ def _write_profile(tmp_path, observations=(), policy=None, classes=CLASSES, dire
 
 DPP = 60000.0
 # Workers whose device memory stays flat, whatever they draw.
-FLAT = [[1e6 * (i + 1), 1000.0, None] for i in range(8)]
+FLAT = [[1e6 * (i + 1), 1000.0, None] for i in range(10)]
 
 
 def _t(seconds, draws=DPP):
@@ -129,8 +129,9 @@ def test_failure_on_larger_card_bars_smaller_card(tmp_path):
 
 def test_unprofiled_class_excluded_by_default(tmp_path):
     obs = [_obs("legacy-16gb", "success", **_t(600))]
-    plan = _plan(tmp_path, obs)
-    # Success on a 16 GB card says nothing about a 4 GB card.
+    classes = [dict(CLASSES[0], **{"memory family": "other"})] + CLASSES[1:]
+    plan = rp.plan_resources(rp.load_resource_profile(_write_profile(tmp_path, obs, classes=classes)), WORKLOAD)
+    # Success on a 16 GB card of another family says nothing about a 4 GB card.
     assert _row(plan, "pascal-4gb")["excluded"] == "memory: no comparable memory evidence"
     # ...but does admit the larger card, whose timing transfers by relative speed.
     assert sorted(plan["admitted"]) == ["legacy-16gb", "modern-24gb"]
@@ -163,8 +164,9 @@ def test_memory_fit_does_not_cross_families(tmp_path):
            _obs("new", "success", **{"draws per second": [1000], "memory samples": _growing(1000, 0)})]
     profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()))
     plan = rp.plan_resources(profile, WORKLOAD, jobs_per_worker_cap=100)
-    assert _row(plan, "new")["max worker draws"] == float("inf")
-    assert _row(plan, "big")["points limit"] < 100
+    assert _row(plan, "new")["max worker draws"] == 16e6      # flat, so only extrapolation limits it
+    assert _row(plan, "big")["max worker draws"] == pytest.approx(16e6)
+    assert "new" in plan["admitted"]
 
 
 def test_failure_caps_draws_at_what_the_worker_completed(tmp_path):
@@ -179,9 +181,9 @@ def test_failure_caps_draws_at_what_the_worker_completed(tmp_path):
 
 def test_host_memory_limits_points_and_sets_request(tmp_path):
     # Host 1000 MB + 500 MB/Mdraw: 16000 MB / 1.25 allows 23.6 Mdraw, so 23 points.
-    samples = [[d, 1000.0, h[2]] for (d, _, _), h in zip(FLAT, _growing(1000, 500, column=2))]
     obs = [_obs("legacy-16gb", "success", **{"draws per point": [1e6], "draws per second": [1e5],
-                                             "memory samples": samples})]
+                                             "memory samples": _growing(1000, 500, column=2)}),
+           _obs("legacy-16gb", "success", **{"memory samples": [[1e7 * (i + 1), 1000.0, None] for i in range(8)]})]
     plan = _plan(tmp_path, obs)
     assert plan["jobs per worker"] == 23
     assert plan["request memory mb"] == 15700     # (1000 + 500 x 23) x 1.25, rounded up
@@ -192,6 +194,99 @@ def test_no_fit_trusts_only_the_draws_a_worker_completed(tmp_path):
                                              "memory samples": [[2e6, 1000.0, None]]})]
     plan = _plan(tmp_path, obs)
     assert plan["jobs per worker"] == 2
+
+
+def test_flat_fit_above_the_card_excludes_it(tmp_path):
+    obs = [_obs("big", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                     "memory samples": _growing(8000, 0)})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:2]))
+    plan = rp.plan_resources(profile, WORKLOAD)
+    assert plan["admitted"] == ["big"] and _row(plan, "small")["max worker draws"] == 0
+
+
+def test_host_fit_alone_is_no_device_evidence(tmp_path):
+    obs = [_obs("big", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                     "memory samples": _growing(1000, 10, column=2)})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:2]))
+    assert "no comparable" in _row(rp.plan_resources(profile, WORKLOAD), "small")["excluded"]
+
+
+def test_fit_envelope_covers_scatter(tmp_path):
+    # Half the workers sit 1000 MB above the line, so the base is 1500 MB, not the fit's 1000:
+    # (3400 - 1500) / 300 MB per Mdraw.
+    samples = _growing(500, 300) + [[s[0], s[1] + 1000, None] for s in _growing(500, 300)]
+    obs = [_obs("big", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                     "memory samples": samples})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:2]))
+    assert _row(rp.plan_resources(profile, WORKLOAD), "small")["max worker draws"] == pytest.approx(1900 / 300 * 1e6)
+
+
+def test_family_fit_tempers_a_flat_own_fit(tmp_path):
+    obs = [_obs("big", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                     "memory samples": _growing(500, 300)}),
+           _obs("small", "success", **{"memory samples": _growing(500, 0)})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:2]))
+    row = _row(rp.plan_resources(profile, WORKLOAD), "small")
+    # Pooled slope 150, base 1700: (3400 - 1700) / 150; the own flat fit alone would allow 16 Mdraw.
+    assert "family old" in row["memory"] and row["max worker draws"] == pytest.approx(1700 / 150 * 1e6)
+
+
+def test_one_success_does_not_void_several_crashes(tmp_path):
+    crash = [_obs("small", "crash", **{"failure draws": [d]}) for d in (2e6, 3e6, 4e6)]
+    obs = crash + [_obs("small", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                               "memory samples": [[7e6, 3900.0, None, 1]]})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:1]))
+    assert _row(rp.plan_resources(profile, WORKLOAD, jobs_per_worker_cap=1), "small")["max worker draws"] == 2e6
+
+
+def test_fan_out_counts_draws_per_gpu(tmp_path):
+    obs = [_obs("small", "crash", **{"failure draws": [15e6]}),
+           _obs("small", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                       "memory samples": [[20e6, None, None, 2]] * 20})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:1]))
+    # 20 Mdraw over 2 GPUs is 10 Mdraw per GPU: it neither passes the crash nor counts as 20.
+    assert _row(rp.plan_resources(profile, WORKLOAD), "small")["max worker draws"] == 10e6
+
+
+def test_host_request_covers_each_admitted_class(tmp_path):
+    obs = [_obs("big", "success", **dict(_t(1), **{"memory samples": _growing(1000, 0) + [[1e6, None, 2000.0]] * 8,
+                                                   "host memory mb": 1})),
+           _obs("new", "success", **dict(_t(1), **{"host memory mb": 14000}))]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[1:]))
+    plan = rp.plan_resources(profile, WORKLOAD)
+    assert sorted(plan["admitted"]) == ["big", "new"] and plan["request memory mb"] == 17500
+
+
+def test_limited_class_joins_when_setup_is_free(tmp_path):
+    # With no setup cost, a smaller N loses nothing and adds a class.
+    classes = [{"label": "a", "capability": [9.0, None], "memory mb": 20000, "slots": 10},
+               {"label": "b", "capability": [6.0, 9.0], "memory mb": 20000, "slots": 10}]
+    obs = [_obs("a", "success", **_t(60)), _obs("b", "success", **_t(60))]
+    obs[1] = dict(obs[1], **{"memory samples": [[DPP * 3, 1000.0, None]]})
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=classes, policy={"worker setup seconds": 0}))
+    plan = rp.plan_resources(profile, WORKLOAD)
+    assert plan["jobs per worker"] == 3 and sorted(plan["admitted"]) == ["a", "b"]
+
+
+def test_failure_does_not_cross_families(tmp_path):
+    obs = [_obs("new", "crash", **{"failure draws": [3e6]}),
+           _obs("small", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                       "memory samples": _growing(500, 100)})]
+    classes = [_family_classes()[0], _family_classes()[2]]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=classes))
+    assert _row(rp.plan_resources(profile, WORKLOAD), "small")["max worker draws"] == 16e6
+
+
+def test_wall_quantile_is_of_the_sum_not_its_mean():
+    draws = [1e3] * 90 + [1e5] * 10
+    walls = rp._wall_quantiles(draws, 50, 0.9)
+    assert walls[4] > 1.5 * 5 * sum(draws) / len(draws)
+    assert all(b >= a for a, b in zip(walls, walls[1:]))
+
+
+def test_zero_cap_is_rejected(tmp_path):
+    with pytest.raises(rp.ResourceProfileError, match="cap"):
+        _plan(tmp_path, [_obs("legacy-16gb", "success", **_t(60))], jobs_per_worker_cap=0)
 
 
 def test_signature_mismatch_does_not_transfer(tmp_path):
@@ -389,7 +484,7 @@ def test_harvest_rundir(tmp_path):
         yaml.safe_dump({"observations": observations}, f)
     plan = rp.plan_resources(rp.load_resource_profile(root), WORKLOAD)
     assert "pascal-4gb" not in plan["admitted"]
-    assert plan["request memory mb"] == int(-(-6000 * 1.25 // 100) * 100)
+    assert plan["request memory mb"] == 2500      # 1977 MB on the admitted class; pascal's crash does not count
 
 
 # -- review regressions ----------------------------------------------------
@@ -470,10 +565,34 @@ def test_harvest_review_cases(tmp_path):
     by = {(o["class"], o["outcome"]): o for o in observations}
     assert set(by) == {("pascal-8gb", "success"), ("pascal-8gb", "failure")}
     ok = by[("pascal-8gb", "success")]
-    assert ok["memory samples"] == [[600000.0, 3100.0, 1000.0]] and ok["draws per point"] == [600000.0]
+    assert ok["memory samples"] == [[600000.0, 3100.0, 1000.0, 1]] and ok["draws per point"] == [600000.0]
     assert ok["draws per second"] == [pytest.approx(1000.0)]
     assert skipped["not a grid worker"] == 1
     root = _write_profile(tmp_path, classes=classes, directory=True)
+    os.mkdir(os.path.join(root, "observations"))
+    with open(os.path.join(root, "observations", "run.yaml"), "w") as f:
+        yaml.safe_dump({"observations": observations}, f)
+    rp.load_resource_profile(root)
+
+
+def test_harvest_fan_out_failure_and_zero_usage(tmp_path):
+    profile = rp.load_resource_profile(_write_profile(tmp_path, policy={"worker setup seconds": 0}))
+    run = tmp_path / "run"
+    # Two shards, one wrote nothing: still two GPUs, so 2 x 6e5 draws are 6e5 per GPU.
+    _ile(run, "ILE-0-5-0", "Tesla V100-PCIE-32GB", 70, AD_LOG.format(minutes=9, memory=1000, rc=139),
+         err="[rift_ile_multigpu] shard 0 GPU 0\n[rift_ile_multigpu] shard 1 GPU 1\n",
+         outputs=["CME_out-0-5-0.xml.gpu0_0_.dat", "CME_out-0-5-0.xml.gpu0_1_.dat"])
+    _ile(run, "ILE-1-5-0", "Tesla V100-PCIE-32GB", 70, AD_LOG.format(minutes=10, memory=0, rc=0),
+         outputs=["CME_out-1-5-0.xml_0_.dat"])
+    # A fanned-out worker's device peak spans GPUs, so it is not kept.
+    log = AD_LOG.format(minutes=10, memory=900, rc=0).replace("MemoryUsage", "GpusMemoryUsage = 3100.0\nMemoryUsage", 1)
+    _ile(run, "ILE-2-5-0", "Tesla V100-PCIE-32GB", 70, log,
+         outputs=["CME_out-2-5-0.xml.gpu0_0_.dat", "CME_out-2-5-0.xml.gpu1_0_.dat"])
+    observations, _ = rp.harvest_rundir(str(run), profile, WORKLOAD)
+    by = {o["outcome"]: o for o in observations}
+    assert by["crash"]["failure draws"] == [600000.0]
+    assert by["success"]["memory samples"] == [[600000.0, None, None, 1], [1200000.0, None, 900.0, 2]]
+    root = _write_profile(tmp_path, directory=True)
     os.mkdir(os.path.join(root, "observations"))
     with open(os.path.join(root, "observations", "run.yaml"), "w") as f:
         yaml.safe_dump({"observations": observations}, f)

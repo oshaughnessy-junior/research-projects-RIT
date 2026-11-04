@@ -43,10 +43,9 @@ are confounded. The cause is not established.
 
 ## What this adds
 
-A *resource profile* is a YAML record kept with the run sequence. It lists the
-GPU classes a pool offers and what earlier runs observed on them. At build
-time, `plan_resources` turns the profile and the run's workload into four
-values:
+A *resource profile* is a YAML record of a pool's GPU classes and of what
+earlier runs observed on them. At build time, `plan_resources` turns the
+profile and the workload into these values:
 
 | Output | Applied as |
 |---|---|
@@ -69,8 +68,8 @@ asimov process can build several productions.
 ## Profile
 
 A profile is one file, or a directory with `resources.yaml` and
-`observations/*.yaml`. A harvest writes a new file and never edits an old one,
-so concurrent monitors do not conflict. The schema is in the module docstring.
+`observations/*.yaml`. A harvest only writes new files, so monitors do not
+conflict. The schema is in the module docstring.
 
 A *class* is a capability range, a memory floor (and optional ceiling), and
 optional device-name regexes. Memory is the advertised `GlobalMemoryMb`, which
@@ -94,21 +93,30 @@ timing data.
 
 **Memory.** Each class gets a ceiling on draws per worker, the least of:
 
-1. The fit. `base + slope * draws` is fit to the class's memory samples, or to
-   its family's when the class has too few (8, spanning 2x in draws). The base
-   is raised to the 99th percentile of the residuals, so the line bounds
-   workers. The ceiling is where it meets `(1 - vram margin)` of the card.
-2. Failures. A `memory-failure` or `crash` in the family, on a card with at
-   least this much memory, caps the class at the draws that worker completed,
-   unless a worker on a card with no more memory completed as many. Crashes
-   count because the IR1 4 GB failures were segfaults near full memory.
-3. Host memory. The same fit on host memory, against
+1. The fits. `base + slope * draws` is fit to the class's memory samples and to
+   its family's (each needs 8 workers spanning 2x in draws). Both apply, so a
+   class's few flat samples cannot hide its family's growth. The base is raised
+   to the 99th percentile of the residuals, so the line bounds workers. The
+   ceiling is where it meets `(1 - vram margin)` of the card, and at most twice
+   the most draws in the samples.
+2. Failures. A `memory-failure` or `crash` on a card with at least this much
+   memory, in this family, caps the class at the draws that worker completed.
+   A failure is set aside only when workers on cards with no more memory got
+   past it often enough: 9 for each failure at or beyond it at the default
+   `timing quantile`. One crash among thousands of successes does not bar a
+   class, and one success does not erase several crashes. Crashes count because
+   the IR1 4 GB failures were segfaults near full memory.
+3. Host memory. The same fits on host memory, against
    `host memory max mb / (1 + host memory margin)`, because a larger request
-   matches fewer slots.
+   matches fewer slots. Host evidence alone does not admit a class.
 4. Without a fit, the most draws a worker on a card with no more memory has
    completed.
 
-With no evidence at all, the class is excluded unless `admit unprofiled` is set.
+Draws count per GPU for a worker that fanned out. Classes with no stated family
+share failures but not successes. With no device evidence the class is excluded
+unless `admit unprofiled` is set. The ceiling is compared with the
+`timing quantile` worker, so about 10% of workers may pass it by default: they
+lose only their remaining points.
 
 **Cost.** Seconds per point are draws per point divided by draws per second.
 Draws per point (ILE `ntotal`) depend on the event, the iteration and n eff,
@@ -128,14 +136,14 @@ less `worker setup seconds`. A class whose `timing quantile` point exceeds
 `max seconds per point` (default 1800 s) is excluded.
 
 **Which classes.** One N serves the DAG. At a given N, every class whose limit
-reaches N is worth admitting, so only each class's own limit needs trying. The
+reaches N is admitted, so only each class's own limit needs trying. The
 pool throughput is
 
     sum_c slots_c * N / (N * mean_draws / rate_c + setup)
 
-The planner keeps the N with the highest throughput. Ties go to the smaller N,
-which has the larger pool. A numerous small card joins only if the N it can
-sustain still beats what the larger cards do without it.
+The planner keeps the N with the highest throughput; ties go to the smaller N
+and larger pool. A numerous small card joins only if the N it sustains beats
+the larger cards without it.
 
 **Requirement.** The default style, `exclude`, writes a memory floor (the
 smallest admitted class), then allows a card that an admitted class describes
@@ -145,11 +153,12 @@ excluded one still matches. `include` lists
 the admitted classes only. Give each class a memory ceiling, or excluding
 "Pascal, 4 GB and up" also excludes a 24 GB Pascal card.
 
-**Host memory.** The host fit at the planned worker's draws, largest over the
-admitted classes, times `1 + host memory margin`, rounded up to 100 MB. With no
-fit, the largest observed value is used. With neither, the run keeps its own
-value. RIFT doubles this for `ILE_extr.sub`, so `host memory max mb` does not
-bound extrinsic jobs.
+**Host memory.** The largest need over the admitted classes at the planned
+worker's draws, times `1 + host memory margin`, rounded up to 100 MB. A class
+with no host fit uses its own largest observed value. With neither, the run
+keeps its own request. A class with only an observed value can exceed
+`host memory max mb`. RIFT doubles the request for `ILE_extr.sub`, so the limit
+does not bound extrinsic jobs.
 
 ## Harvest
 
@@ -166,8 +175,7 @@ workers have no termination record and are skipped, so a host-memory hold is
 not yet recorded.
 
 With `harvest: true` and a directory profile, `after_completion` writes the
-run's observations to the profile. Failures there are logged and do not block
-completion. The CLI does the same for a run directory.
+run's observations to the profile and logs any failure. The CLI does the same.
 
 ## Limits and assumptions
 
@@ -177,8 +185,7 @@ completion. The CLI does the same for a run directory.
   unbiased subset (`--sampler-sequential-warmstart` help); the budget is the
   missing piece. The container manifest's per-branch `request_memory`
   already selects host memory at match time.
-- `slots` is an operator estimate. A monitor that counts matched slots per
-  class should update it.
+- `slots` is an operator estimate.
 - Draws per second are assumed non-decreasing in n chunk. IR1 fixed-budget
   trials agree: Blackwell ran about 6400 draws/s at 10000 and 9600 at 40000.
 - A requirement that pins a class (`Capability == 6.1`) is ANDed with the plan
