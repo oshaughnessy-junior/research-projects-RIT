@@ -23,13 +23,15 @@ monitors never edit the same file).
         device names: ['1050']    # optional regexes on the device name
         slots: 400                # GPUs a run can typically hold at once
         relative speed: 0.3       # optional; transfers draws per second between classes
+        memory family: cuda118    # optional; classes sharing an image share a memory fit
     observations:
       - class: pascal-4gb
         outcome: memory-failure   # success | memory-failure | crash | failure
         workload: {label: bbh-loud, n chunk: 40000, n eff: 20, sample rate: 4096,
                    q pregrid factor: 2, ifos: 2, approximant: IMRPhenomXPHM,
                    lmax: 4, time resampling: 32768}
-        peak vram mb: 4037        # optional
+        memory samples: [[12.1e6, 3649, 5400], ...]  # per worker: total draws, device MB, host MB
+        failure draws: [6.1e6]    # per failed worker: draws in its completed points
         host memory mb: 6286      # optional
         draws per point: [...]    # optional: ILE ntotal of each point
         draws per second: [...]   # optional: one per worker, per GPU
@@ -60,17 +62,17 @@ POLICY_DEFAULTS = {
     "jobs per worker min": 1,
     "jobs per worker max": 200,
     "vram margin": 0.15,
-    "vram fixed mb": 0.0,
-    "max chunk scaling": 2.0,
     "host memory margin": 0.25,
     "host memory min mb": 2000,
+    "host memory max mb": 16000,
     "timing quantile": 0.9,
     "requirement style": "exclude",
     "admit unprofiled": False,
 }
 
-# Fields that change the device footprint.  Observations transfer between
-# workloads only when all of these agree; n chunk is then scaled (see DESIGN).
+# Fields that change the memory footprint.  Observations transfer between
+# workloads only when all of these agree.  n chunk is not one of them: measured
+# memory follows draws per worker, not chunk size (see DESIGN).
 SIGNATURE_KEYS = ("sample rate", "q pregrid factor", "ifos", "approximant",
                   "lmax", "time resampling")
 # Cost per point is draws per point / draws per second.  Draws per second is a
@@ -81,8 +83,13 @@ SPEED_KEYS = ("n chunk",)
 TIMING_KEYS = ("n chunk", "n eff", "label")
 BOOTSTRAP_SAMPLES = 1000
 OUTCOMES = ("success", "memory-failure", "crash", "failure")
-# Outcomes that bar a class at this or any larger n chunk.
+# Outcomes that cap the draws a worker may run on a class.
 BLOCKING_OUTCOMES = ("memory-failure", "crash")
+# A memory fit needs this many workers, spanning this factor in draws.
+MIN_FIT_SAMPLES = 8
+MIN_FIT_SPAN = 2.0
+# The fit is shifted up to this quantile of its residuals, so it bounds workers.
+FIT_ENVELOPE_QUANTILE = 0.99
 
 
 class ResourceProfileError(Exception):
@@ -165,6 +172,8 @@ def _validate_class(entry, path):
             raise ResourceProfileError("{}: class {} {} must be a non-negative number".format(path, label, key))
     if entry.get("relative speed") == 0:
         raise ResourceProfileError("{}: class {} relative speed must be positive".format(path, label))
+    if entry.get("memory family") is not None and not isinstance(entry["memory family"], str):
+        raise ResourceProfileError("{}: class {} memory family must be a string".format(path, label))
     names = entry.get("device names") or []
     if isinstance(names, str) or not all(isinstance(n, str) for n in names):
         raise ResourceProfileError("{}: class {} device names must be a list of regexes".format(path, label))
@@ -186,10 +195,19 @@ def _validate_observation(entry, labels, path):
         raise ResourceProfileError("{}: observation outcome must be one of {}".format(path, OUTCOMES))
     obs = dict(entry)
     obs["workload"] = normalize_workload(entry.get("workload") or {})
-    for key in ("peak vram mb", "host memory mb"):
-        if entry.get(key) is not None and not (_is_number(entry[key]) and entry[key] > 0):
-            raise ResourceProfileError("{}: {} must be a positive number in MB, got {!r}".format(
-                path, key, entry[key]))
+    host = entry.get("host memory mb")
+    if host is not None and not (_is_number(host) and host > 0):
+        raise ResourceProfileError("{}: host memory mb must be a positive number, got {!r}".format(path, host))
+    samples = entry.get("memory samples") or []
+    for sample in samples:
+        if not (isinstance(sample, (list, tuple)) and len(sample) == 3 and _is_number(sample[0]) and sample[0] > 0
+                and all(v is None or (_is_number(v) and v > 0) for v in sample[1:])):
+            raise ResourceProfileError("{}: memory samples must be [draws, device MB or null, host MB or null]".format(path))
+    obs["memory samples"] = [list(sample) for sample in samples]
+    failures = entry.get("failure draws") or []
+    if not all(_is_number(v) and v >= 0 for v in failures):
+        raise ResourceProfileError("{}: failure draws must be non-negative numbers".format(path))
+    obs["failure draws"] = [float(v) for v in failures]
     for key in ("draws per point", "draws per second"):
         values = entry.get(key) or []
         if isinstance(values, (int, float)):
@@ -228,8 +246,6 @@ def load_resource_profile(path, policy_overrides=None):
             raise ResourceProfileError("policy {} must be a number, got {!r}".format(key, policy[key]))
     if not isinstance(policy["admit unprofiled"], bool):
         raise ResourceProfileError("policy admit unprofiled must be a YAML boolean")
-    if policy["max chunk scaling"] < 1:
-        raise ResourceProfileError("max chunk scaling must be >= 1")
     if policy["requirement style"] not in ("exclude", "include"):
         raise ResourceProfileError("requirement style must be exclude or include")
     if not 0 <= policy["vram margin"] < 1:
@@ -298,50 +314,98 @@ def _quantile(values, q):
     return ordered[min(len(ordered) - 1, max(0, int(math.ceil(q * len(ordered))) - 1))]
 
 
-def _memory_mb(profile, label):
-    return next(c["memory mb"] for c in profile["classes"] if c["label"] == label)
+def _same_family(a, b):
+    return a.get("memory family") == b.get("memory family")
 
 
-def _vram_estimate(profile, workload):
-    """Scaled device need from comparable successful peaks, or None."""
-    fixed = float(profile["policy"]["vram fixed mb"])
-    best = None
-    for o in profile["observations"]:
-        if o["outcome"] != "success" or o.get("peak vram mb") is None:
-            continue
-        if not _same_signature(o["workload"], workload):
-            continue
-        ratio = workload["n chunk"] / o["workload"]["n chunk"]
-        limit = float(profile["policy"]["max chunk scaling"])
-        if not 1 / limit <= ratio <= limit:
-            continue
-        peak = float(o["peak vram mb"])
-        scaled = fixed + (peak - fixed) * workload["n chunk"] / o["workload"]["n chunk"]
-        best = scaled if best is None else max(best, scaled)
-    return best
+def _fit_memory(pairs):
+    """(base MB, MB per draw) bounding (draws, MB) pairs, or None if they cannot fix a line."""
+    import numpy as np
+    if len(pairs) < MIN_FIT_SAMPLES:
+        return None
+    x, y = np.array(pairs, dtype=float).T
+    if x.max() < MIN_FIT_SPAN * x.min():
+        return None
+    slope, base = np.polyfit(x, y, 1)
+    slope = max(float(slope), 0.0)
+    residual = y - slope * x
+    return _quantile(residual.tolist(), FIT_ENVELOPE_QUANTILE), slope
 
 
-def _memory_verdict(profile, c, workload, vram_need):
-    """(admit, reason) for the class's device memory; admit is True/False/None (unknown)."""
+def _memory_model(profile, c, workload, column):
+    """Fit of memory against draws per worker for a class, else for its family.
+
+    ``column`` is 1 for device and 2 for host memory.  Returns (fit, source);
+    fit is None when neither has enough samples.
+    """
+    by_label = {k["label"]: k for k in profile["classes"]}
+
+    def pairs(keep):
+        return [(sample[0], sample[column]) for o in profile["observations"]
+                if o["outcome"] == "success" and keep(by_label[o["class"]])
+                and _same_signature(o["workload"], workload)
+                for sample in o["memory samples"] if sample[column] is not None]
+
+    own = pairs(lambda k: k["label"] == c["label"])
+    fit = _fit_memory(own)
+    if fit is not None:
+        return fit, "{} workers on {}".format(len(own), c["label"])
+    if c.get("memory family") is not None:
+        family = pairs(lambda k: _same_family(k, c))
+        fit = _fit_memory(family)
+        if fit is not None:
+            return fit, "{} workers in family {}".format(len(family), c["memory family"])
+    return None, "too few memory samples"
+
+
+def _success_reach(o):
+    """Most draws one worker of this observation is known to have completed."""
+    reach = [sample[0] for sample in o["memory samples"]] + o["draws per point"]
+    return max(reach) if reach else 0.0
+
+
+def _draw_ceiling(profile, c, workload):
+    """(most draws a worker may run on this class, reason); (None, reason) if unknown.
+
+    The ceiling is the least of what the memory fit allows and what failures
+    show.  A failure on a card with at least this much memory, in this family,
+    caps the class at the draws that worker completed, unless a worker on a
+    card with no more memory completed as many.  Without a fit, a class is
+    trusted only as far as such a worker has gone.
+    """
+    by_label = {k["label"]: k for k in profile["classes"]}
     mem = c["memory mb"]
-    comparable = [o for o in profile["observations"] if _same_signature(o["workload"], workload)]
-    # A success at this n chunk or larger, on a card with no more memory, outweighs
-    # failures: crashes also happen for reasons unrelated to memory.
-    vouched = [o for o in comparable
-               if o["outcome"] == "success" and o["workload"]["n chunk"] >= workload["n chunk"]
-               and _memory_mb(profile, o["class"]) <= mem]
-    for o in comparable:
-        if (not vouched and o["outcome"] in BLOCKING_OUTCOMES and o["workload"]["n chunk"] <= workload["n chunk"]
-                and _memory_mb(profile, o["class"]) >= mem):
-            return False, "{} on {} at n chunk {}".format(o["outcome"], o["class"], o["workload"]["n chunk"])
-    if vram_need is not None:
+    comparable = [o for o in profile["observations"] if _same_signature(o["workload"], workload)
+                  and _same_family(by_label[o["class"]], c)]
+    reach = max([_success_reach(o) for o in comparable
+                 if o["outcome"] == "success" and by_label[o["class"]]["memory mb"] <= mem] or [0.0])
+    failures = [(draws, o) for o in comparable if o["outcome"] in BLOCKING_OUTCOMES
+                and by_label[o["class"]]["memory mb"] >= mem
+                for draws in (o["failure draws"] or [0.0]) if draws >= reach]
+    ceilings = []
+    if failures:
+        draws, o = min(failures, key=lambda item: item[0])
+        ceilings.append((draws, "{} on {} after {:.3g} draws".format(o["outcome"], o["class"], draws)))
+    fit, source = _memory_model(profile, c, workload, 1)
+    if fit is not None:
+        base, slope = fit
         usable = mem * (1 - profile["policy"]["vram margin"])
-        if usable >= vram_need:
-            return True, "needs {:.0f} MB, {:.0f} MB usable".format(vram_need, usable)
-        return False, "needs {:.0f} MB, only {:.0f} MB usable".format(vram_need, usable)
-    for o in vouched:
-        return True, "succeeded on {} at n chunk {}".format(o["class"], o["workload"]["n chunk"])
-    return None, "no comparable memory evidence"
+        allowed = float("inf") if slope == 0 else max(0.0, (usable - base) / slope)
+        ceilings.append((allowed, "{:.0f} MB + {:.3g} MB per Mdraw ({}), {:.0f} MB usable".format(
+            base, slope * 1e6, source, usable)))
+    elif reach:
+        ceilings.append((reach, "completed {:.3g} draws, no memory fit".format(reach)))
+    # Host memory grows the same way, and a larger request matches fewer slots.
+    host_fit, source = _memory_model(profile, c, workload, 2)
+    if host_fit is not None and host_fit[1] > 0:
+        policy = profile["policy"]
+        allowed = float(policy["host memory max mb"]) / (1 + float(policy["host memory margin"]))
+        ceilings.append((max(0.0, (allowed - host_fit[0]) / host_fit[1]),
+                         "host {:.0f} MB + {:.3g} MB per Mdraw ({}), {:.0f} MB allowed".format(
+                             host_fit[0], host_fit[1] * 1e6, source, allowed)))
+    if not ceilings:
+        return None, "no comparable memory evidence"
+    return min(ceilings, key=lambda item: item[0])
 
 
 def _samples(profile, workload, key, keys, label=None):
@@ -405,6 +469,23 @@ def _points_per_worker(walls, rate, n_min, n_max, budget):
     return fits[-1] if fits else None
 
 
+def _host_request(profile, workload, admitted, by_label, draws):
+    """Host MB request covering a worker of ``draws`` draws on any admitted class."""
+    policy = profile["policy"]
+    needs = []
+    for r in admitted:
+        fit, _ = _memory_model(profile, by_label[r["label"]], workload, 2)
+        if fit is not None:
+            needs.append(fit[0] + fit[1] * draws)
+    if not needs:
+        needs = [float(o["host memory mb"]) for o in profile["observations"]
+                 if o.get("host memory mb") is not None and _same_signature(o["workload"], workload)]
+    if not needs:
+        return None
+    request = max(float(policy["host memory min mb"]), max(needs) * (1 + float(policy["host memory margin"])))
+    return int(math.ceil(request / 100.0) * 100)
+
+
 def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=None):
     """Choose admitted GPU classes, points per worker, host memory and require_gpus.
 
@@ -421,7 +502,6 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
     if jobs_per_worker_cap is not None:
         n_max = min(n_max, int(jobs_per_worker_cap))
         n_min = min(n_min, n_max)
-    vram_need = _vram_estimate(profile, workload)
     draws = _samples(profile, workload, "draws per point", TIMING_KEYS)
     draws_source = "measured, {} points".format(len(draws))
     if not draws and draws_per_point:
@@ -432,11 +512,15 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
     rows, candidates = [], []
     for c in profile["classes"]:
         row = {"label": c["label"], "memory mb": c["memory mb"], "slots": c.get("slots", 0)}
-        fits, row["memory"] = _memory_verdict(profile, c, workload, vram_need)
+        ceiling, row["memory"] = _draw_ceiling(profile, c, workload)
         rate, row["speed"] = _draw_rate(profile, c, workload)
         row["draws per second"] = rate
+        row["max worker draws"] = ceiling
         row["seconds per point"] = _quantile(draws, q) / rate if (rate and draws) else None
-        if fits is False or (fits is None and not policy["admit unprofiled"]):
+        if ceiling is None and policy["admit unprofiled"]:
+            ceiling = float("inf")
+        limit = None
+        if ceiling is None:
             row["excluded"] = "memory: " + row["memory"]
         elif not draws:
             row["excluded"] = "timing: no draws per point for this workload"
@@ -444,26 +528,32 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
             row["excluded"] = "timing: " + row["speed"]
         elif row["seconds per point"] > float(policy["max seconds per point"]):
             row["excluded"] = "{:.0f} s per point exceeds max seconds per point".format(row["seconds per point"])
-        elif _points_per_worker(walls, rate, n_min, n_min, budget) is None:
-            row["excluded"] = "cannot finish {} points within the wall target".format(n_min)
         elif not row["slots"]:
             row["excluded"] = "no slots"
         else:
+            fits = [n for n in range(n_min, n_max + 1) if walls[n - 1] <= ceiling]
+            timed = _points_per_worker(walls, rate, n_min, n_max, budget)
+            if not fits:
+                row["excluded"] = "memory: {} points exceed it: {}".format(n_min, row["memory"])
+            elif timed is None:
+                row["excluded"] = "cannot finish {} points within the wall target".format(n_min)
+            else:
+                limit = min(fits[-1], timed)
+        row["points limit"] = limit
+        if limit is not None:
             candidates.append(row)
         rows.append(row)
     if not candidates:
         raise ResourceProfileError("no GPU class can run this workload: " + "; ".join(
             "{}: {}".format(r["label"], r["excluded"]) for r in rows))
 
-    # Admit the fastest k classes; one points-per-worker value must suit the
-    # slowest admitted class.  Keep the k with the highest pool throughput
-    # (ties go to the larger, more robust pool).
-    candidates.sort(key=lambda r: -r["draws per second"])
+    # One points-per-worker value serves the whole DAG.  At a given N every class
+    # that can run N points is worth admitting, so only each class's own limit
+    # needs trying.  Keep the N with the highest pool throughput; ties go to
+    # the smaller N, which has the larger, more robust pool.
     best = None
-    for k in range(1, len(candidates) + 1):
-        admitted = candidates[:k]
-        slowest = admitted[-1]["draws per second"]
-        n = _points_per_worker(walls, slowest, n_min, n_max, budget)
+    for n in sorted({r["points limit"] for r in candidates}, reverse=True):
+        admitted = [r for r in candidates if r["points limit"] >= n]
         rate = sum(r["slots"] * n / (n * mean_draws / r["draws per second"] + setup) for r in admitted)
         if best is None or rate >= best[2]:
             best = (admitted, n, rate)
@@ -471,7 +561,7 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
     admitted_labels = {r["label"] for r in admitted}
     for r in rows:
         if r["label"] not in admitted_labels and "excluded" not in r:
-            r["excluded"] = "slower than the throughput-optimal pool"
+            r["excluded"] = "its limit of {} points is below the throughput-optimal {}".format(r["points limit"], n)
     by_label = {c["label"]: c for c in profile["classes"]}
     if policy["requirement style"] == "include":
         require = " || ".join(_class_selector(by_label[r["label"]]) for r in admitted)
@@ -487,27 +577,20 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
             require = "(GlobalMemoryMb >= {}) && ({})".format(int(floor), " || ".join(allowed))
         else:
             require = "(GlobalMemoryMb >= {})".format(int(floor))
-
-    host = [float(o["host memory mb"]) for o in profile["observations"]
-            if o.get("host memory mb") is not None and _same_signature(o["workload"], workload)]
-    host_request = None
-    if host:
-        host_request = max(float(policy["host memory min mb"]),
-                           max(host) * (1 + float(policy["host memory margin"])))
-        host_request = int(math.ceil(host_request / 100.0) * 100)
+    worker_draws = float(walls[n - 1])
     return {
         "profile": profile["source"],
         "profile files": profile["files"],
         "policy": policy,
         "workload": workload,
-        "vram need mb": vram_need,
         "draws per point": {"source": draws_source, "mean": mean_draws, "quantile": _quantile(draws, q)},
+        "worker draws": worker_draws,
         "jobs per worker": n,
         "admitted": [r["label"] for r in admitted],
         "require gpus": "(" + require + ")",
-        "request memory mb": host_request,
+        "request memory mb": _host_request(profile, workload, admitted, by_label, worker_draws),
         "points per hour": rate * 3600.0,
-        "slowest worker seconds": setup + float(walls[n - 1]) / admitted[-1]["draws per second"],
+        "slowest worker seconds": setup + worker_draws / min(r["draws per second"] for r in admitted),
         "classes": rows,
     }
 
@@ -620,8 +703,9 @@ def harvest_rundir(rundir, profile, workload, source=None):
     Draws per point are the ILE ``ntotal`` column of each output row.  Draws
     per second are per GPU, over the wall time less the policy worker setup
     time (at most half the wall): a worker that fanned out over K GPUs
-    (``.gpuK`` output shards) ran K points at a time.  Peak device memory is
-    condor's GpusMemoryUsage, recorded only for workers that used one GPU.
+    (``.gpuK`` output shards) ran K points at a time.  Memory samples pair a
+    worker's total draws with condor's GpusMemoryUsage (single-GPU workers
+    only) and MemoryUsage.
     Held-then-removed workers have no termination and are skipped.
     """
     workload = normalize_workload(workload)
@@ -685,15 +769,19 @@ def harvest_rundir(rundir, profile, workload, source=None):
             outcome = "failure"
         obs = grouped.setdefault((label, outcome), {
             "class": label, "outcome": outcome, "workload": dict(workload),
-            "draws per point": [], "draws per second": [], "workers": 0,
+            "draws per point": [], "draws per second": [], "memory samples": [], "failure draws": [],
+            "workers": 0,
             "source": source or os.path.abspath(rundir)})
         obs["workers"] += 1
         if log["memory_mb"]:
             obs["host memory mb"] = max(obs.get("host memory mb", 0.0), log["memory_mb"])
-        if log["gpu_peak_mb"] and len(shards) <= 1:   # a fanned-out worker's peak spans GPUs
-            obs["peak vram mb"] = max(obs.get("peak vram mb", 0.0), log["gpu_peak_mb"])
+        if outcome in BLOCKING_OUTCOMES:
+            obs["failure draws"].append(sum(draws))
         if outcome == "success":
             obs["draws per point"] += draws
+            if draws:   # a fanned-out worker's device peak spans GPUs, so only host counts
+                obs["memory samples"].append([sum(draws), log["gpu_peak_mb"] if len(shards) <= 1 else None,
+                                              log["memory_mb"]])
             if log["wall"] > 0 and draws:
                 busy = max(log["wall"] - setup, 0.5 * log["wall"])
                 obs["draws per second"].append(sum(draws) / (busy * max(1, len(shards))))

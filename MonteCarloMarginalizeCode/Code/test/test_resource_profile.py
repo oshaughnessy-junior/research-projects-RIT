@@ -38,11 +38,23 @@ def _write_profile(tmp_path, observations=(), policy=None, classes=CLASSES, dire
 
 
 DPP = 60000.0
+# Workers whose device memory stays flat, whatever they draw.
+FLAT = [[1e6 * (i + 1), 1000.0, None] for i in range(8)]
 
 
 def _t(seconds, draws=DPP):
-    """Fields for a success that took ``seconds`` per point."""
-    return {"draws per point": [draws], "draws per second": [draws / seconds]}
+    """Fields for a success that took ``seconds`` per point, with flat memory."""
+    return {"draws per point": [draws], "draws per second": [draws / seconds], "memory samples": FLAT}
+
+
+def _growing(base, per_mdraw, column=1):
+    """Memory samples from workers whose memory grows with draws."""
+    samples = []
+    for i in range(8):
+        sample = [1e6 * (i + 1), None, None]
+        sample[column] = base + per_mdraw * (i + 1)
+        samples.append(sample)
+    return samples
 
 
 def _obs(cls, outcome, n_chunk=40000, **extra):
@@ -98,16 +110,13 @@ def test_numbers_compare_numerically():
 
 # -- device memory ---------------------------------------------------------
 
-def test_memory_failure_bars_class_at_same_and_larger_chunk_only(tmp_path):
-    obs = [_obs("pascal-4gb", "memory-failure"),
-           _obs("legacy-16gb", "success", **_t(600))]
-    plan = _plan(tmp_path, obs, policy={"admit unprofiled": True})
-    assert "memory-failure on pascal-4gb" in _row(plan, "pascal-4gb")["excluded"]
-    # At a smaller chunk the 40k failure is not evidence; unprofiled policy admits it.
-    obs.append(_obs("legacy-16gb", "success", n_chunk=10000, **{"draws per second": [100]}))
-    plan = _plan(tmp_path, obs, workload={"n chunk": 20000}, policy={"admit unprofiled": True},
-                 draws_per_point=DPP)
-    assert _row(plan, "pascal-4gb")["memory"] == "no comparable memory evidence"
+def test_memory_failure_bars_class_at_any_chunk(tmp_path):
+    # Measured memory follows draws per worker, so a failure at 40k also speaks for 20k.
+    obs = [_obs("pascal-4gb", "memory-failure"), _obs("legacy-16gb", "success", **_t(60)),
+           _obs("legacy-16gb", "success", n_chunk=10000, **_t(60))]
+    for chunk in (40000, 20000):
+        plan = _plan(tmp_path, obs, workload={"n chunk": chunk}, draws_per_point=DPP)
+        assert "memory-failure on pascal-4gb" in _row(plan, "pascal-4gb")["excluded"]
 
 
 def test_failure_on_larger_card_bars_smaller_card(tmp_path):
@@ -128,27 +137,67 @@ def test_unprofiled_class_excluded_by_default(tmp_path):
     assert _row(plan, "modern-24gb")["seconds per point"] == pytest.approx(300)
 
 
-def test_vram_estimate_scales_with_chunk_and_applies_margin(tmp_path):
-    obs = [_obs("legacy-16gb", "success", n_chunk=20000, **{"peak vram mb": 3000}),
-           _obs("legacy-16gb", "success", n_chunk=5000, **{"draws per second": [1000]})]
-    plan = _plan(tmp_path, obs, draws_per_point=DPP)
-    assert plan["vram need mb"] == pytest.approx(6000)
-    assert "only 3400 MB usable" in _row(plan, "pascal-4gb")["excluded"]
-    plan = _plan(tmp_path, obs, workload={"n chunk": 10000}, draws_per_point=DPP)
-    assert plan["vram need mb"] == pytest.approx(1500)
-    assert "pascal-4gb" in plan["admitted"]
-    plan = _plan(tmp_path, obs, workload={"n chunk": 10000}, draws_per_point=DPP,
-                 policy={"vram fixed mb": 1000})
-    assert plan["vram need mb"] == pytest.approx(2000)
+def _family_classes():
+    return [{"label": "small", "capability": [6.0, 7.0], "memory mb": 4000, "slots": 400,
+             "relative speed": 1.0, "memory family": "old"},
+            {"label": "big", "capability": [7.0, 9.0], "memory mb": 20000, "slots": 10,
+             "relative speed": 1.0, "memory family": "old"},
+            {"label": "new", "capability": [9.0, None], "memory mb": 20000, "slots": 10,
+             "relative speed": 1.0, "memory family": "new"}]
+
+
+def test_memory_growth_limits_points_per_worker(tmp_path):
+    # 500 MB + 300 MB/Mdraw, 1 Mdraw per point: 4000 MB x 0.85 = 3400 MB holds 9 points.
+    obs = [_obs("big", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                     "memory samples": _growing(500, 300)})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:2]))
+    plan = rp.plan_resources(profile, WORKLOAD)
+    assert _row(plan, "small")["points limit"] == 9
+    assert _row(plan, "small")["max worker draws"] == pytest.approx(2900 / 300 * 1e6)
+    assert "family old" in _row(plan, "small")["memory"]
+
+
+def test_memory_fit_does_not_cross_families(tmp_path):
+    obs = [_obs("big", "success", **{"draws per point": [1e6], "draws per second": [1000],
+                                     "memory samples": _growing(500, 300)}),
+           _obs("new", "success", **{"draws per second": [1000], "memory samples": _growing(1000, 0)})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()))
+    plan = rp.plan_resources(profile, WORKLOAD, jobs_per_worker_cap=100)
+    assert _row(plan, "new")["max worker draws"] == float("inf")
+    assert _row(plan, "big")["points limit"] < 100
+
+
+def test_failure_caps_draws_at_what_the_worker_completed(tmp_path):
+    obs = [_obs("big", "success", **{"draws per point": [1e6], "draws per second": [1000],
+                                     "memory samples": _growing(500, 1)}),
+           _obs("small", "crash", **{"failure draws": [3e6]})]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, obs, classes=_family_classes()[:2]))
+    plan = rp.plan_resources(profile, WORKLOAD)
+    assert _row(plan, "small")["max worker draws"] == 3e6
+    assert _row(plan, "small")["points limit"] == 3
+
+
+def test_host_memory_limits_points_and_sets_request(tmp_path):
+    # Host 1000 MB + 500 MB/Mdraw: 16000 MB / 1.25 allows 23.6 Mdraw, so 23 points.
+    samples = [[d, 1000.0, h[2]] for (d, _, _), h in zip(FLAT, _growing(1000, 500, column=2))]
+    obs = [_obs("legacy-16gb", "success", **{"draws per point": [1e6], "draws per second": [1e5],
+                                             "memory samples": samples})]
+    plan = _plan(tmp_path, obs)
+    assert plan["jobs per worker"] == 23
+    assert plan["request memory mb"] == 15700     # (1000 + 500 x 23) x 1.25, rounded up
+
+
+def test_no_fit_trusts_only_the_draws_a_worker_completed(tmp_path):
+    obs = [_obs("legacy-16gb", "success", **{"draws per point": [1e6, 1e6], "draws per second": [1000],
+                                             "memory samples": [[2e6, 1000.0, None]]})]
+    plan = _plan(tmp_path, obs)
+    assert plan["jobs per worker"] == 2
 
 
 def test_signature_mismatch_does_not_transfer(tmp_path):
-    obs = [_obs("legacy-16gb", "success", n_chunk=20000, **{"peak vram mb": 3000}),
-           _obs("legacy-16gb", "success", n_chunk=5000, **dict(_t(60), workload=dict(WORKLOAD, **{
-               "n chunk": 5000, "q pregrid factor": 1})))]
-    plan = _plan(tmp_path, obs, workload={"q pregrid factor": 1}, draws_per_point=DPP,
-                 policy={"admit unprofiled": True})
-    assert plan["vram need mb"] is None
+    obs = [_obs("legacy-16gb", "success", **_t(600))]
+    with pytest.raises(rp.ResourceProfileError, match="no comparable memory evidence"):
+        _plan(tmp_path, obs, workload={"q pregrid factor": 1}, draws_per_point=DPP)
 
 
 # -- timing and points per worker ------------------------------------------
@@ -156,7 +205,7 @@ def test_signature_mismatch_does_not_transfer(tmp_path):
 def _two_class_profile(tmp_path, slow_slots):
     classes = [{"label": "fast", "capability": [9.0, None], "memory mb": 24000, "slots": 10},
                {"label": "slow", "capability": [6.0, 9.0], "memory mb": 8000, "slots": slow_slots}]
-    obs = [_obs("fast", "success", **_t(60), **{"peak vram mb": 2000}),
+    obs = [_obs("fast", "success", **_t(60)),
            _obs("slow", "success", **_t(600))]
     return rp.load_resource_profile(_write_profile(tmp_path, obs, classes=classes))
 
@@ -175,7 +224,7 @@ def test_few_slow_cards_are_not_worth_the_shorter_workers(tmp_path):
     plan = rp.plan_resources(_two_class_profile(tmp_path, 1), WORKLOAD)
     assert plan["admitted"] == ["fast"]
     assert plan["jobs per worker"] == (7200 - 300) // 60
-    assert _row(plan, "slow")["excluded"] == "slower than the throughput-optimal pool"
+    assert _row(plan, "slow")["excluded"] == "its limit of 11 points is below the throughput-optimal 115"
 
 
 def test_explicit_jobs_per_worker_caps_plan(tmp_path):
@@ -185,7 +234,7 @@ def test_explicit_jobs_per_worker_caps_plan(tmp_path):
 
 def test_timing_quantile_and_per_point_cap(tmp_path):
     obs = [_obs("legacy-16gb", "success", **{"draws per point": [10e3, 20e3, 30e3, 40e3, 2000e3],
-                                             "draws per second": [1000]})]
+                                             "draws per second": [1000], "memory samples": FLAT})]
     plan = _plan(tmp_path, obs, policy={"timing quantile": 0.8})
     assert _row(plan, "legacy-16gb")["seconds per point"] == 40
     plan = _plan(tmp_path, obs, policy={"timing quantile": 1.0})
@@ -207,7 +256,8 @@ def test_rate_transfers_up_in_chunk_only(tmp_path):
 def test_worker_wall_uses_sum_of_heavy_tailed_points(tmp_path):
     # 90% of points are cheap, 10% cost 100x: the p90 point is cheap, the p90 worker is not.
     draws = [1e3] * 90 + [1e5] * 10
-    obs = [_obs("legacy-16gb", "success", **{"draws per point": draws, "draws per second": [100]})]
+    obs = [_obs("legacy-16gb", "success", **{"draws per point": draws, "draws per second": [100],
+                                             "memory samples": FLAT})]
     plan = _plan(tmp_path, obs, policy={"jobs per worker max": 1000, "max seconds per point": 1e4})
     n = plan["jobs per worker"]
     assert plan["slowest worker seconds"] <= 7200
@@ -379,20 +429,13 @@ def test_device_regex_agrees_between_python_and_classad(tmp_path):
     assert classad.ExprTree(rp.plan_resources(profile, WORKLOAD)["require gpus"]).eval(ad) is True
 
 
-def test_vram_estimate_limited_to_chunk_scaling(tmp_path):
-    obs = [_obs("legacy-16gb", "success", n_chunk=160000, **{"peak vram mb": 12000}),
-           _obs("legacy-16gb", "success", n_chunk=5000, **{"draws per second": [1000]})]
-    plan = _plan(tmp_path, obs, workload={"n chunk": 20000}, draws_per_point=DPP)
-    assert plan["vram need mb"] is None                      # 8x is beyond the default 2x
-    plan = _plan(tmp_path, obs, workload={"n chunk": 20000}, draws_per_point=DPP,
-                 policy={"max chunk scaling": 8})
-    assert plan["vram need mb"] == pytest.approx(1500)
-
-
 @pytest.mark.parametrize("mutate, match", [
     (lambda d: d["classes"].__setitem__(0, dict(CLASSES[0], capability=[None, 9])), "capability"),
     (lambda d: d["classes"].__setitem__(0, "pascal"), "mapping"),
-    (lambda d: d["observations"].append(_obs("pascal-4gb", "success", **{"peak vram mb": "4 GB"})), "peak vram"),
+    (lambda d: d["observations"].append(_obs("pascal-4gb", "success", **{"host memory mb": "4 GB"})), "host memory"),
+    (lambda d: d["observations"].append(_obs("pascal-4gb", "success", **{"memory samples": [[1e6, "4 GB", 1]]})),
+     "memory samples"),
+    (lambda d: d["observations"].append(_obs("pascal-4gb", "crash", **{"failure draws": ["many"]})), "failure draws"),
     (lambda d: d.update(policy={"timing quantile": None}), "must be a number"),
     (lambda d: d.update(policy={"worker wall target hours": "2h"}), "must be a number"),
     (lambda d: d.update(policy={"admit unprofiled": "yes"}), "boolean"),
@@ -427,7 +470,7 @@ def test_harvest_review_cases(tmp_path):
     by = {(o["class"], o["outcome"]): o for o in observations}
     assert set(by) == {("pascal-8gb", "success"), ("pascal-8gb", "failure")}
     ok = by[("pascal-8gb", "success")]
-    assert ok["peak vram mb"] == 3100.0 and ok["draws per point"] == [600000.0]
+    assert ok["memory samples"] == [[600000.0, 3100.0, 1000.0]] and ok["draws per point"] == [600000.0]
     assert ok["draws per second"] == [pytest.approx(1000.0)]
     assert skipped["not a grid worker"] == 1
     root = _write_profile(tmp_path, classes=classes, directory=True)

@@ -17,6 +17,7 @@ yaml = pytest.importorskip("yaml")
 WORKLOAD = {"label": "bbh", "n chunk": 40000, "n eff": 20, "sample rate": 4096,
             "q pregrid factor": 2, "ifos": 2, "approximant": "SEOBNRv5PHM", "lmax": 4,
             "time resampling": 32768}
+FLAT = [[1e6 * (i + 1), 1000.0, None] for i in range(8)]
 PROFILE = {
     "version": 1,
     "classes": [
@@ -25,8 +26,8 @@ PROFILE = {
     ],
     "observations": [
         {"class": "fast", "outcome": "success", "workload": WORKLOAD,
-         "draws per point": [60000], "draws per second": [1000], "peak vram mb": 2000, "host memory mb": 6000},
-        {"class": "slow", "outcome": "success", "workload": WORKLOAD, "draws per second": [100]},
+         "draws per point": [60000], "draws per second": [1000], "host memory mb": 6000, "memory samples": FLAT},
+        {"class": "slow", "outcome": "success", "workload": WORKLOAD, "draws per second": [100], "memory samples": FLAT},
     ],
 }
 
@@ -136,11 +137,11 @@ def test_build_dag_without_profile_keeps_builder_call(monkeypatch, tmp_path):
     ("--n-chunk 4e4", {}, "must be an integer"),
 ])
 def test_build_dag_rejects_unplannable_ledger(monkeypatch, tmp_path, manual_args, settings, match):
-    from asimov.pipeline import PipelineException
     profile = tmp_path / "profile.yaml"
     profile.write_text(yaml.safe_dump(PROFILE))
     pipe, _, calls, _ = _pipe(monkeypatch, tmp_path, dict({"path": str(profile)}, **settings),
                               manual_args=manual_args)
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
     with pytest.raises(PipelineException, match=match):
         pipe.build_dag()
     assert calls == []
@@ -161,10 +162,10 @@ def test_profile_n_chunk_reaches_the_ini(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("key", ["request_memory", "require_gpus"])
 def test_build_dag_refuses_condor_overrides(monkeypatch, tmp_path, key):
-    from asimov.pipeline import PipelineException
     profile = tmp_path / "profile.yaml"
     profile.write_text(yaml.safe_dump(PROFILE))
     pipe, production, calls, _ = _pipe(monkeypatch, tmp_path, {"path": str(profile), "workload label": "bbh"})
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
     production.meta["sampler"]["ile"]["condor commands"] = {key: "1"}
     with pytest.raises(PipelineException, match="override the plan"):
         pipe.build_dag()
