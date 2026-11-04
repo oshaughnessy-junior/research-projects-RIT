@@ -112,6 +112,7 @@ def test_image_label_will_not_guess_a_slot_test():
 def test_device_name_metacharacters_are_literal():
     pattern = build._exact_name("Card (x) 1.5")
     assert re.search(pattern, "Card (x) 1.5") and not re.search(pattern, "Card (x) 125")
+    assert "\\" not in pattern                    # condor would keep both backslashes and match nothing
 
 
 def test_survey_keeps_absent_classes_and_their_slots():
@@ -225,6 +226,22 @@ def test_check_built_run_refuses_jax_ile(tmp_path):
     assert "JAX" in build.check_built_run(str(tmp_path), plan)[0]
 
 
+def test_check_built_run_reads_the_ile_wrapper(tmp_path):
+    plan = _built(tmp_path)
+    (tmp_path / "ile_pre.sh").write_text('exec "$PY" - "/x/integrate_likelihood_extrinsic_jax" "$@"\n')
+    with open(str(tmp_path / "ILE.sub"), "a") as f:
+        f.write("executable = ile_pre.sh\n")
+    assert "JAX" in build.check_built_run(str(tmp_path), plan)[0]
+
+
+def test_check_built_run_refuses_a_build_off_noloop(tmp_path):
+    plan = _built(tmp_path)
+    text = (tmp_path / "ILE.sub").read_text()
+    (tmp_path / "ILE.sub").write_text(text.replace(" --force-xpy", ""))
+    (difference,) = build.check_built_run(str(tmp_path), plan)
+    assert "--force-xpy" in difference
+
+
 def _emit(tmp_path, **kwargs):
     case = tmp_path / "input"
     case.mkdir()
@@ -277,13 +294,14 @@ def test_emit_refuses_a_command_line_off_noloop(tmp_path, flag):
         build.emit_probes(profile, str(tmp_path), [a for a in ARGUMENTS if a != flag], str(tmp_path / "j"), "x")
 
 
-def _receipt(tmp_path, name, code, device="Old", draws=(1000.0, 2000.0, 3000.0), oom=False, finite=True, points=3):
+def _receipt(tmp_path, name, code, device="Old", draws=(1000.0, 2000.0, 3000.0), oom=False, finite=True, points=3, noloop_lost=False):
     directory = tmp_path / "jobs" / name
     (directory / "results").mkdir(parents=True)
     (directory / "probe.json").write_text(json.dumps({"label": "bbh", "points": points}))
     (directory / "results" / "receipt.json").write_text(json.dumps({
         "gpu": {"name": device, "sm": 61, "vram_bytes": 4236312576}, "run": {
             "arguments": ARGUMENTS, "returncode": code, "wall_seconds": 1000.0, "gpu_oom": oom, "all_finite": finite,
+            "noloop_lost": noloop_lost,
             "points": [{"draws": d, "mtime": 100.0 * (i + 1)} for i, d in enumerate(draws)],
             "sampled_memory": {"gpu_peak_used_mb": 2000.0, "host_peak_rss_kb": 2048000}}}))
 
@@ -323,6 +341,25 @@ def test_collect_maps_outcomes_and_skips_what_it_cannot_place(tmp_path):
 @pytest.mark.parametrize("kwargs", [{"finite": False}, {"points": 4}])
 def test_collect_does_not_call_a_bad_run_a_success(tmp_path, kwargs):
     _receipt(tmp_path, "a", 0, **kwargs)
+    (observation,), _ = _collect(tmp_path)
+    assert observation["outcome"] == "failure" and "draws per second" not in observation
+
+
+def test_collect_a_gpu_oom_before_any_point_is_a_memory_failure(tmp_path):
+    _receipt(tmp_path, "a", 1, draws=(), oom=True)
+    (observation,), _ = _collect(tmp_path)
+    assert observation["outcome"] == "memory-failure" and "failure draws" not in observation
+
+
+@pytest.mark.parametrize("kwargs", [{"draws": ()}, {"oom": True}, {"noloop_lost": True}])
+def test_collect_a_timeout_needs_clean_points(tmp_path, kwargs):
+    _receipt(tmp_path, "a", build.TIMEOUT_RETURNCODE, **kwargs)
+    (observation,), _ = _collect(tmp_path)
+    assert observation["outcome"] != "success"
+
+
+def test_collect_a_run_off_noloop_is_no_evidence(tmp_path):
+    _receipt(tmp_path, "a", 0, noloop_lost=True)
     (observation,), _ = _collect(tmp_path)
     assert observation["outcome"] == "failure" and "draws per second" not in observation
 

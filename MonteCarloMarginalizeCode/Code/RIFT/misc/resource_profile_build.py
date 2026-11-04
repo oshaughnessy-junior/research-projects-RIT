@@ -128,7 +128,7 @@ def summarize_inventory(rows):
 
 def _exact_name(name):
     """A regex matching this device name only: 'A10' must not match 'A100'."""
-    return "^" + re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", name) + "$"
+    return "^" + re.sub(r"[.$*+?()\[\]{}|]", r"[\g<0>]", name) + "$"
 
 
 def _slug(name):
@@ -280,7 +280,16 @@ def check_built_run(rundir, plan):
     planned = rp.normalize_workload(plan["workload"])
     differences = ["{}: planned {}, built {}".format(key, planned[key], built[key])
                    for key in rp.SIGNATURE_KEYS + ("n chunk",) if planned[key] != built[key]]
-    if "integrate_likelihood_extrinsic_jax" in text:
+    missing = [flag for flag in NOLOOP_FLAGS if flag not in arguments]
+    if missing:
+        differences.append("ILE misses {}: profile evidence is for NoLoop".format(" ".join(missing)))
+    executable = re.search(r"^executable\s*=\s*(\S+)", text, re.M | re.I)
+    wrapper = os.path.join(rundir, executable.group(1)) if executable else ""
+    launched = text
+    if wrapper.endswith(".sh") and os.path.isfile(wrapper):  # pseudo_pipe names ILE inside ile_pre.sh
+        with open(wrapper, errors="replace") as f:
+            launched += f.read()
+    if "integrate_likelihood_extrinsic_jax" in launched:
         differences.append("JAX ILE: profile evidence is for the batchmode executable")
     memory = re.search(r"^request_memory\s*=\s*(\d+)", text, re.M | re.I)
     wanted = plan.get("request memory mb")
@@ -410,10 +419,11 @@ def collect_probes(out, profile):
         device = memory.get("gpu_peak_used_mb") or None
         host = (memory.get("host_peak_rss_kb") or 0) / 1024.0 or None
         code = run["returncode"]
-        complete = code == 0 and run["all_finite"] and len(draws) == probe["points"]
+        usable = run["all_finite"] and not run.get("gpu_oom") and not run.get("noloop_lost")
+        complete = code == 0 and usable and len(draws) == probe["points"]
         o = {"class": label, "workload": workload_from_arguments(run["arguments"], probe["label"]),
              "source": path}
-        if complete or (code == TIMEOUT_RETURNCODE and run["all_finite"]):
+        if complete or (code == TIMEOUT_RETURNCODE and usable and draws):
             o["outcome"] = "success"
             if draws:
                 o["draws per point"] = draws
@@ -421,9 +431,10 @@ def collect_probes(out, profile):
             span = points[-1]["mtime"] - points[0]["mtime"] if points else 0
             if len(points) > 1 and span > 0:
                 o["draws per second"] = [sum(draws[1:]) / span]
-        elif draws and (run.get("gpu_oom") or code < 0):
+        elif run.get("gpu_oom") or (draws and code < 0):
             o["outcome"] = "memory-failure" if run.get("gpu_oom") else "crash"
-            o["failure draws"] = [sum(draws)]
+            if draws:
+                o["failure draws"] = [sum(draws)]
             if host:
                 o["host memory mb"] = host
         else:

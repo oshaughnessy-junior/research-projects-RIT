@@ -151,15 +151,15 @@ and larger pool.
 
 **Requirement.** The default style, `exclude`, writes a memory floor (the
 smallest admitted class), then allows a card that an admitted class describes
-or that no excluded class describes. Cards no class describes can still match,
-so a new site still runs. `include` lists
+or that no excluded class describes. Cards no class describes can still match. `include` lists
 the admitted classes only. An admitted selector leaves out excluded classes
 listed before it. Give each class a memory ceiling, or excluding
 "Pascal, 4 GB and up" also excludes a 24 GB Pascal card.
 
 **Host memory.** The largest need over the admitted classes at the planned
 worker's draws, times `1 + host memory margin`, rounded up to 100 MB. A class
-with no host fit follows the line through its extreme workers. With neither, the run
+with no host fit follows the line through its extreme workers, up to the
+limit. With neither, the run
 keeps its own request. A class with only an observed value can exceed
 `host memory max mb`. RIFT doubles the request for `ILE_extr.sub`, so the limit
 does not bound extrinsic jobs.

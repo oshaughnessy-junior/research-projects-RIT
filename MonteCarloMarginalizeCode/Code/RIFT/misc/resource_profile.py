@@ -176,6 +176,8 @@ def _validate_class(entry, path):
         value = entry.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0):
             raise ResourceProfileError("{}: class {} {} must be a non-negative number".format(path, label, key))
+    if entry.get("memory mb max") is not None and entry["memory mb max"] < mem:
+        raise ResourceProfileError("{}: class {} memory mb max is below memory mb".format(path, label))
     if entry.get("relative speed") == 0:
         raise ResourceProfileError("{}: class {} relative speed must be positive".format(path, label))
     if entry.get("memory family") is not None and not isinstance(entry["memory family"], str):
@@ -188,6 +190,9 @@ def _validate_class(entry, path):
             raise ResourceProfileError("{}: class {} device name {!r} may not contain a double quote".format(
                 path, label, name))
         re.compile(name)
+    if any("\\" in p for p in names):
+        # new ClassAd syntax unescapes a backslash and submit-file syntax keeps it: only [.] means one thing
+        raise ResourceProfileError("{}: class {} device names cannot use a backslash; write [.]".format(path, label))
     return dict(entry, **{"device names": list(names)})
 
 
@@ -308,8 +313,7 @@ def _class_selector(c):
     if c.get("memory mb max") is not None:
         terms.append("(GlobalMemoryMb <= {})".format(int(c["memory mb max"])))
     if c["device names"]:
-        terms.append("(" + " || ".join('regexp("{}", DeviceName)'.format(p.replace("\\", "\\\\"))
-                                       for p in c["device names"]) + ")")
+        terms.append("(" + " || ".join('regexp("{}", DeviceName)'.format(p) for p in c["device names"]) + ")")
     return "(" + " && ".join(terms) + ")"
 
 
@@ -534,22 +538,27 @@ def _points_per_worker(walls, rate, n_min, n_max, budget):
 def _host_request(profile, workload, admitted, by_label, draws):
     """Host MB request covering a worker of ``draws`` draws on any admitted class."""
     policy = profile["policy"]
+    allowed = float(policy["host memory max mb"]) / (1 + float(policy["host memory margin"]))
     needs = []
     for r in admitted:
         fits = _memory_models(profile, by_label[r["label"]], workload, 2)
+        own = [o for o in profile["observations"]
+               if o["class"] == r["label"] and _same_signature(o["workload"], workload)]
+        pairs = sorted((s[0], s[2]) for o in own if o["outcome"] == "success"
+                       for s in o["memory samples"] if s[2] is not None)
+        if not (fits and pairs):  # a value with no draws would outweigh the fit at small workers
+            needs += [float(o["host memory mb"]) for o in own if o.get("host memory mb") is not None]
         if fits:
             needs += [base + slope * draws for (base, slope, _), _ in fits]
         else:
-            own = [o for o in profile["observations"]
-                   if o["class"] == r["label"] and _same_signature(o["workload"], workload)]
-            needs += [float(o["host memory mb"]) for o in own if o.get("host memory mb") is not None]
-            # Too few workers to fit: follow the line through the extreme workers.
-            pairs = sorted((s[0], s[2]) for o in own if o["outcome"] == "success"
-                           for s in o["memory samples"] if s[2] is not None)
+            # Too few workers to fit: follow the line through the extreme workers,
+            # if they span enough to set a slope, up to what a job may request.
             if pairs:
                 (low, low_mb), (high, high_mb) = pairs[0], pairs[-1]
-                slope = max(0.0, (high_mb - low_mb) / (high - low)) if high > low else 0.0
-                needs += [max(mb for _, mb in pairs), high_mb + slope * (draws - high)]
+                needs.append(max(mb for _, mb in pairs))
+                if high >= MIN_FIT_SPAN * low:
+                    slope = max(0.0, (high_mb - low_mb) / (high - low))
+                    needs.append(min(high_mb + slope * (draws - high), allowed))
     if not needs:
         return None
     request = max(float(policy["host memory min mb"]), max(needs) * (1 + float(policy["host memory margin"])))
@@ -703,7 +712,7 @@ _DEV = re.compile(r"Device 0 Name\s*:\s*(.+)")
 _CAP = re.compile(r"Device 0 Compute Capability\s*:\s*(\d+)")
 _OOM = re.compile(r"OutOfMemoryError|cudaErrorMemoryAllocation|CUDA_ERROR_OUT_OF_MEMORY|out of memory",
                   re.IGNORECASE)
-_HOST_HOLD = "memory usage exceeded request_memory"
+_HOST_HOLD = re.compile(r"memory usage exceeded request_memory|gone over cgroup memory limit", re.I)
 _AD_LINE = re.compile(r'^(\w+)\s*=\s*"?(.*?)"?\s*$')
 _CLASSIC = re.compile(r"^(\d{3}) \(\d+\.\d+\.\d+\) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
 
@@ -798,16 +807,16 @@ def harvest_rundir(rundir, profile, workload, source=None):
             skipped["not a grid worker"] += 1
             continue
         dev, cap = _DEV.findall(text), _CAP.findall(text)
-        if not (dev and cap):
+        log = _parse_condor_log(out_path[:-4] + ".log")
+        if not (dev and cap) and log and log["wall"] is not None:
             skipped["no gpu banner"] += 1
             continue
-        log = _parse_condor_log(out_path[:-4] + ".log")
         if not log or log["wall"] is None:
             try:
-                held = _HOST_HOLD in open(out_path[:-4] + ".log", errors="ignore").read()
+                held = bool(_HOST_HOLD.search(open(out_path[:-4] + ".log", errors="ignore").read()))
             except OSError:
                 held = False
-            skipped["host memory hold" if held else "no termination"] += 1
+            skipped["host memory hold" if held else "no termination" if dev and cap else "no gpu banner"] += 1
             continue
         label = classify_device(profile, dev[-1].strip(), int(cap[-1]) / 10.0, log["gpu_memory_mb"])
         if label is None:

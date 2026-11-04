@@ -32,7 +32,7 @@ PROFILE = {
 }
 
 
-ILE_SUB = """arguments = "--n-chunk {n_chunk} --n-eff 20 --srate 4096 --q-time-pregrid-factor {q} --channel-name H1=a --channel-name L1=b --approx SEOBNRv5PHM --l-max 4 --srate-resample-time-marginalization 32768"
+ILE_SUB = """arguments = "--time-marginalization --vectorized --gpu --force-xpy --n-chunk {n_chunk} --n-eff 20 --srate 4096 --q-time-pregrid-factor {q} --channel-name H1=a --channel-name L1=b --approx SEOBNRv5PHM --l-max 4 --srate-resample-time-marginalization 32768"
 request_memory = {memory}M
 require_gpus = {require}
 """

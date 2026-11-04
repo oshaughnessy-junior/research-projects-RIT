@@ -517,7 +517,7 @@ def test_success_outweighs_stray_crash(tmp_path):
 def test_device_regex_agrees_between_python_and_classad(tmp_path):
     classad = pytest.importorskip("classad")
     classes = [{"label": "rtx", "capability": [7.0, 9.0], "memory mb": 20000, "slots": 5,
-                "device names": [r"RTX\s6000"]}]
+                "device names": ["RTX[ ]6000"]}]
     profile = rp.load_resource_profile(_write_profile(
         tmp_path, [_obs("rtx", "success", **_t(60))], classes=classes, policy={"requirement style": "include"}))
     assert rp.classify_device(profile, "Quadro RTX 6000", 7.5) == "rtx"
@@ -626,14 +626,20 @@ def test_an_excluded_class_listed_later_does_not_touch_the_admitted_one():
 
 
 @pytest.mark.parametrize("code", [139, 245, 134, 250])
-def test_every_form_of_a_signalled_exit_is_a_crash(code):
-    assert code in rp.CRASH_RETURN_VALUES
+def test_every_form_of_a_signalled_exit_is_a_crash(tmp_path, code):
+    profile = rp.load_resource_profile(_write_profile(tmp_path, policy={"worker setup seconds": 0}))
+    run = tmp_path / "run"
+    _ile(run, "ILE-0-5-0", "Tesla V100-PCIE-32GB", 70, AD_LOG.format(minutes=9, memory=1000, rc=code),
+         outputs=["CME_out-0-5-0.xml_0_.dat"])
+    observations, _ = rp.harvest_rundir(str(run), profile, WORKLOAD)
+    assert [o["outcome"] for o in observations] == ["crash"]
 
 
 def test_family_fit_is_raised_over_the_class_own_few_samples(tmp_path):
     classes = _family_classes()
     thin = [[1e6 * (i + 1), 3800.0, None] for i in range(7)]
-    wide = [[1e6 * (i + 1), 500.0 + 10.0 * (i + 1), None] for i in range(40)]
+    # enough workers that the 99th percentile of the family passes under the seven
+    wide = [[1e6 * (1 + i % 40), 500.0 + 10.0 * (1 + i % 40), None] for i in range(1000)]
     label = classes[0]["label"]
     other = classes[1]["label"]
     observations = [_obs(label, "success", **dict(_t(10), **{"memory samples": thin})),
@@ -653,10 +659,53 @@ def test_host_request_without_a_fit_follows_the_draws(tmp_path):
     assert request == 1000 * math.ceil((1000.0 + 500.0 * 14) * 1.25 / 1000)
 
 
+def _thin_host_request(tmp_path, samples, draws, **observed):
+    profile = rp.load_resource_profile(_write_profile(
+        tmp_path, [_obs("modern-24gb", "success", **dict(_t(10), **dict(observed, **{"memory samples": samples})))]))
+    by_label = {c["label"]: c for c in profile["classes"]}
+    return rp._host_request(profile, rp.normalize_workload(WORKLOAD), [{"label": "modern-24gb"}], by_label, draws)
+
+
+def test_host_request_sets_no_slope_from_workers_with_similar_draws(tmp_path):
+    samples = [[3.00e6, 1000.0, 5000.0], [3.05e6, 1000.0, 5400.0]]
+    assert _thin_host_request(tmp_path, samples, 14e6) == 6800         # 5400 x 1.25, rounded up
+
+
+def test_host_request_line_stops_at_the_largest_request(tmp_path):
+    samples = [[1e6, 1000.0, 2000.0], [3e6, 1000.0, 6000.0]]
+    assert _thin_host_request(tmp_path, samples, 100e6) == 16000
+
+
+def test_host_request_keeps_a_class_value_beside_a_family_fit(tmp_path):
+    classes = _family_classes()
+    wide = [[1e6 * (i + 1), None, 500.0 + 10.0 * (i + 1)] for i in range(40)]
+    observations = [_obs("small", "success", **dict(_t(10), **{"host memory mb": 12000.0})),
+                    _obs("big", "success", **dict(_t(10), **{"memory samples": wide}))]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, observations, classes=classes))
+    by_label = {c["label"]: c for c in profile["classes"]}
+    request = rp._host_request(profile, rp.normalize_workload(WORKLOAD), [{"label": "small"}], by_label, 1e6)
+    assert request == 15000
+
+
+def test_memory_ceiling_below_the_floor_is_refused(tmp_path):
+    classes = [dict(CLASSES[0], **{"memory mb max": 0})]
+    with pytest.raises(rp.ResourceProfileError, match="memory mb max"):
+        rp.load_resource_profile(_write_profile(tmp_path, [], classes=classes))
+
+
 def test_admit_unprofiled_keeps_the_host_ceiling(tmp_path):
-    observations = [_obs("pascal-4gb", "success", **dict(_t(10), **{"memory samples": _growing(500, 1000, column=2)}))]
-    plan = _plan(tmp_path, observations, policy={"admit unprofiled": True})
-    assert _row(plan, "pascal-4gb")["points limit"] is None or plan["request memory mb"] <= 16000
+    # "small" has no evidence of its own, and "big" gives the family a host line.
+    observations = [_obs("big", "success", **dict(_t(10), **{"memory samples": _growing(500, 1000, column=2)}))]
+    limits = {}
+    for host_max in (16000, 1000000):
+        path = tmp_path / str(host_max)
+        path.mkdir()
+        profile = rp.load_resource_profile(_write_profile(
+            path, observations, classes=_family_classes(),
+            policy={"admit unprofiled": True, "host memory max mb": host_max, "jobs per worker max": 1000,
+                    "worker wall target hours": 1000}))
+        limits[host_max] = _row(rp.plan_resources(profile, WORKLOAD), "small")["points limit"]
+    assert limits[16000] < limits[1000000]
 
 
 def test_device_fit_is_per_gpu_and_host_fit_is_total(tmp_path):
@@ -712,3 +761,16 @@ def test_harvest_counts_host_memory_holds_apart(tmp_path):
     profile = rp.load_resource_profile(_write_profile(tmp_path, []))
     _, skipped = rp.harvest_rundir(str(tmp_path), profile, WORKLOAD)
     assert skipped["host memory hold"] == 1 and skipped["no termination"] == 0
+    (logs / "ILE-1-2-0.out").write_text("")                     # held before ILE printed its banner
+    (logs / "ILE-1-2-0.log").write_text("012 (2.0.0) 2026-10-30 10:00:00 Job was held.\n"
+                                        "\tJob has gone over cgroup memory limit of 4000 megabytes.\n")
+    _, skipped = rp.harvest_rundir(str(tmp_path), profile, WORKLOAD)
+    assert skipped["host memory hold"] == 1 and skipped["no gpu banner"] == 0
+
+
+def test_device_name_with_a_backslash_is_refused(tmp_path):
+    path = tmp_path / "bad.yaml"
+    path.write_text(yaml.safe_dump({"version": 1, "classes": [
+        {"label": "a", "capability": [8, 9], "memory mb": 1000, "device names": ["^A1\\.5$"]}], "observations": []}))
+    with pytest.raises(rp.ResourceProfileError, match="backslash"):
+        rp.load_resource_profile(str(path))

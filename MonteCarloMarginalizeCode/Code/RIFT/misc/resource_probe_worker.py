@@ -23,6 +23,7 @@ pci=c.cuda.runtime.deviceGetPCIBusId(0);pci=pci.decode() if isinstance(pci,bytes
 c.asnumpy(c.fft.fft(c.arange(64,dtype=c.float64)))
 print(json.dumps(dict(pci_bus_id=pci,name=p['name'].decode(),sm=10*p['major']+p['minor'],vram_bytes=p['totalGlobalMem'],
  driver=c.cuda.runtime.driverGetVersion(),runtime=c.cuda.runtime.runtimeGetVersion(),cupy=c.__version__)))"""
+NOLOOP_LOST = re.compile(r"Override --gpu|NOT APPLIED -- this configuration")
 OOM = re.compile(r"OutOfMemoryError|cudaErrorMemoryAllocation|CUDA_ERROR_OUT_OF_MEMORY|out of memory|"
                  r"CUFFT_ALLOC_FAILED|CUBLAS_STATUS_ALLOC_FAILED", re.I)
 
@@ -157,9 +158,11 @@ def main():
             stop.set()
             thread.join(timeout=8)
     points, finite = read_points(directory)
-    text = (directory / "stderr.log").read_text()[-12000:] + (directory / "stdout.log").read_text()[-5000:]
+    stdout, stderr = (directory / "stdout.log").read_text(), (directory / "stderr.log").read_text()
+    text = stderr[-12000:] + stdout[-5000:]
     receipt["run"] = {"arguments": arguments, "returncode": code, "wall_seconds": time.monotonic() - start,
                       "points": points, "all_finite": finite, "gpu_oom": bool(OOM.search(text)),
+                      "noloop_lost": bool(NOLOOP_LOST.search(stdout + stderr)),
                       "sampled_memory": sampled}
     receipt["finished"] = time.time()
     save()

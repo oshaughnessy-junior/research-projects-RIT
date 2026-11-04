@@ -311,8 +311,8 @@ def selection_order(manifest):
     thresholds.sort(key=lambda c: (
         c["cuda_capability_min"] if c["cuda_capability_min"] is not None else float("-inf"),
         bool(c.get("select_requirements")),
-    ), reverse=True)
-    return thresholds
+    ))
+    return thresholds[::-1]
 
 
 def _build_selector(manifest, value_fn, ternary=False):

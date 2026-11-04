@@ -695,7 +695,7 @@ class Rift(Pipeline):
         from RIFT.misc import resource_profile
         from RIFT.misc import container_manifest
         ile = (self.production.meta.get("sampler") or {}).get("ile") or {}
-        if settings.get("harvest") and not os.path.isdir(settings["path"]):
+        if settings.get("harvest") and not os.path.isdir(os.path.expanduser(settings["path"])):
             raise PipelineException("scheduler.resource profile: harvest needs a directory profile",
                                     production=self.production.name)
         # Refuse settings that would replace the planned values in the submit files.
@@ -775,11 +775,11 @@ class Rift(Pipeline):
             import yaml
             with open(os.path.join(rundir, "resource-plan.json")) as f:
                 plan = json.load(f)
-            if not os.path.isdir(settings["path"]):
+            if not os.path.isdir(os.path.expanduser(settings["path"])):
                 raise ValueError("harvest needs a directory profile")
             profile = resource_profile.load_resource_profile(settings["path"], settings.get("policy"))
             observations, skipped = resource_profile.harvest_rundir(rundir, profile, plan["workload"])
-            target = os.path.join(settings["path"], "observations")
+            target = os.path.join(os.path.expanduser(settings["path"]), "observations")
             os.makedirs(target, exist_ok=True)
             name = "{}-{}-{}.yaml".format(self.production.event.name, self.production.name,
                                           os.path.basename(os.path.normpath(rundir)))
