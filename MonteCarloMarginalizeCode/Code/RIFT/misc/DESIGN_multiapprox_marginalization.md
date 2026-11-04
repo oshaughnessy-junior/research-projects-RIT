@@ -86,7 +86,7 @@ No net or grid is read at the wrong iteration.
 | join, iteration `it` | `approx_<A>_iteration_it_ile/` | `approx_<A>_consolidated_it.composite` |
 | `unify.sh`, iteration `it` | composites 0 to `it`, every model | `all.net` |
 | loop CIP, iteration `it` | `all.net` | `overlap-grid-(it+1)` |
-| `unify_model.sh` | composites 0 to `n-1` of `<A>` (prefix names: see Known limits) | `approx_<A>_all.net` |
+| `unify_model.sh` | composites 0 to `n-1` of `<A>` (`<A>_<suffix>` names: see Known limits) | `approx_<A>_all.net` |
 | terminal CIP, iteration `n-1` | `approx_<A>_all.net` | `approx_<A>_overlap-grid-n` and its annotation |
 | extrinsic ILE, iteration `n` | `approx_<A>_overlap-grid-n` | per-model extrinsic samples |
 | combine, iteration `n` | samples and `approx_<A>_overlap-grid-n+annotation.dat` | `extrinsic_posterior_samples.dat` |
@@ -101,9 +101,9 @@ iteration `n-1`.
 glob. Their names do not show which evaluations a reader gets, so only the DAG
 edges do. `test_each_iteration_fits_the_net_of_its_own_evaluations` and
 `test_terminal_stage_uses_every_evaluation_and_one_grid_index` check those edges,
-the glob of each unify and the filename it writes. They run on two builds: `n` = 2
-with cadence 1, and `n` = 3 with cadence 2, exploded CIP, a grid job and OSG
-transfer. Without them, a CIP ordered after the previous iteration's unify passed
+the glob of each unify and the path it writes. They run on two builds: `n` = 2 with
+cadence 1, and `n` = 6 with cadence 2, `puff-max-it` 3, exploded CIP, a grid job and
+OSG transfer. Without them, a CIP ordered after the previous iteration's unify passed
 every test.
 
 Index `n` is fixed at build time. A DAG cut short by hand keeps `n` on its
@@ -139,9 +139,10 @@ weighted recombination), not the idea of waveform marginalization.
   a puffball no job in the DAG writes. `--start-iteration 1` emits `ILE_puff` on
   `puffball-1`, and it fails unless that file survives from an earlier run. The
   gate here is `it>0`. BasicIteration uses `it>it_start`.
-* A model name that is a prefix of another corrupts the per-model net. The
+* A model named `<A>_<suffix>` corrupts the per-model net of `<A>`. The
   `unify_model.sh` glob `approx_<A>_*.composite` for `IMRPhenomPv2` also matches
-  `approx_IMRPhenomPv2_NRTidal_consolidated_0.composite`.
+  `approx_IMRPhenomPv2_NRTidal_consolidated_0.composite`. A shared prefix without
+  the underscore does not collide, as with `IMRPhenomXP` and `IMRPhenomXPHM`.
 * A `--cip-args-list` covering fewer than `--n-iterations` iterations stops the
   build with an IndexError. The extension assigns `n - sum` to the last count
   instead of adding it. BasicIteration has the same line, but a later block
