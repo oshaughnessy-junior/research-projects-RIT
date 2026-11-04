@@ -172,3 +172,63 @@ PP005 retrospective support tests motivated the mu chart; those tests used
 Gaussian transverse floors and do not establish likelihood yield for this
 random-redraw proposal. Re-score candidates with production ILE before using
 them in inference. No posterior or evidence weights come from these coordinates.
+
+Native periodic coordinates
+---------------------------
+
+Use ``--unwrap-parameter meanPerAno`` (repeatable for any name in
+``RIFT.lalsimutils.periodic_params``) to estimate the covariance in a connected
+angular chart and wrap the proposed angle back into its physical period. The
+``gap`` rule cuts at the middle of the largest empty arc; ``--unwrap-center mean``
+uses the circular mean instead. This helps a localized posterior crossing the
+zero/period seam. It cannot straighten a ridge winding around the circle several
+times. A warning reports when the samples leave no empty arc larger than one
+sixth of a period; such cases need visual inspection rather than an assumption
+that unwrapping improves exploration.
+
+For example::
+
+    util_ParameterPuffball.py --inj-file overlap-grid-2.xml.gz \
+      --inj-file-out puffball-2 --parameter mc --parameter delta_mc \
+      --parameter eccentricity --parameter meanPerAno \
+      --unwrap-parameter meanPerAno --unwrap-center gap --puff-factor 0.5
+
+Physical downselection uses wrapped angles. Covariance and exclusion use the
+angular chart, with integer-period lifts included in ``--force-away`` distances.
+An angle cannot be both reflected and unwrapped. A zero puff factor preserves
+the input angle; a single-angle puff draws an independent offset for each point.
+
+To activate this throughout a pseudo-pipe analysis, use
+``--puff-periodic-mode gap`` or set ``puff-periodic-mode="gap"`` in the
+``[rift-pseudo-pipe]`` INI section. ``mean`` selects the other centering rule;
+``off`` is the default. The pipeline selects every periodic coordinate in the
+final puff basis, including ``phi1`` and ``phi2`` when transverse puffing is
+enabled. Main iterations and refinement subdags receive the same resolved puff
+arguments. In the early mu/random-transverse discovery stage, angles are drawn
+independently; native unwrapping applies to subsequent covariance puff stages.
+
+In Asimov, set the analysis sampler metadata to::
+
+    sampler:
+      puff:
+        periodic coordinates: gap
+
+YAML ``true`` selects ``gap``, ``false`` selects ``off``, and ``mean`` is also
+accepted. An absent setting preserves the pipeline default. The template renders
+this metadata into the INI option, which is resolved after puff-coordinate
+rewrites and passed through to generated Condor puff jobs.
+
+The existing ``--eccentric-phase-coordinates`` mode changes the proposal chart to
+an effective eccentric phase and inverts it at the proposed masses and
+eccentricity. It is already available on O4c and O4d and can follow curved,
+wrapping native-anomaly ridges. Native unwrapping is a simpler option for a
+localized native-angle cloud and applies to other periodic coordinates as well.
+Do not pass ``--unwrap-parameter meanPerAno`` with effective-phase puffing; the
+pipeline skips that angle automatically when effective-phase mode is active.
+Other native periodic coordinates can still be unwrapped. Neither option changes
+physical priors or waveform reference frequencies.
+
+Keep periodic unwrapping opt-in until representative likelihood and posterior
+recovery tests support changing the default. Recorded-grid proposal replays test
+survival, geometry, and metadata preservation; they do not measure the likelihood
+of new proposals or establish posterior accuracy.

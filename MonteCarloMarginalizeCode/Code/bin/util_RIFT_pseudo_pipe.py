@@ -688,6 +688,7 @@ parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="D
 parser.add_argument("--internal-ile-glitch-basis",action='append',default=None,help="Passthrough to ILE --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (analytic Slepian glitch marginalization, G3). Repeatable. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-basis-file",action='append',default=None,help="Data-informed glitch basis for one detector, 'IFO:path.npz' (G4, glitschen/BayesWave PCA/SVD). Repeatable. The .npz is ADDED TO THE ILE CONDOR TRANSFER LIST and the ILE flag is rewritten to reference the transferred basename, so it works on execute nodes / OSG. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-sigma",default=None,type=str,help="Passthrough to ILE --glitch-sigma (glitch amplitude hyperparameter mode; only 'profile' is wired).")
+parser.add_argument("--puff-periodic-mode", choices=["off", "gap", "mean"], default="off", help="Unwrap every native periodic puff coordinate before covariance estimation. gap cuts at the largest empty arc; mean cuts opposite the circular mean. Opt-in pending campaign backtests; effective eccentric phase retains its own chart.")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--internal-puff-mu-random-transverse", action='store_true',
                     help="Opt-in BBH/BasicIteration: use mu1,mu2,q,s2z puff plus RANDOM transverse spins for the first CIP batch; later batches (including refinement subdags) use internal-puff-transverse covariance puff. Default: unchanged legacy puff.")
@@ -801,6 +802,11 @@ if (opts.use_ini):
         for item in rift_items:
             val = rift_items[item].strip()
             ile_condor_commands.append([item, val])
+
+if opts.puff_periodic_mode not in ('off', 'gap', 'mean'):
+    parser.error('--puff-periodic-mode must be off, gap, or mean')
+if opts.puff_periodic_mode != 'off' and opts.internal_use_amr:
+    parser.error('--puff-periodic-mode requires the covariance puff workflow, not AMR')
 
 # --internal-ile-td-gap is refused, from the command line or the ini above.
 _TD_GAP_REFUSAL = (" FAILURE: --internal-ile-td-gap is disabled (the gap-marginalized td-toeplitz "
@@ -2540,6 +2546,8 @@ with open("args_puff.txt",'w') as f:
             puff_args = puff_args.replace(unsafe_parse_arg_string(puff_args,'force-away')," --force-away {} ".format(str(opts.internal_use_force_away)))
         if not(opts.manual_extra_puff_args is None):
             puff_args += " {} ".format(opts.manual_extra_puff_args)  # embed with space on each side, avoid collisions
+        from RIFT.misc import periodic_puff_pipeline
+        puff_args = periodic_puff_pipeline.arguments(puff_args, opts.puff_periodic_mode)
         f.write("X " + puff_args)
 
 if opts.internal_puff_mu_random_transverse:
