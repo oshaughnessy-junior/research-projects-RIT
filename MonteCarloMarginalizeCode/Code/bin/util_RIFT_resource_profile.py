@@ -152,7 +152,7 @@ def main(argv=None):
     collect.add_argument("profile")
     collect.add_argument("--probes", required=True, help="the --out directory of emit-probes")
     collect.add_argument("--output", default=None)
-    collect.add_argument("--build", default=None, help="name for the build; default the job's image file name")
+    collect.add_argument("--build", default=None, help="name for the build; default the job's image")
     refresh = sub.add_parser("refresh-speeds")
     refresh.add_argument("profile")
     opts = parser.parse_args(argv)

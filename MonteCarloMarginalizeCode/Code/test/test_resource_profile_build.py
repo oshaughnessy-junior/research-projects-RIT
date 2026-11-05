@@ -131,8 +131,8 @@ def test_survey_records_the_image_as_the_class_build():
     entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1,
              "memory family": "legacy", "build": "old.sif"}
     data, report = build.update_resources({"version": 1, "classes": [entry]}, _devices(), MANIFEST)
-    assert next(c for c in data["classes"] if c["label"] == "a10")["build"] == "legacy.sif"
-    assert report["build changed"][0] == "a10: old.sif to legacy.sif" and report["image moved"] == []
+    assert next(c for c in data["classes"] if c["label"] == "a10")["build"] == "/cvmfs/x/legacy.sif"
+    assert report["build changed"][0] == "a10: old.sif to /cvmfs/x/legacy.sif" and report["image moved"] == []
     _, report = build.update_resources(data, _devices(), MANIFEST)
     assert report["build changed"] == []
 
@@ -144,6 +144,34 @@ def test_survey_leaves_the_build_when_it_cannot_tell_the_image():
              "memory family": "legacy", "build": "old.sif"}
     data, report = build.update_resources({"version": 1, "classes": [entry]}, _devices(), manifest)
     assert data["classes"][0]["build"] == "old.sif" and report["build changed"] == []
+    assert "a10" in report["image unknown"]
+
+
+def test_same_file_name_in_a_new_directory_is_a_new_build():
+    """build_family.sh gives every build the same file name."""
+    entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1,
+             "memory family": "legacy", "build": "/cvmfs/rc13/legacy.sif"}
+    moved = {"fallback": "legacy", "containers": [dict(MANIFEST["containers"][1], image="/cvmfs/rc14/legacy.sif")]}
+    data, report = build.update_resources({"version": 1, "classes": [entry]}, _devices(), moved)
+    assert data["classes"][0]["build"] == "/cvmfs/rc14/legacy.sif" and len(report["build changed"]) >= 1
+
+
+@pytest.mark.parametrize("capability, expected", [
+    ([6.1, 7.0], "legacy"),            # below every threshold
+    ([9.0, 9.1], "modern"),
+    ([7.5, 9.0], "legacy"),            # ends at the threshold
+    ([7.5, 10.0], None),               # spans the threshold
+    ([7.5, None], None)])
+def test_class_container_needs_one_image_for_the_whole_class(capability, expected):
+    entry = build.class_container(MANIFEST, {"capability": capability})
+    assert (entry and entry["label"]) == expected
+
+
+def test_class_container_will_not_guess_past_a_capability_max():
+    top = dict(MANIFEST["containers"][0], cuda_capability_max=9.5)
+    manifest = {"fallback": "legacy", "containers": [top, MANIFEST["containers"][1]]}
+    assert build.class_container(manifest, {"capability": [9.0, 9.1]})["label"] == "modern"
+    assert build.class_container(manifest, {"capability": [12.0, 12.1]}) is None
 
 
 def test_rebuild_under_one_family_label_loses_the_old_memory_fit(tmp_path):
@@ -159,7 +187,7 @@ def test_rebuild_under_one_family_label_loses_the_old_memory_fit(tmp_path):
     before = rp.plan_resources(_profile(tmp_path, data), workload)["classes"][0]
     assert before["evidence"]["used"] == 1 and "300" in before["memory"]
     moved, _ = build.update_resources(data, _devices(), {"fallback": "legacy", "containers": [
-        {"label": "legacy", "image": "/x/rc14.sif", "cuda_capability_min": 6.1, "select_requirements": None}]})
+        {"label": "legacy", "image": "rc14.sif", "cuda_capability_min": 6.1, "select_requirements": None}]})
     moved["classes"] = [c for c in moved["classes"] if c["label"] == "a10"]
     with pytest.raises(rp.ResourceProfileError, match="1 observations of other builds set aside"):
         rp.plan_resources(_profile(tmp_path, moved), workload)
@@ -183,7 +211,7 @@ def test_cli_survey_stamps_the_class_and_keeps_observations(tmp_path):
     assert done.returncode == 0, done.stderr
     entry = next(c for c in yaml.safe_load((profile / "resources.yaml").read_text())["classes"]
                  if c["label"] == "a10")
-    assert entry["memory family"] == "legacy" and entry["build"] == "legacy.sif"
+    assert entry["memory family"] == "legacy" and entry["build"] == "/cvmfs/x/legacy.sif"
 
 
 def test_survey_updates_a_described_class_unless_told_to_keep():
@@ -563,46 +591,103 @@ def test_cli_emit_passes_an_integer_n_eff_to_ile(tmp_path):
     assert output.exists()
 
 
-def test_collect_stamps_the_image_file_name_or_the_given_build(tmp_path):
+def test_collect_stamps_the_image_or_the_given_build(tmp_path):
     _receipt(tmp_path, "a", 0, image="osdf:///x/rc14.sif")
     _receipt(tmp_path, "b", 0)
     profile = {"policy": {}, "classes": [{"label": "old", "capability": [6.1, 6.2], "memory mb": 4000,
                                           "device names": ["^Old$"]}]}
     observations, _ = build.collect_probes(str(tmp_path / "jobs"), profile)
-    assert [o.get("build") for o in observations] == ["rc14.sif", None]
+    assert [o.get("build") for o in observations] == ["osdf:///x/rc14.sif", None]
     observations, _ = build.collect_probes(str(tmp_path / "jobs"), profile, stamp="rc14+fix")
     assert {o["build"] for o in observations} == {"rc14+fix"}
 
 
-@pytest.mark.parametrize("line, expected", [
-    ('container_image = /x/rc14.sif', "rc14.sif"),
-    ('MY.SingularityImage = "osdf:///x/rc14.sif"', "rc14.sif"),
-    ('+SingularityImage = "/x/rc14.sif"', "rc14.sif"),
-    ('container_image = $$([ifThenElse(x, "a.sif", "b.sif")])', None),
-    ('MY.SingularityImage = ifThenElse(x, "a.sif", "b.sif")', None),
-    ('universe = vanilla', None)])
-def test_run_builds_reads_one_literal_image(tmp_path, line, expected):
-    (tmp_path / "ILE.sub").write_text('arguments = "x"\n' + line + "\n")
+@pytest.mark.parametrize("lines, expected", [
+    (['container_image = /x/rc14.sif'], "/x/rc14.sif"),
+    (['MY.SingularityImage = "osdf:///x/rc14.sif"'], "osdf:///x/rc14.sif"),
+    (['+SingularityImage = "/x/rc14.sif"'], "/x/rc14.sif"),
+    (['#MY.SingularityImage = "/x/old.sif"', 'container_image = /x/rc14.sif'], "/x/rc14.sif"),
+    (['container_image = /x/a.sif', 'MY.SingularityImage = "/x/b.sif"'], None),
+    (['container_image = $$([ifThenElse(x, "a.sif", "b.sif")])'], None),
+    (['MY.SingularityImage = ifThenElse(x, "a.sif", "b.sif")'], None),
+    (['universe = vanilla'], None)])
+def test_run_builds_reads_one_literal_image(tmp_path, lines, expected):
+    (tmp_path / "ILE.sub").write_text('arguments = "x"\n' + "\n".join(lines) + "\n")
     assert build.run_builds(str(tmp_path)) == expected
 
 
-def test_run_builds_prefers_the_override_then_the_plan(tmp_path):
-    (tmp_path / "ILE.sub").write_text('arguments = "x"\ncontainer_image = /x/sub.sif\n')
+def test_run_builds_prefers_the_override_then_the_image_then_the_plan(tmp_path):
+    sub = tmp_path / "ILE.sub"
+    sub.write_text('arguments = "x"\ncontainer_image = /x/sub.sif\n')
     plan = tmp_path / "resource-plan.json"
-    plan.write_text(json.dumps({"classes": [{"label": "a", "build": None}]}))
-    assert build.run_builds(str(tmp_path)) == "sub.sif"
     plan.write_text(json.dumps({"classes": [{"label": "a", "build": "plan.sif"}]}))
-    assert build.run_builds(str(tmp_path)) == {"a": "plan.sif"}
     assert build.run_builds(str(tmp_path), "mine") == "mine"
+    assert build.run_builds(str(tmp_path)) == "/x/sub.sif"
+    sub.write_text('arguments = "x"\ncontainer_image = $$([x ? "a" : "b"])\n')
+    assert build.run_builds(str(tmp_path)) == {"a": "plan.sif"}
+    sub.write_text('arguments = "x"\n')                     # a bare checkout ran no image
+    assert build.run_builds(str(tmp_path)) is None
     assert build.run_builds(str(tmp_path / "none")) is None
 
 
-@pytest.mark.parametrize("built, refused", [("/x/rc14.sif", False), ("/x/rc13.sif", True)])
-def test_built_run_must_use_the_planned_build(tmp_path, built, refused):
-    plan = _built(tmp_path)
-    plan.update({"admitted": ["a", "b"], "classes": [{"label": "a", "build": "rc14.sif"},
-                                                     {"label": "b", "build": None},
-                                                     {"label": "out", "build": "gone.sif"}]})
+def _plan_with_builds(plan, *rows):
+    plan.update({"admitted": ["a", "b"], "classes": list(rows) + [{"label": "out", "build": "gone.sif"}]})
+    return plan
+
+
+@pytest.mark.parametrize("built, refused", [("/x/rc14.sif", False), ("/y/rc14.sif", True)])
+def test_literal_image_must_be_the_planned_build(tmp_path, built, refused):
+    plan = _plan_with_builds(_built(tmp_path), {"label": "a", "build": "/x/rc14.sif"}, {"label": "b", "build": None})
     with open(str(tmp_path / "ILE.sub"), "a") as f:
         f.write("container_image = {}\n".format(built))
-    assert any("planned rc14.sif" in d for d in build.check_built_run(str(tmp_path), plan)) is refused
+    assert bool(build.check_built_run(str(tmp_path), plan)) is refused
+
+
+def test_family_run_checks_each_class_against_its_own_branch(tmp_path):
+    plan = _built(tmp_path)
+    with open(str(tmp_path / "ILE.sub"), "a") as f:
+        f.write('container_image = $$([x ? "modern.sif" : "legacy.sif"])\n')
+    right = {"label": "a", "capability": [9.0, 9.1], "build": "osdf:///x/modern.sif"}
+    wrong = {"label": "b", "capability": [8.6, 8.7], "build": "osdf:///x/modern.sif"}
+    assert build.check_built_run(str(tmp_path), _plan_with_builds(plan, right), MANIFEST) == []
+    found = build.check_built_run(str(tmp_path), _plan_with_builds(plan, right, wrong), MANIFEST)
+    assert len(found) == 1 and "built /cvmfs/x/legacy.sif" in found[0]
+    assert "cannot be told" in build.check_built_run(str(tmp_path), _plan_with_builds(plan, right))[0]
+
+
+def test_runtime_wrapper_counts_as_a_container(tmp_path):
+    plan = _plan_with_builds(_built(tmp_path), {"label": "a", "capability": [9.0, 9.1], "build": "osdf:///x/modern.sif"})
+    (tmp_path / "rift_container_select.sh").write_text("#!/bin/sh\n")
+    with open(str(tmp_path / "ILE.sub"), "a") as f:
+        f.write("executable = rift_container_select.sh\n")
+    assert build.check_built_run(str(tmp_path), plan, MANIFEST) == []
+
+
+def test_bare_checkout_is_not_the_planned_image(tmp_path):
+    plan = _plan_with_builds(_built(tmp_path), {"label": "a", "build": "/x/rc14.sif"})
+    assert "no container" in build.check_built_run(str(tmp_path), plan)[0]
+
+
+def test_cli_build_option_reaches_harvest_and_collect(tmp_path):
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump({"version": 1, "classes": [
+        {"label": "old", "capability": [6.1, 6.2], "memory mb": 4000, "device names": ["^Old$"]}]}))
+    _receipt(tmp_path, "a", 0)
+    cli = [sys.executable, os.path.join(CODE, "bin", "util_RIFT_resource_profile.py")]
+    env = dict(os.environ, PYTHONPATH=CODE + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    done = subprocess.run(cli + ["collect-probes", str(tmp_path / "profile.yaml"), "--probes", str(tmp_path / "jobs"),
+                                 "--build", "mine"],
+                          env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    assert done.returncode == 0, done.stderr
+    assert yaml.safe_load(done.stdout)["observations"][0]["build"] == "mine"
+    seen = {}
+    spec = importlib.util.spec_from_file_location("cli", cli[1])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.resource_profile.harvest_rundir, keep = lambda *a, **k: (seen.update(k) or ([], {})), module.resource_profile.harvest_rundir
+    try:
+        (tmp_path / "w.yaml").write_text(yaml.safe_dump({"n chunk": 1}))
+        assert module.main(["harvest", str(tmp_path / "profile.yaml"), str(tmp_path), "--workload",
+                            str(tmp_path / "w.yaml"), "--build", "mine"]) == 0
+    finally:
+        module.resource_profile.harvest_rundir = keep
+    assert seen["builds"] == "mine"

@@ -34,9 +34,7 @@ the worker.
 
 For the two-GPU rows, x is per GPU. n chunk barely matters: one million draws
 on Blackwell peak near 1200 MB at both 10000 and 40000. A 1050 Ti crashes full
-at 10000, 20000 and 40000 alike, after 3 to 7 million completed draws. It grew
-faster than the A10 fit: 4021 MB at 6.7 million draws, where that fit predicts
-2492 MB.
+at 10000, 20000 and 40000 alike, after 3 to 7 million completed draws.
 
 Growth needs the CUDA 11.8 image and code without the FFT batch limit of PR 527.
 The table above predates that limit. One 10-point group ran on A100s
@@ -91,7 +89,7 @@ An *observation* is one class, one outcome (`success`, `memory-failure`,
 `crash`, `failure`) and one workload. It may add draws per point, draws per
 second, `memory samples` (per worker: total draws, device MB, host MB) and
 `failure draws` (per failed worker: the draws in its completed points). Its
-`build` names what produced it: the image file name, or a chosen name.
+`build` names what produced it: the image path, or a chosen name.
 
 The workload has two parts. The *signature* (sample rate, Q pregrid factor,
 detector count, approximant, l max, time-marginalization resample rate) must
@@ -106,7 +104,7 @@ completed and host memory. Timing transfers. A class's `unstamped build` names
 its observations with no build; without it they are set aside. A class with no
 `build` takes everything. The plan row records what was used and set aside.
 `survey --manifest` sets `build`, so a rebuild drops the old fits even under one
-family label.
+family label. The built run must give each admitted class its `build`.
 
 **Memory.** Each class gets a ceiling on draws per worker, the least of:
 
@@ -199,9 +197,8 @@ run's observations to the profile and logs any failure. The CLI does the same.
   processes a worker's points in order, so a truncated worker drops an
   unbiased subset (`--sampler-sequential-warmstart` help); the budget is the
   missing piece.
-- `slots` is an operator estimate.
-- An image file name is taken to identify its contents. An overlay needs its
-  own `--build`.
+- An image path is taken to identify its contents, so publish each build at a
+  new path. An overlay needs its own `--build`, and the build check refuses it.
 - Draws per second are assumed non-decreasing in n chunk.
 - A requirement that pins a class (`Capability == 6.1`) is ANDed with the plan
   and can match nothing. Drop such pins when using a profile.

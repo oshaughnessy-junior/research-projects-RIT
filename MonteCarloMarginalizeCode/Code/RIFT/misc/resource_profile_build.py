@@ -28,7 +28,7 @@ import statistics
 import subprocess
 
 from RIFT.misc import resource_profile as rp
-from RIFT.misc.container_manifest import _image_basename, has_ile_profiles, selection_order
+from RIFT.misc.container_manifest import has_ile_profiles, selection_order
 
 __all__ = [
     "SURVEY_FIELDS",
@@ -41,6 +41,7 @@ __all__ = [
     "workload_from_arguments",
     "workload_from_rundir",
     "run_builds",
+    "class_container",
     "check_built_run",
     "emit_probes",
     "collect_probes",
@@ -65,6 +66,7 @@ NOLOOP_FLAGS = ("--time-marginalization", "--vectorized", "--gpu", "--force-xpy"
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource_probe_worker.py")
 # Our own timeout in the worker: a worker that reaches it has good finished points.
 TIMEOUT_RETURNCODE = 124
+CONTAINER = re.compile(r"container_image|SingularityImage|rift_container_select", re.I)
 HEADER = "# Written by util_RIFT_resource_profile.py survey; see containers/README.md.\n"
 
 
@@ -140,16 +142,33 @@ def _image_label(manifest, capability):
     """The manifest container selection gives a card, or None if that cannot be told here.
 
     A branch with select_requirements is a ClassAd test on the slot, which this
-    function cannot evaluate.
+    function cannot evaluate.  Past a cuda_capability_max, the submit selector
+    and the runtime wrapper choose differently.
     """
-    if manifest is None:
-        return None
+    chosen = manifest["fallback"]
     for c in selection_order(manifest):
         low = c["cuda_capability_min"]
         if low is not None and capability < float(low):
             continue
-        return None if c.get("select_requirements") else c["label"]
-    return manifest["fallback"]
+        if c.get("select_requirements"):
+            return None
+        chosen = c["label"]
+        break
+    entry = next(c for c in manifest["containers"] if c["label"] == chosen)
+    top = entry.get("cuda_capability_max")
+    return None if top is not None and capability >= float(top) else chosen
+
+
+def class_container(manifest, c):
+    """The manifest entry selection gives every card of class ``c``, or None if that cannot be told."""
+    low, high = (None if v is None else float(v) for v in c["capability"])
+    edges = {float(m["cuda_capability_min"]) for m in manifest["containers"]
+             if m["cuda_capability_min"] is not None}
+    points = [low] + [v for v in edges if v > low and (high is None or v < high)]
+    labels = {_image_label(manifest, point) for point in points}
+    if None in labels or len(labels) != 1:
+        return None
+    return next(m for m in manifest["containers"] if m["label"] in labels)
 
 
 def update_resources(resources, devices, manifest=None, keep_slots=False):
@@ -160,12 +179,13 @@ def update_resources(resources, devices, manifest=None, keep_slots=False):
     not see keep their entry and slots, and are reported: only the ratio of
     slots matters, so their slots may then be on another scale.  With a
     manifest, every class's memory family and build are the image selection
-    gives it, and plans set aside memory evidence from any other build.
+    gives it, and plans set aside memory evidence from any other build.  A
+    class whose image cannot be told keeps both, and is reported.
     """
     data = dict(resources or {"version": 1})
     classes = [dict(c) for c in (data.get("classes") or [])]
     lookup = {"classes": [dict(c, **{"device names": c.get("device names") or []}) for c in classes]}
-    seen, added, moved, rebuilt, drivers = {}, [], [], [], {}
+    seen, added, moved, rebuilt, unknown, drivers = {}, [], [], [], [], {}
     for device in devices:
         label = rp.classify_device(lookup, device["name"], device["capability"], device["memory mb"])
         if label is None:
@@ -186,18 +206,21 @@ def update_resources(resources, devices, manifest=None, keep_slots=False):
     for c in classes:
         if c["label"] in seen and not (keep_slots and c.get("slots")):
             c["slots"] = seen[c["label"]]
-        image = _image_label(manifest, float(c["capability"][0]))
-        if image is None:
+        if manifest is None:
             continue
-        if c.get("memory family") not in (None, image):
-            moved.append("{}: {} to {}".format(c["label"], c["memory family"], image))
-        c["memory family"] = image
-        built = _image_basename(next(m["image"] for m in manifest["containers"] if m["label"] == image))
-        if c.get("build") != built:
-            rebuilt.append("{}: {} to {}".format(c["label"], c.get("build"), built))
-            c["build"] = built
+        entry = class_container(manifest, c)
+        if entry is None:
+            unknown.append(c["label"])
+            continue
+        if c.get("memory family") not in (None, entry["label"]):
+            moved.append("{}: {} to {}".format(c["label"], c["memory family"], entry["label"]))
+        c["memory family"] = entry["label"]
+        if c.get("build") != entry["image"]:
+            rebuilt.append("{}: {} to {}".format(c["label"], c.get("build"), entry["image"]))
+            c["build"] = entry["image"]
     data["classes"] = classes
-    return data, {"added": added, "image moved": moved, "build changed": rebuilt, "seen": seen,
+    return data, {"added": added, "image moved": moved, "build changed": rebuilt, "image unknown": unknown,
+                  "seen": seen,
                   "absent": [c["label"] for c in classes if c["label"] not in seen],
                   "drivers": {k: sorted(v) for k, v in drivers.items()}}
 
@@ -276,34 +299,59 @@ def workload_from_rundir(rundir, label=None):
     return workload_from_arguments(arguments, label or os.path.basename(os.path.normpath(rundir)))
 
 
+def _literal_image(text):
+    """The one image a submit file names outright, or None."""
+    images = re.findall(r'^\s*(?:container_image|[^\s#]*SingularityImage)\s*=\s*"?([^"\s$()]+)"?\s*$',
+                        text, re.M | re.I)
+    return images[0] if len(images) == 1 else None
+
+
 def run_builds(rundir, override=None):
     """What to stamp on a run's observations: a build, a class-to-build mapping, or None.
 
-    ``override``, else the builds its plan used, else its one literal image.  A
-    family run with no plan matched an image per slot, so it cannot be told here.
+    ``override``, else the run's one literal image, else the builds its plan
+    used.  check_built_run ties those to the image each class ran.  A family
+    run with no plan matched an image per slot, and cannot be told here.
     """
     if override:
         return override
     try:
-        with open(os.path.join(rundir, "resource-plan.json")) as f:
-            builds = {r["label"]: r.get("build") for r in json.load(f)["classes"]}
-        if any(builds.values()):
-            return builds
-    except (OSError, ValueError, KeyError):
-        pass
-    try:
         text = _read_ile_sub(rundir)[0]
     except rp.ResourceProfileError:
         return None
-    images = re.findall(r'^\s*(?:container_image|\S*SingularityImage)\s*=\s*"?([^"\s$()]+)"?\s*$', text, re.M | re.I)
-    return _image_basename(images[0]) if len(images) == 1 else None
+    image = _literal_image(text)
+    if image or not CONTAINER.search(text):
+        return image
+    try:
+        with open(os.path.join(rundir, "resource-plan.json")) as f:
+            builds = {r["label"]: r.get("build") for r in json.load(f)["classes"]}
+    except (OSError, ValueError, KeyError):
+        return None
+    return builds if any(builds.values()) else None
 
 
-def check_built_run(rundir, plan):
+def _build_differences(text, launched, plan, manifest):
+    """Admitted classes whose build is not the image the built run gives them."""
+    image = _literal_image(text)
+    contained = image is not None or CONTAINER.search(launched)
+    differences = []
+    for r in plan.get("classes", ()):
+        if r["label"] not in plan["admitted"] or not r.get("build"):
+            continue
+        entry = class_container(manifest, r) if contained and image is None and manifest else None
+        built = image or (entry and entry["image"])
+        if built != r["build"]:
+            differences.append("image: planned {} for {}, built {}".format(
+                r["build"], r["label"], built or ("one that cannot be told" if contained else "no container")))
+    return differences
+
+
+def check_built_run(rundir, plan, manifest=None):
     """Differences between a plan and the ``ILE.sub`` the builder wrote, as text.
 
     The plan is made from ledger keys, and other keys can reach ILE too.  Memory
-    and speed evidence holds only if the job runs what was planned.
+    and speed evidence holds only if the job runs what was planned.  ``manifest``
+    is the container family of a run that selects its image per slot.
     """
     text, arguments = _read_ile_sub(rundir)
     built = rp.normalize_workload(workload_from_arguments(arguments, None))
@@ -321,10 +369,7 @@ def check_built_run(rundir, plan):
             launched += f.read()
     if "integrate_likelihood_extrinsic_jax" in launched:
         differences.append("JAX ILE: profile evidence is for the batchmode executable")
-    if re.search(r"container_image|SingularityImage", launched, re.I):
-        for r in plan["classes"]:
-            if r["label"] in plan["admitted"] and r.get("build") and r["build"] not in launched:
-                differences.append("image: planned {} for {}, not in the built run".format(r["build"], r["label"]))
+    differences += _build_differences(text, launched, plan, manifest)
     memory = re.search(r"^request_memory\s*=\s*(\d+)", text, re.M | re.I)
     wanted = plan.get("request memory mb")
     if wanted and (memory is None or int(memory.group(1)) != int(wanted)):
@@ -395,10 +440,10 @@ def emit_probes(profile, case, arguments, out, label, image=None, manifest=None,
     for c in wanted:
         chosen = image
         if manifest is not None and image is None:
-            family = _image_label(manifest, float(c["capability"][0]))
-            if family is None:
+            entry = class_container(manifest, c)
+            if entry is None:
                 raise rp.ResourceProfileError("cannot tell the image of class {}; pass image".format(c["label"]))
-            chosen = next(m["image"] for m in manifest["containers"] if m["label"] == family)
+            chosen = entry["image"]
         if chosen is None:
             raise rp.ResourceProfileError("emit_probes needs an image or a manifest")
         directory = os.path.join(out, c["label"])
@@ -428,7 +473,7 @@ def collect_probes(out, profile, stamp=None):
     Draws per second run from the end of the first point to the end of the last,
     so the rate leaves out startup and compilation.  A job that stopped before
     any point carries no failure draws, and blocks its class only on a GPU OOM.
-    Observations carry ``stamp`` as their build, else the job's image file name.
+    Observations carry ``stamp`` as their build, else the job's image.
     """
     if not os.path.isdir(out):
         raise rp.ResourceProfileError("probe directory not found: {}".format(out))
@@ -459,7 +504,7 @@ def collect_probes(out, profile, stamp=None):
         o = {"class": label, "workload": workload_from_arguments(run["arguments"], probe["label"]),
              "source": path}
         if stamp or probe.get("image"):
-            o["build"] = stamp or _image_basename(probe["image"])
+            o["build"] = stamp or probe["image"]
         if complete or (code == TIMEOUT_RETURNCODE and run["all_finite"] and noloop
                         and not run.get("gpu_oom") and draws):
             o["outcome"] = "success"

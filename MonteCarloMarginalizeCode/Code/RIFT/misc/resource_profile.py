@@ -24,12 +24,12 @@ monitors never edit the same file).
         slots: 400                # GPUs a run can typically hold at once
         relative speed: 0.3       # optional; transfers draws per second between classes
         memory family: cuda118    # optional; classes sharing an image share a memory fit
-        build: rift-rc14.sif      # optional; what the class runs now: memory evidence must match
-        unstamped build: rift-rc13.sif  # optional; the build of its observations with none
+        build: /cvmfs/x/rc14.sif  # optional; what the class runs now: memory evidence must match
+        unstamped build: /cvmfs/x/rc13.sif  # optional; the build of its observations with none
     observations:
       - class: pascal-4gb
         outcome: memory-failure   # success | memory-failure | crash | failure
-        build: rift-rc14.sif      # optional; image file name, or a name for a bare checkout
+        build: /cvmfs/x/rc14.sif  # optional; image path, or a name for a bare checkout
         workload: {label: bbh-loud, n chunk: 40000, n eff: 20, sample rate: 4096,
                    q pregrid factor: 2, ifos: 2, approximant: IMRPhenomXPHM,
                    lmax: 4, time resampling: 32768}
@@ -377,8 +377,14 @@ def _same_build(o, c):
 def _build_evidence(profile, c, workload):
     """What the build rule did to a class's memory evidence, for the plan record."""
     by_label = {k["label"]: k for k in profile["classes"]}
-    pool = [o for o in profile["observations"]
-            if _same_family(by_label[o["class"]], c) and _same_signature(o["workload"], workload)]
+
+    def bears_on(o):
+        k = by_label[o["class"]]
+        if o["outcome"] == "success":
+            return _vouches_for(k, c) and bool(o["memory samples"] or o["draws per point"])
+        return o["outcome"] in BLOCKING_OUTCOMES and _same_family(k, c) and k["memory mb"] >= c["memory mb"]
+
+    pool = [o for o in profile["observations"] if _same_signature(o["workload"], workload) and bears_on(o)]
     used = [o for o in pool if _same_build(o, c)]
     return {"used": len(used), "set aside": len(pool) - len(used),
             "unstamped used": sum(bool(o.get("unstamped")) for o in used),
@@ -643,7 +649,8 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
     rows, candidates = [], []
     for c in profile["classes"]:
         row = {"label": c["label"], "memory mb": c["memory mb"], "slots": c.get("slots", 0),
-               "build": c.get("build"), "evidence": _build_evidence(profile, c, workload)}
+               "capability": c["capability"], "build": c.get("build"),
+               "evidence": _build_evidence(profile, c, workload)}
         ceiling, row["memory"] = _draw_ceiling(profile, c, workload)
         if ceiling is None and row["evidence"]["set aside"]:
             row["memory"] += "; {} observations of other builds set aside".format(row["evidence"]["set aside"])

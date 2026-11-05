@@ -350,7 +350,9 @@ with pyyaml.
 
 `collect-probes` and `harvest` stamp each observation with its build. `harvest`
 takes it from the run's plan, else its one image. A family run with no plan
-stays unstamped. Use `--build` for an overlay or a bare checkout.
+stays unstamped. Use `--build` for an overlay or a bare checkout. Asimov refuses
+a built run that does not give each admitted class its `build`, which includes
+those two cases: drop `build` from the class for them.
 
 `survey` behaves as follows:
 
@@ -361,12 +363,15 @@ stays unstamped. Use `--build` for an overlay or a bare checkout.
   Glidein cards come and go. Only slot ratios matter, so check reported classes
   against the others, or use `--keep-slots`.
 - With `--manifest`, each class's `memory family` and `build` come from the
-  image selection gives it. The `build` is the image file name. A class moved to
-  another image or build is reported, and plans set aside its memory evidence
-  from any other build. If older observations with no build came from the image
-  now named, set the class's `unstamped build` to that file name. A branch with
-  `select_requirements` cannot be evaluated here, so such a class keeps its
-  family and build, and `emit-probes` needs `--image`.
+  image selection gives it. The `build` is the image path as the manifest writes
+  it, so publish each build at a new path (`build_family.sh` reuses file names).
+  A class moved to another image or build is reported, and plans set aside its
+  memory evidence from any other build. If older observations with no build came
+  from the image now named, set the class's `unstamped build` to that path. Later
+  observations with no build take it too, so stamp them.
+- A class keeps its family and build, is listed under `image unknown`, and needs
+  `emit-probes --image` when its image cannot be told: it spans two branches,
+  meets a `select_requirements` branch, or passes a `cuda_capability_max`.
 - It leaves out slots a run cannot reach: START opens with a job-side opt-in
   (`TARGET.SGNL_GPU =?= true`, the SPIIR flag) or is plain `false`. Use
   `--constraint` for a pool that spells this differently. `emit-probes` never

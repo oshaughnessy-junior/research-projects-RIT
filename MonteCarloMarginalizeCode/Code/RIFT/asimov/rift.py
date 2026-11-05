@@ -754,10 +754,15 @@ class Rift(Pipeline):
 
     def _check_resource_plan(self, rundir, plan):
         """Refuse a built run whose ILE.sub does not carry the plan."""
-        from RIFT.misc import resource_profile, resource_profile_build
+        from RIFT.misc import container_manifest, resource_profile, resource_profile_build
         try:
-            differences = resource_profile_build.check_built_run(rundir, plan)
-        except resource_profile.ResourceProfileError as error:
+            image = os.environ.get("SINGULARITY_RIFT_IMAGE")
+            manifest = None
+            if container_manifest.is_container_manifest(image):
+                manifest = container_manifest.load_container_manifest(
+                    os.path.join(self.production.event.work_dir, image))
+            differences = resource_profile_build.check_built_run(rundir, plan, manifest)
+        except (resource_profile.ResourceProfileError, container_manifest.ContainerManifestError) as error:
             differences = [str(error)]
         if differences:
             self.production.status = "stuck"
