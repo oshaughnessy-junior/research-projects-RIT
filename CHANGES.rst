@@ -14,6 +14,12 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
    - Divide the CIP q prior by its --eta-range norm factor N: (mtot, q) runs on the default q
      prior gain -2 ln(N) in raw lnZ.  Posteriors and prior-normalized lnB_H do not change
      (fork PR #523).
+   - Extend the last CIP line by the shortfall when --cip-args-list is shorter than
+     --n-iterations.  BasicMultiApproxIteration and AlternateIteration no longer stop with
+     IndexError.  They count a Z line as one ordinary line, so a short list ending in Z now
+     repeats that line as a fixed fit.  BasicIteration still stops with IndexError on such a
+     list.  BasicIteration and create_event_nr_pipeline_with_cip DAGs are unchanged
+     (fork PR #525).
    - Anchor the multi-approximant per-model unify glob at _consolidated_.  It also matched models
      whose name extends the model's own (IMRPhenomPv2, IMRPhenomPv2_NRTidal), so the shorter model's
      terminal CIP fit both.  Other model pairs do not change (fork PR #526).

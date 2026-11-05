@@ -342,6 +342,9 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_nal_io.py \
 # create_event_parameter_pipeline_BasicIteration -> ILE*.sub, and the last link is an
 # INHERITANCE (ile_args_extr = ile_args + ...), not an explicit forward.  An unlisted test never
 # runs in this CI, so wiring the file in is part of shipping the wiring.
+# Fixed FFT row shapes and hard GPU/resource failure propagation.
+python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_q2_fft_memory.py
+
 _TMARG_TESTS=(
     MonteCarloMarginalizeCode/Code/test/test_time_marginalization_quadrature.py
     MonteCarloMarginalizeCode/Code/test/test_time_marginalization_quadrature_pipeline.py
