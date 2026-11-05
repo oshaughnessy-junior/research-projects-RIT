@@ -28,19 +28,19 @@ import statistics
 import subprocess
 
 from RIFT.misc import resource_profile as rp
-from RIFT.misc.container_manifest import has_ile_profiles, selection_order
+from RIFT.misc.container_manifest import _image_basename, has_ile_profiles, selection_order
 
 __all__ = [
     "SURVEY_FIELDS",
     "parse_inventory",
     "survey_pool",
     "summarize_inventory",
-    "observed_classes",
     "update_resources",
     "refresh_relative_speeds",
     "DEFAULT_CONSTRAINT",
     "workload_from_arguments",
     "workload_from_rundir",
+    "run_builds",
     "check_built_run",
     "emit_probes",
     "collect_probes",
@@ -152,30 +152,20 @@ def _image_label(manifest, capability):
     return manifest["fallback"]
 
 
-def observed_classes(directory, resources=None):
-    """Labels of the classes a profile directory holds observations for."""
-    chunks = [(resources or {}).get("observations")]
-    for name in sorted(glob.glob(os.path.join(directory, "observations", "*.yaml"))):
-        chunk = rp._load_yaml(name)
-        chunks.append(chunk.get("observations") if isinstance(chunk, dict) else chunk)
-    return {o.get("class") for chunk in chunks for o in chunk or []}
-
-
-def update_resources(resources, devices, manifest=None, keep_slots=False, observed=()):
+def update_resources(resources, devices, manifest=None, keep_slots=False):
     """Merge a survey into a ``resources.yaml`` mapping.  Returns (resources, report).
 
     A device an existing class describes updates that class's slots, unless
     ``keep_slots``.  Any other device gets a new class.  Classes the survey did
     not see keep their entry and slots, and are reported: only the ratio of
     slots matters, so their slots may then be on another scale.  With a
-    manifest, every class's memory family is the image selection gives it.
-    Observations carry no image, so a family change would hand a class in
-    ``observed`` evidence from another image: that raises.
+    manifest, every class's memory family and build are the image selection
+    gives it, and plans set aside memory evidence from any other build.
     """
     data = dict(resources or {"version": 1})
     classes = [dict(c) for c in (data.get("classes") or [])]
     lookup = {"classes": [dict(c, **{"device names": c.get("device names") or []}) for c in classes]}
-    seen, added, moved, stale, drivers = {}, [], [], [], {}
+    seen, added, moved, rebuilt, drivers = {}, [], [], [], {}
     for device in devices:
         label = rp.classify_device(lookup, device["name"], device["capability"], device["memory mb"])
         if label is None:
@@ -197,19 +187,17 @@ def update_resources(resources, devices, manifest=None, keep_slots=False, observ
         if c["label"] in seen and not (keep_slots and c.get("slots")):
             c["slots"] = seen[c["label"]]
         image = _image_label(manifest, float(c["capability"][0]))
-        if image is not None and c.get("memory family") != image:
-            if c["label"] in observed:
-                stale.append("{}: {} to {}".format(c["label"], c.get("memory family"), image))
-            if c.get("memory family") is not None:
-                moved.append("{}: {} to {}".format(c["label"], c["memory family"], image))
-            c["memory family"] = image
-    if stale:
-        raise rp.ResourceProfileError(
-            "memory family would change for classes with observations ({}). Remove those "
-            "observations, or set the family in resources.yaml if they are from that "
-            "image.".format("; ".join(stale)))
+        if image is None:
+            continue
+        if c.get("memory family") not in (None, image):
+            moved.append("{}: {} to {}".format(c["label"], c["memory family"], image))
+        c["memory family"] = image
+        built = _image_basename(next(m["image"] for m in manifest["containers"] if m["label"] == image))
+        if c.get("build") != built:
+            rebuilt.append("{}: {} to {}".format(c["label"], c.get("build"), built))
+            c["build"] = built
     data["classes"] = classes
-    return data, {"added": added, "image moved": moved, "seen": seen,
+    return data, {"added": added, "image moved": moved, "build changed": rebuilt, "seen": seen,
                   "absent": [c["label"] for c in classes if c["label"] not in seen],
                   "drivers": {k: sorted(v) for k, v in drivers.items()}}
 
@@ -288,6 +276,29 @@ def workload_from_rundir(rundir, label=None):
     return workload_from_arguments(arguments, label or os.path.basename(os.path.normpath(rundir)))
 
 
+def run_builds(rundir, override=None):
+    """What to stamp on a run's observations: a build, a class-to-build mapping, or None.
+
+    ``override``, else the builds its plan used, else its one literal image.  A
+    family run with no plan matched an image per slot, so it cannot be told here.
+    """
+    if override:
+        return override
+    try:
+        with open(os.path.join(rundir, "resource-plan.json")) as f:
+            builds = {r["label"]: r.get("build") for r in json.load(f)["classes"]}
+        if any(builds.values()):
+            return builds
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        text = _read_ile_sub(rundir)[0]
+    except rp.ResourceProfileError:
+        return None
+    images = re.findall(r'^\s*(?:container_image|\S*SingularityImage)\s*=\s*"?([^"\s$()]+)"?\s*$', text, re.M | re.I)
+    return _image_basename(images[0]) if len(images) == 1 else None
+
+
 def check_built_run(rundir, plan):
     """Differences between a plan and the ``ILE.sub`` the builder wrote, as text.
 
@@ -310,6 +321,10 @@ def check_built_run(rundir, plan):
             launched += f.read()
     if "integrate_likelihood_extrinsic_jax" in launched:
         differences.append("JAX ILE: profile evidence is for the batchmode executable")
+    if re.search(r"container_image|SingularityImage", launched, re.I):
+        for r in plan["classes"]:
+            if r["label"] in plan["admitted"] and r.get("build") and r["build"] not in launched:
+                differences.append("image: planned {} for {}, not in the built run".format(r["build"], r["label"]))
     memory = re.search(r"^request_memory\s*=\s*(\d+)", text, re.M | re.I)
     wanted = plan.get("request memory mb")
     if wanted and (memory is None or int(memory.group(1)) != int(wanted)):
@@ -405,7 +420,7 @@ def emit_probes(profile, case, arguments, out, label, image=None, manifest=None,
     return submits
 
 
-def collect_probes(out, profile):
+def collect_probes(out, profile, stamp=None):
     """Observations from the receipts under ``out``.  Returns (observations, skipped).
 
     The class comes from the device the job reports, not the job it was
@@ -413,6 +428,7 @@ def collect_probes(out, profile):
     Draws per second run from the end of the first point to the end of the last,
     so the rate leaves out startup and compilation.  A job that stopped before
     any point carries no failure draws, and blocks its class only on a GPU OOM.
+    Observations carry ``stamp`` as their build, else the job's image file name.
     """
     if not os.path.isdir(out):
         raise rp.ResourceProfileError("probe directory not found: {}".format(out))
@@ -442,6 +458,8 @@ def collect_probes(out, profile):
         complete = code == 0 and run["all_finite"] and noloop and len(draws) == probe["points"]
         o = {"class": label, "workload": workload_from_arguments(run["arguments"], probe["label"]),
              "source": path}
+        if stamp or probe.get("image"):
+            o["build"] = stamp or _image_basename(probe["image"])
         if complete or (code == TIMEOUT_RETURNCODE and run["all_finite"] and noloop
                         and not run.get("gpu_oom") and draws):
             o["outcome"] = "success"

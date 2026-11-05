@@ -127,41 +127,52 @@ def test_survey_keeps_absent_classes_and_their_slots():
     assert data["policy"] == {"timing quantile": 0.8}
 
 
-@pytest.mark.parametrize("family", ["old", None])
-def test_survey_refuses_a_new_image_for_a_class_with_observations(family):
-    entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1}
-    if family:
-        entry["memory family"] = family
-    resources = {"version": 1, "classes": [entry]}
-    with pytest.raises(rp.ResourceProfileError, match="a10"):
-        build.update_resources(resources, _devices(), MANIFEST, observed={"a10"})
-    data, _ = build.update_resources(resources, _devices(), MANIFEST, observed={"other"})
-    assert next(c for c in data["classes"] if c["label"] == "a10")["memory family"] == "legacy"
-
-
-def test_survey_keeps_a_class_with_observations_on_its_image():
+def test_survey_records_the_image_as_the_class_build():
     entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1,
-             "memory family": "legacy"}
-    _, report = build.update_resources({"version": 1, "classes": [entry]}, _devices(), MANIFEST, observed={"a10"})
-    assert report["image moved"] == []
+             "memory family": "legacy", "build": "old.sif"}
+    data, report = build.update_resources({"version": 1, "classes": [entry]}, _devices(), MANIFEST)
+    assert next(c for c in data["classes"] if c["label"] == "a10")["build"] == "legacy.sif"
+    assert report["build changed"][0] == "a10: old.sif to legacy.sif" and report["image moved"] == []
+    _, report = build.update_resources(data, _devices(), MANIFEST)
+    assert report["build changed"] == []
 
 
-def test_observed_classes_reads_every_form_of_observation_file(tmp_path):
-    (tmp_path / "observations").mkdir()
-    (tmp_path / "observations" / "a.yaml").write_text(yaml.safe_dump({"observations": [{"class": "a"}]}))
-    (tmp_path / "observations" / "b.yaml").write_text(yaml.safe_dump([{"class": "b"}]))
-    assert build.observed_classes(str(tmp_path), {"observations": [{"class": "c"}]}) == {"a", "b", "c"}
-    assert build.observed_classes(str(tmp_path / "none")) == set()
+def test_survey_leaves_the_build_when_it_cannot_tell_the_image():
+    gated = dict(MANIFEST["containers"][0], cuda_capability_min=6.1, select_requirements="x")
+    manifest = {"fallback": "legacy", "containers": [gated, MANIFEST["containers"][1]]}
+    entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1,
+             "memory family": "legacy", "build": "old.sif"}
+    data, report = build.update_resources({"version": 1, "classes": [entry]}, _devices(), manifest)
+    assert data["classes"][0]["build"] == "old.sif" and report["build changed"] == []
 
 
-def test_cli_survey_will_not_move_observed_evidence_to_a_new_image(tmp_path):
+def test_rebuild_under_one_family_label_loses_the_old_memory_fit(tmp_path):
+    """A resurvey after a rebuild drops the old fit, though the family label never changed."""
+    entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["NVIDIA A10$"],
+             "slots": 1, "memory family": "legacy", "build": "rc13.sif"}
+    workload = {"label": "w", "n chunk": 10000, "n eff": 10, "sample rate": 4096, "q pregrid factor": 2,
+                "ifos": 2, "approximant": "X", "lmax": 4, "time resampling": 32768}
+    grown = [[1e6 * (i + 1), 500.0 + 300 * (i + 1), None] for i in range(8)]
+    observation = {"class": "a10", "outcome": "success", "workload": workload, "build": "rc13.sif",
+                   "memory samples": grown, "draws per point": [1e6], "draws per second": [1e4]}
+    data = {"version": 1, "classes": [entry], "observations": [observation]}
+    before = rp.plan_resources(_profile(tmp_path, data), workload)["classes"][0]
+    assert before["evidence"]["used"] == 1 and "300" in before["memory"]
+    moved, _ = build.update_resources(data, _devices(), {"fallback": "legacy", "containers": [
+        {"label": "legacy", "image": "/x/rc14.sif", "cuda_capability_min": 6.1, "select_requirements": None}]})
+    moved["classes"] = [c for c in moved["classes"] if c["label"] == "a10"]
+    with pytest.raises(rp.ResourceProfileError, match="1 observations of other builds set aside"):
+        rp.plan_resources(_profile(tmp_path, moved), workload)
+
+
+def test_cli_survey_stamps_the_class_and_keeps_observations(tmp_path):
     profile = tmp_path / "profile"
     (profile / "observations").mkdir(parents=True)
     entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1,
              "memory family": "old"}
-    text = yaml.safe_dump({"version": 1, "classes": [entry]})
-    (profile / "resources.yaml").write_text(text)
-    (profile / "observations" / "a.yaml").write_text(yaml.safe_dump({"observations": [{"class": "a10"}]}))
+    (profile / "resources.yaml").write_text(yaml.safe_dump({"version": 1, "classes": [entry]}))
+    observation = {"class": "a10", "outcome": "success", "workload": {"n chunk": 1}}
+    (profile / "observations" / "a.yaml").write_text(yaml.safe_dump({"observations": [observation]}))
     (tmp_path / "inventory.txt").write_text("\n".join(ROWS))
     (tmp_path / "manifest.yaml").write_text(yaml.safe_dump(MANIFEST))
     env = dict(os.environ, PYTHONPATH=CODE + os.pathsep + os.environ.get("PYTHONPATH", ""))
@@ -169,8 +180,10 @@ def test_cli_survey_will_not_move_observed_evidence_to_a_new_image(tmp_path):
                            str(profile), "--inventory", str(tmp_path / "inventory.txt"),
                            "--manifest", str(tmp_path / "manifest.yaml")],
                           env=env, stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
-    assert done.returncode != 0 and "a10" in done.stderr
-    assert (profile / "resources.yaml").read_text() == text
+    assert done.returncode == 0, done.stderr
+    entry = next(c for c in yaml.safe_load((profile / "resources.yaml").read_text())["classes"]
+                 if c["label"] == "a10")
+    assert entry["memory family"] == "legacy" and entry["build"] == "legacy.sif"
 
 
 def test_survey_updates_a_described_class_unless_told_to_keep():
@@ -341,10 +354,10 @@ def test_emit_refuses_a_command_line_off_noloop(tmp_path, flag):
         build.emit_probes(profile, str(tmp_path), [a for a in ARGUMENTS if a != flag], str(tmp_path / "j"), "x")
 
 
-def _receipt(tmp_path, name, code, device="Old", draws=(1000.0, 2000.0, 3000.0), oom=False, finite=True, points=3, noloop_lost=False):
+def _receipt(tmp_path, name, code, device="Old", draws=(1000.0, 2000.0, 3000.0), oom=False, finite=True, points=3, noloop_lost=False, image=None):
     directory = tmp_path / "jobs" / name
     (directory / "results").mkdir(parents=True)
-    (directory / "probe.json").write_text(json.dumps({"label": "bbh", "points": points}))
+    (directory / "probe.json").write_text(json.dumps({"label": "bbh", "points": points, "image": image}))
     (directory / "results" / "receipt.json").write_text(json.dumps({
         "gpu": {"name": device, "sm": 61, "vram_bytes": 4236312576}, "run": {
             "arguments": ARGUMENTS, "returncode": code, "wall_seconds": 1000.0, "gpu_oom": oom, "all_finite": finite,
@@ -548,3 +561,48 @@ def test_cli_emit_passes_an_integer_n_eff_to_ile(tmp_path):
     subprocess.run(cli + ["collect-probes", str(tmp_path / "p"), "--probes", str(tmp_path / "j"), "--output",
                           str(output)], env=env, stdout=subprocess.PIPE, check=True)
     assert output.exists()
+
+
+def test_collect_stamps_the_image_file_name_or_the_given_build(tmp_path):
+    _receipt(tmp_path, "a", 0, image="osdf:///x/rc14.sif")
+    _receipt(tmp_path, "b", 0)
+    profile = {"policy": {}, "classes": [{"label": "old", "capability": [6.1, 6.2], "memory mb": 4000,
+                                          "device names": ["^Old$"]}]}
+    observations, _ = build.collect_probes(str(tmp_path / "jobs"), profile)
+    assert [o.get("build") for o in observations] == ["rc14.sif", None]
+    observations, _ = build.collect_probes(str(tmp_path / "jobs"), profile, stamp="rc14+fix")
+    assert {o["build"] for o in observations} == {"rc14+fix"}
+
+
+@pytest.mark.parametrize("line, expected", [
+    ('container_image = /x/rc14.sif', "rc14.sif"),
+    ('MY.SingularityImage = "osdf:///x/rc14.sif"', "rc14.sif"),
+    ('+SingularityImage = "/x/rc14.sif"', "rc14.sif"),
+    ('container_image = $$([ifThenElse(x, "a.sif", "b.sif")])', None),
+    ('MY.SingularityImage = ifThenElse(x, "a.sif", "b.sif")', None),
+    ('universe = vanilla', None)])
+def test_run_builds_reads_one_literal_image(tmp_path, line, expected):
+    (tmp_path / "ILE.sub").write_text('arguments = "x"\n' + line + "\n")
+    assert build.run_builds(str(tmp_path)) == expected
+
+
+def test_run_builds_prefers_the_override_then_the_plan(tmp_path):
+    (tmp_path / "ILE.sub").write_text('arguments = "x"\ncontainer_image = /x/sub.sif\n')
+    plan = tmp_path / "resource-plan.json"
+    plan.write_text(json.dumps({"classes": [{"label": "a", "build": None}]}))
+    assert build.run_builds(str(tmp_path)) == "sub.sif"
+    plan.write_text(json.dumps({"classes": [{"label": "a", "build": "plan.sif"}]}))
+    assert build.run_builds(str(tmp_path)) == {"a": "plan.sif"}
+    assert build.run_builds(str(tmp_path), "mine") == "mine"
+    assert build.run_builds(str(tmp_path / "none")) is None
+
+
+@pytest.mark.parametrize("built, refused", [("/x/rc14.sif", False), ("/x/rc13.sif", True)])
+def test_built_run_must_use_the_planned_build(tmp_path, built, refused):
+    plan = _built(tmp_path)
+    plan.update({"admitted": ["a", "b"], "classes": [{"label": "a", "build": "rc14.sif"},
+                                                     {"label": "b", "build": None},
+                                                     {"label": "out", "build": "gone.sif"}]})
+    with open(str(tmp_path / "ILE.sub"), "a") as f:
+        f.write("container_image = {}\n".format(built))
+    assert any("planned rc14.sif" in d for d in build.check_built_run(str(tmp_path), plan)) is refused

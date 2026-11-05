@@ -348,6 +348,10 @@ draws a worker has run. Observations carry no `--n-max`, so use a separate
 `--label` for a probe capped below production. Set `PYTHON` to an interpreter
 with pyyaml.
 
+`collect-probes` and `harvest` stamp each observation with its build. `harvest`
+takes it from the run's plan, else its one image. A family run with no plan
+stays unstamped. Use `--build` for an overlay or a bare checkout.
+
 `survey` behaves as follows:
 
 - It counts physical GPUs by id, not slots. A slot advertises one device name,
@@ -356,12 +360,13 @@ with pyyaml.
 - A class the survey does not see keeps its entry and slots, and is reported.
   Glidein cards come and go. Only slot ratios matter, so check reported classes
   against the others, or use `--keep-slots`.
-- With `--manifest`, each class's `memory family` is the image selection gives
-  it. A class moved to another image is reported. If it has observations, the
-  survey stops: they carry no image, so remove them and collect new ones, or
-  set the family by hand if they are from that image. A branch with
+- With `--manifest`, each class's `memory family` and `build` come from the
+  image selection gives it. The `build` is the image file name. A class moved to
+  another image or build is reported, and plans set aside its memory evidence
+  from any other build. If older observations with no build came from the image
+  now named, set the class's `unstamped build` to that file name. A branch with
   `select_requirements` cannot be evaluated here, so such a class keeps its
-  family and `emit-probes` needs `--image`.
+  family and build, and `emit-probes` needs `--image`.
 - It leaves out slots a run cannot reach: START opens with a job-side opt-in
   (`TARGET.SGNL_GPU =?= true`, the SPIIR flag) or is plain `false`. Use
   `--constraint` for a pool that spells this differently. `emit-probes` never

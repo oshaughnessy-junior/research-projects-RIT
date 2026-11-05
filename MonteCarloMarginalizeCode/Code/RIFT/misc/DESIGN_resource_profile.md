@@ -68,7 +68,7 @@ profile and the workload into these values:
 The plan goes into the ini, not onto the command line, because pseudo_pipe
 lets the ini override its command line. Iteration 0 gets the same points per
 worker. n chunk is written too, since the helper would otherwise scale it with
-SNR. The ledger and source ini stay unchanged. The copy lives in a
+SNR. The copy lives in a
 `.rift-resource-plan-*` directory beside the rendered ini. The build refuses ILE
 `condor commands` that set `request_memory` or `require_gpus`, and a container
 manifest with per-branch ILE profiles. After the build it compares `ILE.sub`
@@ -77,21 +77,21 @@ with the plan and refuses any difference, because other keys also reach ILE.
 ## Profile
 
 A profile is one file, or a directory with `resources.yaml` and
-`observations/*.yaml`. A harvest only writes new files, so monitors do not
-conflict. The schema is in the module docstring.
+`observations/*.yaml`. The schema is in the module docstring.
 
 A *class* is a capability range, a memory floor (and optional ceiling), and
 optional device-name regexes. Memory is the advertised `GlobalMemoryMb`, which
 is below the marketed size: a 24 GB Quadro RTX 6000 advertises 22684. A class
 also carries `slots` (only the ratios between classes affect the plan), an
-optional `relative speed`, and an optional `memory family`. Classes in a family
-run the same image and share a memory fit. Order classes from most to least
+optional `relative speed`, an optional `memory family` and an optional `build`.
+Classes in a family run the same image and share a memory fit. Order classes from most to least
 specific: a device belongs to the first class it matches.
 
 An *observation* is one class, one outcome (`success`, `memory-failure`,
 `crash`, `failure`) and one workload. It may add draws per point, draws per
 second, `memory samples` (per worker: total draws, device MB, host MB) and
-`failure draws` (per failed worker: the draws in its completed points).
+`failure draws` (per failed worker: the draws in its completed points). Its
+`build` names what produced it: the image file name, or a chosen name.
 
 The workload has two parts. The *signature* (sample rate, Q pregrid factor,
 detector count, approximant, l max, time-marginalization resample rate) must
@@ -99,6 +99,14 @@ match for any evidence to transfer. n chunk, n eff and a free-form label select
 timing data.
 
 ## Decision rule
+
+**Builds.** Memory follows the image and the RIFT in it. With a class `build`,
+only observations of that build count as memory evidence: fits, failures, draws
+completed and host memory. Timing transfers. A class's `unstamped build` names
+its observations with no build; without it they are set aside. A class with no
+`build` takes everything. The plan row records what was used and set aside.
+`survey --manifest` sets `build`, so a rebuild drops the old fits even under one
+family label.
 
 **Memory.** Each class gets a ceiling on draws per worker, the least of:
 
@@ -112,8 +120,7 @@ timing data.
    memory, in this family, caps the class at the draws that worker completed.
    A failure is set aside only when workers on cards with no more memory got
    past it often enough: 9 for each failure at or beyond it at the default
-   `timing quantile`. One crash among thousands of successes does not bar a
-   class, and one success does not erase several crashes. Crashes count because
+   `timing quantile`. Crashes count because
    the IR1 4 GB failures were segfaults near full memory.
 3. Host memory. The same fits on host memory, against
    `host memory max mb / (1 + host memory margin)`, because a larger request
@@ -178,8 +185,7 @@ card's `GlobalMemoryMb`, used to classify it, and `GpusMemoryUsage`, kept as
 device memory for single-GPU workers. A worker that fanned out over K
 GPUs (`.gpuK` shards) counts its wall time K times. Out-of-memory text counts
 only when the worker failed. Rows whose `ntotal` is not a whole number (the
-hyperpipeline row layout) and extrinsic jobs are skipped. Held-then-removed
-workers have no termination record or outputs, so they are skipped. Harvest
+hyperpipeline row layout) and extrinsic jobs are skipped. Harvest
 counts host-memory holds apart: host fits see only survivors, and read low near
 the old request.
 
@@ -194,9 +200,8 @@ run's observations to the profile and logs any failure. The CLI does the same.
   unbiased subset (`--sampler-sequential-warmstart` help); the budget is the
   missing piece.
 - `slots` is an operator estimate.
-- A memory fit holds for one image and RIFT build. `survey` refuses a family
-  change for an observed class, because observations carry no image. Hand edits
-  go unchecked. After a build that changes memory use, remove the old observations.
+- An image file name is taken to identify its contents. An overlay needs its
+  own `--build`.
 - Draws per second are assumed non-decreasing in n chunk.
 - A requirement that pins a class (`Capability == 6.1`) is ANDed with the plan
   and can match nothing. Drop such pins when using a profile.

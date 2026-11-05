@@ -771,14 +771,15 @@ class Rift(Pipeline):
             if not settings or not settings.get("harvest"):
                 return
             rundir = self.production.rundir
-            from RIFT.misc import resource_profile
+            from RIFT.misc import resource_profile, resource_profile_build
             import yaml
             with open(os.path.join(rundir, "resource-plan.json")) as f:
                 plan = json.load(f)
             if not os.path.isdir(os.path.expanduser(settings["path"])):
                 raise ValueError("harvest needs a directory profile")
             profile = resource_profile.load_resource_profile(settings["path"], settings.get("policy"))
-            observations, skipped = resource_profile.harvest_rundir(rundir, profile, plan["workload"])
+            observations, skipped = resource_profile.harvest_rundir(
+                rundir, profile, plan["workload"], builds=resource_profile_build.run_builds(rundir))
             target = os.path.join(os.path.expanduser(settings["path"]), "observations")
             os.makedirs(target, exist_ok=True)
             name = "{}-{}-{}.yaml".format(self.production.event.name, self.production.name,

@@ -2,10 +2,10 @@
 """Plan ILE GPU matching from a resource profile, or build and extend one.
 
     util_RIFT_resource_profile.py plan PROFILE --workload workload.yaml [--draws-per-point D]
-    util_RIFT_resource_profile.py harvest PROFILE RUNDIR [--workload workload.yaml] [--output FILE]
+    util_RIFT_resource_profile.py harvest PROFILE RUNDIR [--workload workload.yaml] [--output FILE] [--build B]
     util_RIFT_resource_profile.py survey PROFILE_DIR [--manifest family.yaml] [--pool HOST]
     util_RIFT_resource_profile.py emit-probes PROFILE_DIR --case DIR --arguments ile.args --label L --out DIR
-    util_RIFT_resource_profile.py collect-probes PROFILE_DIR --probes DIR --output FILE
+    util_RIFT_resource_profile.py collect-probes PROFILE_DIR --probes DIR --output FILE [--build B]
     util_RIFT_resource_profile.py refresh-speeds PROFILE_DIR
 
 ``plan`` prints the plan as JSON.  ``harvest`` reads the workload from
@@ -68,8 +68,7 @@ def _survey(opts):
     if not devices and not existing:
         raise resource_profile.ResourceProfileError("survey found no GPUs and there is no profile to keep")
     manifest = load_container_manifest(opts.manifest) if opts.manifest else None
-    data, report = build.update_resources(existing, devices, manifest, keep_slots=opts.keep_slots,
-                                          observed=build.observed_classes(opts.profile, existing))
+    data, report = build.update_resources(existing, devices, manifest, keep_slots=opts.keep_slots)
     os.makedirs(opts.profile, exist_ok=True)
     report["inventory"] = build.save_inventory(os.path.join(opts.profile, "surveys"), rows, devices)
     build.write_resources(main, data)
@@ -117,6 +116,7 @@ def main(argv=None):
     harvest.add_argument("rundir")
     harvest.add_argument("--workload", default=None)
     harvest.add_argument("--output", default=None)
+    harvest.add_argument("--build", default=None, help="name for the run's build; default from its plan or image")
     harvest.add_argument("--policy", default=None, help="YAML mapping of policy overrides, as in the ledger")
     survey = sub.add_parser("survey")
     survey.add_argument("profile", help="profile directory; resources.yaml is created or updated")
@@ -152,6 +152,7 @@ def main(argv=None):
     collect.add_argument("profile")
     collect.add_argument("--probes", required=True, help="the --out directory of emit-probes")
     collect.add_argument("--output", default=None)
+    collect.add_argument("--build", default=None, help="name for the build; default the job's image file name")
     refresh = sub.add_parser("refresh-speeds")
     refresh.add_argument("profile")
     opts = parser.parse_args(argv)
@@ -166,7 +167,7 @@ def main(argv=None):
         if opts.command == "emit-probes":
             return _emit(opts, profile)
         if opts.command == "collect-probes":
-            observations, skipped = build.collect_probes(opts.probes, profile)
+            observations, skipped = build.collect_probes(opts.probes, profile, stamp=opts.build)
             code = _write_observations(observations, opts.output)
             print("skipped jobs: {}".format(skipped), file=sys.stderr)
             return code
@@ -176,8 +177,11 @@ def main(argv=None):
                 jobs_per_worker_cap=opts.jobs_per_worker_cap)
             print(json.dumps(result, indent=1, default=str))
             return 0
+        builds = build.run_builds(opts.rundir, opts.build)
+        if not builds:
+            print("no build found: these observations stay unstamped", file=sys.stderr)
         observations, skipped = resource_profile.harvest_rundir(
-            opts.rundir, profile, _workload(opts.workload, opts.rundir))
+            opts.rundir, profile, _workload(opts.workload, opts.rundir), builds=builds)
     except (resource_profile.ResourceProfileError, ContainerManifestError, OSError, ValueError,
             yaml.YAMLError, KeyError) as error:
         print("resource profile: {}".format(error), file=sys.stderr)

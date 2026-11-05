@@ -227,10 +227,10 @@ def test_completion_harvest_writes_one_whole_file_and_skips_an_empty_one(monkeyp
     pipe.build_dag()
     from RIFT.misc import resource_profile
     observation = {"class": "fast", "outcome": "success", "workload": WORKLOAD}
-    monkeypatch.setattr(resource_profile, "harvest_rundir", lambda *a: ([], {}))
+    monkeypatch.setattr(resource_profile, "harvest_rundir", lambda *a, **k: ([], {}))
     pipe._harvest_resource_observations()
     assert not (root / "observations").exists() or not list((root / "observations").iterdir())
-    monkeypatch.setattr(resource_profile, "harvest_rundir", lambda *a: ([observation], {}))
+    monkeypatch.setattr(resource_profile, "harvest_rundir", lambda *a, **k: ([observation], {}))
     pipe._harvest_resource_observations()
     (written,) = (root / "observations").iterdir()
     assert written.suffix == ".yaml"
