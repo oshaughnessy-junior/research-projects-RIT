@@ -655,9 +655,37 @@ def test_family_run_checks_each_class_against_its_own_branch(tmp_path):
     assert "cannot be told" in build.check_built_run(str(tmp_path), _plan_with_builds(plan, right))[0]
 
 
+def test_family_run_from_another_manifest_is_refused(tmp_path):
+    plan = _plan_with_builds(_built(tmp_path), {"label": "a", "capability": [9.0, 9.1], "build": "osdf:///x/modern.sif"})
+    with open(str(tmp_path / "ILE.sub"), "a") as f:
+        f.write('container_image = $$([x ? "other.sif" : "legacy.sif"])\n')
+    assert "cannot be told" in build.check_built_run(str(tmp_path), plan, MANIFEST)[0]
+
+
+@pytest.mark.parametrize("url", ["osdf:///x/r.sif", "igwn+osdf:///x/r.sif"])
+def test_transferred_image_is_known_by_its_source(tmp_path, url):
+    plan = _plan_with_builds(_built(tmp_path), {"label": "a", "build": url})
+    with open(str(tmp_path / "ILE.sub"), "a") as f:
+        f.write('MY.SingularityImage = "./r.sif"\ntransfer_input_files = a.txt,{},b.txt\n'.format(url))
+    assert build.check_built_run(str(tmp_path), plan) == []
+    assert build.run_builds(str(tmp_path)) == url
+    plan["classes"][0]["build"] = "osdf:///old/r.sif"
+    assert build.check_built_run(str(tmp_path), plan)
+
+
+def test_class_container_splits_a_class_at_a_capability_max():
+    top = {"label": "B", "image": "/b.sif", "cuda_capability_min": 7.0, "cuda_capability_max": 8.0,
+           "select_requirements": None}
+    fallback = {"label": "A", "image": "/a.sif", "cuda_capability_min": 6.0, "select_requirements": None}
+    manifest = {"fallback": "A", "containers": [top, fallback]}
+    assert build.class_container(manifest, {"capability": [7.0, 7.5]})["label"] == "B"
+    assert build.class_container(manifest, {"capability": [7.0, 9.0]}) is None
+    assert build.class_container(manifest, {"capability": [7.0, None]}) is None
+
+
 def test_runtime_wrapper_counts_as_a_container(tmp_path):
     plan = _plan_with_builds(_built(tmp_path), {"label": "a", "capability": [9.0, 9.1], "build": "osdf:///x/modern.sif"})
-    (tmp_path / "rift_container_select.sh").write_text("#!/bin/sh\n")
+    (tmp_path / "rift_container_select.sh").write_text("#!/bin/sh\nIMAGE=modern.sif\n")
     with open(str(tmp_path / "ILE.sub"), "a") as f:
         f.write("executable = rift_container_select.sh\n")
     assert build.check_built_run(str(tmp_path), plan, MANIFEST) == []

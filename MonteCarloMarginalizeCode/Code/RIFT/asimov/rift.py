@@ -758,9 +758,10 @@ class Rift(Pipeline):
         try:
             image = os.environ.get("SINGULARITY_RIFT_IMAGE")
             manifest = None
-            if container_manifest.is_container_manifest(image):
-                manifest = container_manifest.load_container_manifest(
-                    os.path.join(self.production.event.work_dir, image))
+            if container_manifest.is_container_manifest(image) and any(
+                    row.get("build") for row in plan.get("classes", ())):
+                # pseudo_pipe resolves a relative manifest from the run directory.
+                manifest = container_manifest.load_container_manifest(os.path.join(rundir, image))
             differences = resource_profile_build.check_built_run(rundir, plan, manifest)
         except (resource_profile.ResourceProfileError, container_manifest.ContainerManifestError) as error:
             differences = [str(error)]

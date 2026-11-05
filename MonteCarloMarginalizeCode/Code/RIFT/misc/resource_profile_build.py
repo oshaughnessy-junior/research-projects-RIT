@@ -28,7 +28,7 @@ import statistics
 import subprocess
 
 from RIFT.misc import resource_profile as rp
-from RIFT.misc.container_manifest import has_ile_profiles, selection_order
+from RIFT.misc.container_manifest import _image_basename, has_ile_profiles, selection_order
 
 __all__ = [
     "SURVEY_FIELDS",
@@ -162,8 +162,8 @@ def _image_label(manifest, capability):
 def class_container(manifest, c):
     """The manifest entry selection gives every card of class ``c``, or None if that cannot be told."""
     low, high = (None if v is None else float(v) for v in c["capability"])
-    edges = {float(m["cuda_capability_min"]) for m in manifest["containers"]
-             if m["cuda_capability_min"] is not None}
+    edges = {float(m[key]) for m in manifest["containers"] for key in ("cuda_capability_min", "cuda_capability_max")
+             if m.get(key) is not None}
     points = [low] + [v for v in edges if v > low and (high is None or v < high)]
     labels = {_image_label(manifest, point) for point in points}
     if None in labels or len(labels) != 1:
@@ -300,10 +300,18 @@ def workload_from_rundir(rundir, label=None):
 
 
 def _literal_image(text):
-    """The one image a submit file names outright, or None."""
+    """The one image a submit file names outright, or None.
+
+    A transferred image runs as ``./name``, so its source is in the transfer list.
+    """
     images = re.findall(r'^\s*(?:container_image|[^\s#]*SingularityImage)\s*=\s*"?([^"\s$()]+)"?\s*$',
                         text, re.M | re.I)
-    return images[0] if len(images) == 1 else None
+    if len(images) != 1:
+        return None
+    sources = images[0].startswith("./") and [
+        name for name in re.findall(r'[^\s,"]+/' + re.escape(images[0][2:]) + r'(?=[\s,"]|$)', text, re.M)
+        if name != images[0]]
+    return sources[0] if sources else images[0]
 
 
 def run_builds(rundir, override=None):
@@ -339,6 +347,8 @@ def _build_differences(text, launched, plan, manifest):
         if r["label"] not in plan["admitted"] or not r.get("build"):
             continue
         entry = class_container(manifest, r) if contained and image is None and manifest else None
+        if entry and _image_basename(entry["image"]) not in launched:
+            entry = None                               # the run did not come from this manifest
         built = image or (entry and entry["image"])
         if built != r["build"]:
             differences.append("image: planned {} for {}, built {}".format(
