@@ -4,6 +4,7 @@ from pathlib import Path
 import types
 import numpy as np
 import pytest
+from RIFT.likelihood import time_marginalization_quadrature as time_quadrature_module
 
 DRIVER = Path(__file__).resolve().parents[1]/"bin/integrate_likelihood_extrinsic_batchmode"
 
@@ -38,6 +39,7 @@ def test_waveform_failure_skips_point_and_keeps_neighbors(failure):
     opts = types.SimpleNamespace(**{name:False for name in option_names})
     points = [types.SimpleNamespace(print_params=lambda:None) for _ in range(3)]
     namespace = dict(np=np, numpy=np, P_list=points, opts=opts, analyze_event=waveform_seam,
+        factored_likelihood=types.SimpleNamespace(time_quadrature_module=time_quadrature_module),
         data_dict={}, psd_dict={}, fmax=1024., lnL_sofar=-np.inf,
         QTimePregridError=type('QTimePregridError', (Exception,), {}), mcsampler_AV_ok=False,
         sampler=types.SimpleNamespace(params=[]), _proposal_field=None,
@@ -61,6 +63,7 @@ def test_nonfinite_analyze_event_return_does_not_poison_next_point(bad):
     names = {node.attr for node in ast.walk(loop) if isinstance(node, ast.Attribute) and
              isinstance(node.value, ast.Name) and node.value.id == 'opts'}
     namespace = dict(np=np, numpy=np,
+        factored_likelihood=types.SimpleNamespace(time_quadrature_module=time_quadrature_module),
         P_list=[types.SimpleNamespace(print_params=lambda:None) for _ in range(3)],
         opts=types.SimpleNamespace(**{name:False for name in names}), analyze_event=backend,
         data_dict={}, psd_dict={}, fmax=1024., lnL_sofar=-np.inf,
