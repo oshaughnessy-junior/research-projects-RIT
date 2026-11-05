@@ -297,6 +297,75 @@ random-redraw proposal. Re-score candidates with production ILE before using
 them in inference. No posterior or evidence weights come from these coordinates.</p>
 </section>
 </section>
+<section id="native-periodic-coordinates">
+<h2>Native periodic coordinates<a class="headerlink" href="#native-periodic-coordinates" title="Link to this heading"></a></h2>
+<p>Use <code class="docutils literal notranslate"><span class="pre">--unwrap-parameter</span> <span class="pre">meanPerAno</span></code> (repeatable for any name in
+<code class="docutils literal notranslate"><span class="pre">RIFT.lalsimutils.periodic_params</span></code>) to estimate the covariance in a connected
+angular chart and wrap the proposed angle back into its physical period. The
+<code class="docutils literal notranslate"><span class="pre">gap</span></code> rule cuts at the middle of the largest empty arc; <code class="docutils literal notranslate"><span class="pre">--unwrap-center</span> <span class="pre">mean</span></code>
+uses the circular mean instead. This helps a localized posterior crossing the
+zero/period seam. It cannot straighten a ridge winding around the circle several
+times. A warning reports when the samples leave no empty arc larger than one
+sixth of a period; such cases need visual inspection rather than an assumption
+that unwrapping improves exploration.</p>
+<p>For example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">util_ParameterPuffball</span><span class="o">.</span><span class="n">py</span> <span class="o">--</span><span class="n">inj</span><span class="o">-</span><span class="n">file</span> <span class="n">overlap</span><span class="o">-</span><span class="n">grid</span><span class="o">-</span><span class="mf">2.</span><span class="n">xml</span><span class="o">.</span><span class="n">gz</span> \
+  <span class="o">--</span><span class="n">inj</span><span class="o">-</span><span class="n">file</span><span class="o">-</span><span class="n">out</span> <span class="n">puffball</span><span class="o">-</span><span class="mi">2</span> <span class="o">--</span><span class="n">parameter</span> <span class="n">mc</span> <span class="o">--</span><span class="n">parameter</span> <span class="n">delta_mc</span> \
+  <span class="o">--</span><span class="n">parameter</span> <span class="n">eccentricity</span> <span class="o">--</span><span class="n">parameter</span> <span class="n">meanPerAno</span> \
+  <span class="o">--</span><span class="n">unwrap</span><span class="o">-</span><span class="n">parameter</span> <span class="n">meanPerAno</span> <span class="o">--</span><span class="n">unwrap</span><span class="o">-</span><span class="n">center</span> <span class="n">gap</span> <span class="o">--</span><span class="n">puff</span><span class="o">-</span><span class="n">factor</span> <span class="mf">0.5</span>
+</pre></div>
+</div>
+<p>Physical downselection uses wrapped angles. Covariance and exclusion use the
+angular chart, with integer-period lifts included in <code class="docutils literal notranslate"><span class="pre">--force-away</span></code> distances.
+An angle cannot be both reflected and unwrapped. A zero puff factor preserves
+the input angle; a single-angle puff draws an independent offset for each point.</p>
+<p>To activate this throughout a pseudo-pipe analysis, use
+<code class="docutils literal notranslate"><span class="pre">--puff-periodic-mode</span> <span class="pre">gap</span></code> or set <code class="docutils literal notranslate"><span class="pre">puff-periodic-mode=&quot;gap&quot;</span></code> in the
+<code class="docutils literal notranslate"><span class="pre">[rift-pseudo-pipe]</span></code> INI section. <code class="docutils literal notranslate"><span class="pre">mean</span></code> selects the other centering rule;
+<code class="docutils literal notranslate"><span class="pre">off</span></code> is the default. The pipeline selects every periodic coordinate in the
+final puff basis, including <code class="docutils literal notranslate"><span class="pre">phi1</span></code> and <code class="docutils literal notranslate"><span class="pre">phi2</span></code> when transverse puffing is
+enabled. Main iterations and refinement subdags receive the same resolved puff
+arguments. In the early mu/random-transverse discovery stage, angles are drawn
+independently; native unwrapping applies to subsequent covariance puff stages.</p>
+<p>In Asimov, set the analysis sampler metadata to:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sampler</span><span class="p">:</span>
+  <span class="n">puff</span><span class="p">:</span>
+    <span class="n">periodic</span> <span class="n">coordinates</span><span class="p">:</span> <span class="n">gap</span>
+</pre></div>
+</div>
+<p>YAML <code class="docutils literal notranslate"><span class="pre">true</span></code> selects <code class="docutils literal notranslate"><span class="pre">gap</span></code>, <code class="docutils literal notranslate"><span class="pre">false</span></code> selects <code class="docutils literal notranslate"><span class="pre">off</span></code>, and <code class="docutils literal notranslate"><span class="pre">mean</span></code> is also
+accepted. An absent setting preserves the pipeline default. The template renders
+this metadata into the INI option, which is resolved after puff-coordinate
+rewrites and passed through to generated Condor puff jobs.</p>
+<p>The existing <code class="docutils literal notranslate"><span class="pre">--eccentric-phase-coordinates</span></code> mode changes the proposal chart to
+an effective eccentric phase and inverts it at the proposed masses and
+eccentricity. It is already available on O4c and O4d and can follow curved,
+wrapping native-anomaly ridges. Native unwrapping is a simpler option for a
+localized native-angle cloud and applies to other periodic coordinates as well.
+Do not pass <code class="docutils literal notranslate"><span class="pre">--unwrap-parameter</span> <span class="pre">meanPerAno</span></code> with effective-phase puffing; the
+pipeline skips that angle automatically when effective-phase mode is active.
+Other native periodic coordinates can still be unwrapped. Neither option changes
+physical priors or waveform reference frequencies.</p>
+<p>Keep periodic unwrapping opt-in until representative likelihood and posterior
+recovery tests support changing the default. Recorded-grid proposal replays test
+survival, geometry, and metadata preservation; they do not measure the likelihood
+of new proposals or establish posterior accuracy.</p>
+</section>
+<section id="diagnostic-evaluation-identity">
+<h2>Diagnostic evaluation identity<a class="headerlink" href="#diagnostic-evaluation-identity" title="Link to this heading"></a></h2>
+<p>Puff-health likelihood matching uses all physical masses and Cartesian spin
+components, with a float32 serialization allowance for XML round trips. An
+unevaluated nearby point does not inherit another point’s likelihood merely
+because the overall grid is broad. Standard 13-column and eccentric 15-column
+evaluation layouts are supported; unknown extra intrinsic columns are refused
+rather than interpreted as likelihoods.</p>
+<p>Main and refinement <code class="docutils literal notranslate"><span class="pre">all.net</span></code> files are combined into
+<code class="docutils literal notranslate"><span class="pre">plots/diagnostic_reference_all.net</span></code> with identical rows removed, so a smaller
+refinement file cannot lose its likelihood peak to a larger main file. The
+campaign inputs are left untouched. Periodic exclusion distances retain the
+logarithmic chart for tidal coordinates; a zero-factor puff with a positive
+exclusion radius correctly leaves no surviving duplicate proposals.</p>
+</section>
 </section>
 
 
