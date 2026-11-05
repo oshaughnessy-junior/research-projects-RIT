@@ -38,14 +38,18 @@ at 10000, 20000 and 40000 alike, after 3 to 7 million completed draws. It grew
 faster than the A10 fit: 4021 MB at 6.7 million draws, where that fit predicts
 2492 MB.
 
-The image sets the growth. One 10-point group ran three times
-under each image on A100s (2026-11-04), including a swap of the two physical
-GPUs. Under CUDA 11.8 device memory grew 272 to 465 MB and host memory 466 to
-554 MB per million draws. Under CUDA 12.9 both stopped rising by the fourth
-point, near 1100 MB host and at most 1754 MB device. The images differ in one
-Python package, `cupy-cuda11x` against `cupy-cuda12x`, both 13.6.0. Which
-library holds the memory is not established. Records are in
-`image-control-20261104/` under the directory above.
+Growth needs the CUDA 11.8 image and code without the FFT batch limit of PR 527.
+The table above predates that limit. One 10-point group ran on A100s
+(2026-11-04), with growth in MB per million draws:
+
+| Image | FFT limit | Runs | Device growth | Host growth |
+|---|---|---|---|---|
+| CUDA 11.8 | no | 3 | 272 to 465 | 466 to 554 |
+| CUDA 12.9 | no | 3 | none after point 4 | none after point 4 |
+| CUDA 11.8 | yes | 2, device from 1 | 3 | 4 to 6 |
+
+Records are in `image-control-20261104/` and `q2fft-control-20261104/` under
+the directory above.
 
 ## What this adds
 
@@ -190,8 +194,9 @@ run's observations to the profile and logs any failure. The CLI does the same.
   unbiased subset (`--sampler-sequential-warmstart` help); the budget is the
   missing piece.
 - `slots` is an operator estimate.
-- A memory fit holds for one image. `survey` refuses a family change for an
-  observed class, because observations carry no image. Hand edits go unchecked.
+- A memory fit holds for one image and RIFT build. `survey` refuses a family
+  change for an observed class, because observations carry no image. Hand edits
+  go unchecked. After a build that changes memory use, remove the old observations.
 - Draws per second are assumed non-decreasing in n chunk.
 - A requirement that pins a class (`Capability == 6.1`) is ANDed with the plan
   and can match nothing. Drop such pins when using a profile.
