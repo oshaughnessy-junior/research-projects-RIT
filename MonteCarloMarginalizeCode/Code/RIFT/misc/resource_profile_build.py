@@ -35,6 +35,7 @@ __all__ = [
     "parse_inventory",
     "survey_pool",
     "summarize_inventory",
+    "observed_classes",
     "update_resources",
     "refresh_relative_speeds",
     "DEFAULT_CONSTRAINT",
@@ -151,7 +152,16 @@ def _image_label(manifest, capability):
     return manifest["fallback"]
 
 
-def update_resources(resources, devices, manifest=None, keep_slots=False):
+def observed_classes(directory, resources=None):
+    """Labels of the classes a profile directory holds observations for."""
+    chunks = [(resources or {}).get("observations")]
+    for name in sorted(glob.glob(os.path.join(directory, "observations", "*.yaml"))):
+        chunk = rp._load_yaml(name)
+        chunks.append(chunk.get("observations") if isinstance(chunk, dict) else chunk)
+    return {o.get("class") for chunk in chunks for o in chunk or []}
+
+
+def update_resources(resources, devices, manifest=None, keep_slots=False, observed=()):
     """Merge a survey into a ``resources.yaml`` mapping.  Returns (resources, report).
 
     A device an existing class describes updates that class's slots, unless
@@ -159,11 +169,13 @@ def update_resources(resources, devices, manifest=None, keep_slots=False):
     not see keep their entry and slots, and are reported: only the ratio of
     slots matters, so their slots may then be on another scale.  With a
     manifest, every class's memory family is the image selection gives it.
+    Observations carry no image, so a family change would hand a class in
+    ``observed`` evidence from another image: that raises.
     """
     data = dict(resources or {"version": 1})
     classes = [dict(c) for c in (data.get("classes") or [])]
     lookup = {"classes": [dict(c, **{"device names": c.get("device names") or []}) for c in classes]}
-    seen, added, moved, drivers = {}, [], [], {}
+    seen, added, moved, stale, drivers = {}, [], [], [], {}
     for device in devices:
         label = rp.classify_device(lookup, device["name"], device["capability"], device["memory mb"])
         if label is None:
@@ -186,9 +198,16 @@ def update_resources(resources, devices, manifest=None, keep_slots=False):
             c["slots"] = seen[c["label"]]
         image = _image_label(manifest, float(c["capability"][0]))
         if image is not None and c.get("memory family") != image:
+            if c["label"] in observed:
+                stale.append("{}: {} to {}".format(c["label"], c.get("memory family"), image))
             if c.get("memory family") is not None:
                 moved.append("{}: {} to {}".format(c["label"], c["memory family"], image))
             c["memory family"] = image
+    if stale:
+        raise rp.ResourceProfileError(
+            "memory family would change for classes with observations ({}). Remove those "
+            "observations, or set the family in resources.yaml if they are from that "
+            "image.".format("; ".join(stale)))
     data["classes"] = classes
     return data, {"added": added, "image moved": moved, "seen": seen,
                   "absent": [c["label"] for c in classes if c["label"] not in seen],
@@ -279,7 +298,7 @@ def check_built_run(rundir, plan):
     built = rp.normalize_workload(workload_from_arguments(arguments, None))
     planned = rp.normalize_workload(plan["workload"])
     differences = ["{}: planned {}, built {}".format(key, planned[key], built[key])
-                   for key in rp.SIGNATURE_KEYS + ("n chunk",) if planned[key] != built[key]]
+                   for key in rp.SIGNATURE_KEYS + ("n chunk", "n eff") if planned[key] != built[key]]
     missing = [flag for flag in NOLOOP_FLAGS if flag not in arguments]
     if missing:
         differences.append("ILE misses {}: profile evidence is for NoLoop".format(" ".join(missing)))

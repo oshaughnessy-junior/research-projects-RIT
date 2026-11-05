@@ -68,7 +68,8 @@ def _survey(opts):
     if not devices and not existing:
         raise resource_profile.ResourceProfileError("survey found no GPUs and there is no profile to keep")
     manifest = load_container_manifest(opts.manifest) if opts.manifest else None
-    data, report = build.update_resources(existing, devices, manifest, keep_slots=opts.keep_slots)
+    data, report = build.update_resources(existing, devices, manifest, keep_slots=opts.keep_slots,
+                                          observed=build.observed_classes(opts.profile, existing))
     os.makedirs(opts.profile, exist_ok=True)
     report["inventory"] = build.save_inventory(os.path.join(opts.profile, "surveys"), rows, devices)
     build.write_resources(main, data)

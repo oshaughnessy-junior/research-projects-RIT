@@ -190,8 +190,8 @@ run's observations to the profile and logs any failure. The CLI does the same.
   unbiased subset (`--sampler-sequential-warmstart` help); the budget is the
   missing piece.
 - `slots` is an operator estimate.
-- A memory fit describes a card under one image. A class moved to another image
-  needs a new `memory family` and new samples.
+- A memory fit holds for one image. `survey` refuses a family change for an
+  observed class, because observations carry no image. Hand edits go unchecked.
 - Draws per second are assumed non-decreasing in n chunk.
 - A requirement that pins a class (`Capability == 6.1`) is ANDed with the plan
   and can match nothing. Drop such pins when using a profile.

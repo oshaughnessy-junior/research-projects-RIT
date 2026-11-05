@@ -127,6 +127,52 @@ def test_survey_keeps_absent_classes_and_their_slots():
     assert data["policy"] == {"timing quantile": 0.8}
 
 
+@pytest.mark.parametrize("family", ["old", None])
+def test_survey_refuses_a_new_image_for_a_class_with_observations(family):
+    entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1}
+    if family:
+        entry["memory family"] = family
+    resources = {"version": 1, "classes": [entry]}
+    with pytest.raises(rp.ResourceProfileError, match="a10"):
+        build.update_resources(resources, _devices(), MANIFEST, observed={"a10"})
+    data, _ = build.update_resources(resources, _devices(), MANIFEST, observed={"other"})
+    assert next(c for c in data["classes"] if c["label"] == "a10")["memory family"] == "legacy"
+
+
+def test_survey_keeps_a_class_with_observations_on_its_image():
+    entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1,
+             "memory family": "legacy"}
+    _, report = build.update_resources({"version": 1, "classes": [entry]}, _devices(), MANIFEST, observed={"a10"})
+    assert report["image moved"] == []
+
+
+def test_observed_classes_reads_every_form_of_observation_file(tmp_path):
+    (tmp_path / "observations").mkdir()
+    (tmp_path / "observations" / "a.yaml").write_text(yaml.safe_dump({"observations": [{"class": "a"}]}))
+    (tmp_path / "observations" / "b.yaml").write_text(yaml.safe_dump([{"class": "b"}]))
+    assert build.observed_classes(str(tmp_path), {"observations": [{"class": "c"}]}) == {"a", "b", "c"}
+    assert build.observed_classes(str(tmp_path / "none")) == set()
+
+
+def test_cli_survey_will_not_move_observed_evidence_to_a_new_image(tmp_path):
+    profile = tmp_path / "profile"
+    (profile / "observations").mkdir(parents=True)
+    entry = {"label": "a10", "capability": [8.6, 8.7], "memory mb": 20000, "device names": ["A10"], "slots": 1,
+             "memory family": "old"}
+    text = yaml.safe_dump({"version": 1, "classes": [entry]})
+    (profile / "resources.yaml").write_text(text)
+    (profile / "observations" / "a.yaml").write_text(yaml.safe_dump({"observations": [{"class": "a10"}]}))
+    (tmp_path / "inventory.txt").write_text("\n".join(ROWS))
+    (tmp_path / "manifest.yaml").write_text(yaml.safe_dump(MANIFEST))
+    env = dict(os.environ, PYTHONPATH=CODE + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    done = subprocess.run([sys.executable, os.path.join(CODE, "bin", "util_RIFT_resource_profile.py"), "survey",
+                           str(profile), "--inventory", str(tmp_path / "inventory.txt"),
+                           "--manifest", str(tmp_path / "manifest.yaml")],
+                          env=env, stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
+    assert done.returncode != 0 and "a10" in done.stderr
+    assert (profile / "resources.yaml").read_text() == text
+
+
 def test_survey_updates_a_described_class_unless_told_to_keep():
     entry = {"label": "pascal", "capability": [6.1, 7.0], "memory mb": 3900, "slots": 194, "device names": ["1050"]}
     data, report = build.update_resources({"version": 1, "classes": [entry]}, _devices())
@@ -212,6 +258,7 @@ def test_check_built_run_accepts_what_was_planned(tmp_path):
 
 @pytest.mark.parametrize("extra, kwargs, word", [
     (("--q-time-pregrid-factor", "4"), {}, "q pregrid factor"), (("--n-chunk", "20000"), {}, "n chunk"),
+    (("--n-eff", "1000"), {}, "n eff"),
     ((), {"memory": 1000}, "request_memory"), ((), {"require": "other"}, "require_gpus")])
 def test_check_built_run_finds_what_another_key_changed(tmp_path, extra, kwargs, word):
     plan = _built(tmp_path, *extra, **kwargs)

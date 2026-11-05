@@ -357,10 +357,11 @@ with pyyaml.
   Glidein cards come and go. Only slot ratios matter, so check reported classes
   against the others, or use `--keep-slots`.
 - With `--manifest`, each class's `memory family` is the image selection gives
-  it. A class moved to another image is reported. Its old observations still
-  apply, so collect new ones. A branch with `select_requirements` cannot be
-  evaluated here, so such a class keeps its family and `emit-probes` needs
-  `--image`.
+  it. A class moved to another image is reported. If it has observations, the
+  survey stops: they carry no image, so remove them and collect new ones, or
+  set the family by hand if they are from that image. A branch with
+  `select_requirements` cannot be evaluated here, so such a class keeps its
+  family and `emit-probes` needs `--image`.
 - It leaves out slots a run cannot reach: START opens with a job-side opt-in
   (`TARGET.SGNL_GPU =?= true`, the SPIIR flag) or is plain `false`. Use
   `--constraint` for a pool that spells this differently. `emit-probes` never
