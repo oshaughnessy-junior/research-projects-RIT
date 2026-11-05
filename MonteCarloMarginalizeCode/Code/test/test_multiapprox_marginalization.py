@@ -1059,6 +1059,94 @@ def test_model_aware_unify_scripts_fail_closed(multiapprox_rundir):
         assert not re.search(r"else\s+cat ", text)
 
 
+# --------------------------------------------------------------------------
+# a model name that is a prefix of another
+# --------------------------------------------------------------------------
+#
+# Real pairs exist: IMRPhenomPv2 and IMRPhenomPv2_NRTidal, SEOBNRv4 and
+# SEOBNRv4_ROM.  One shared grid point, with unequal replica counts so that the
+# marginalized value differs from a flat pool.
+
+PREFIX_PAIR_LNL = {"IMRPhenomPv2": 100.0, "IMRPhenomPv2_NRTidal": 104.0}
+PREFIX_PAIR_REPLICAS = {"IMRPhenomPv2": 2, "IMRPhenomPv2_NRTidal": 1}
+
+
+def _sub_arguments(path):
+    return re.search(r'^arguments\s*=\s*"(.*)"$', Path(path).read_text(), re.M).group(1)
+
+
+def _expand_macros(text, macros):
+    return re.sub(r"\$\((\w+)\)", lambda m: macros[m.group(1)], text)
+
+
+@pytest.fixture(scope="module")
+def prefix_pair_rundir(tmp_path_factory):
+    """Build a prefix-pair DAG and place each composite where join.sub writes it."""
+    pytest.importorskip("RIFT.lalsimutils")
+    rundir = tmp_path_factory.mktemp("multiapprox_prefix")
+    (rundir / "args_ile.txt").write_text(
+        "X --n-eff 20 --time-marginalization --vectorized --gpu --force-xpy "
+        "--approx placeholder\n")
+    (rundir / "args_test.txt").write_text("X --method lame --parameter mc\n")
+    (rundir / "args_cip_list.txt").write_text(
+        "2 --no-plots --fit-method rf --parameter mc --n-output-samples 5\n")
+    grid = _run(["-c",
+                 "import RIFT.lalsimutils as u\n"
+                 "p=u.ChooseWaveformParams(); p.m1=30*u.lsu_MSUN; p.m2=20*u.lsu_MSUN\n"
+                 "u.ChooseWaveformParams_array_to_xml([p],'proposed-grid')\n"], rundir)
+    if grid.returncode:
+        pytest.skip("cannot build a seed grid: {}".format(grid.stderr[-400:]))
+    cmd = [BUILDER, "--input-grid", "proposed-grid.xml.gz",
+           "--ile-exe", str(BIN / "integrate_likelihood_extrinsic_batchmode"),
+           "--ile-args", str(rundir / "args_ile.txt"),
+           "--cip-args-list", str(rundir / "args_cip_list.txt"),
+           "--test-args", str(rundir / "args_test.txt"),
+           "--n-samples-per-job", "2",
+           "--request-memory-CIP", "4096", "--request-memory-ILE", "4096",
+           "--working-directory", str(rundir),
+           "--n-iterations", "2", "--n-copies", "1",
+           "--last-iteration-extrinsic", "--last-iteration-extrinsic-nsamples", "4"]
+    for model in PREFIX_PAIR_LNL:
+        cmd += ["--approx", model]
+    build = _run(cmd, rundir)
+    assert build.returncode == 0, build.stdout[-1500:] + build.stderr[-1500:]
+
+    jobs, macros, _ = _dag_facts(rundir)
+    target = _sub_arguments(rundir / "join.sub").split()[1]
+    joins = [node for node, sub in jobs.items() if Path(sub).name == "join.sub"]
+    assert len(joins) == 2 * len(PREFIX_PAIR_LNL)
+    for node in joins:
+        model = macros[node]["macroapprox"]
+        _composite(_expand_macros(target, macros[node]) + ".composite",
+                   [_row(10., 8., PREFIX_PAIR_LNL[model])] * PREFIX_PAIR_REPLICAS[model])
+    return rundir
+
+
+@pytest.mark.parametrize("model", list(PREFIX_PAIR_LNL))
+def test_per_model_net_excludes_a_model_whose_name_extends_it(prefix_pair_rundir, model):
+    """The terminal CIP fits this net, so a foreign row changes that model's
+    posterior and evidence while every job still succeeds."""
+    jobs, macros, _ = _dag_facts(prefix_pair_rundir)
+    node = next(n for n, sub in jobs.items()
+                if Path(sub).name == "unify_model.sub" and macros[n]["macroapprox"] == model)
+    pattern = _expand_macros(_sub_arguments(prefix_pair_rundir / "unify_model.sub"), macros[node])
+    run = subprocess.run([str(prefix_pair_rundir / "unify_model.sh"), pattern],
+                         cwd=str(prefix_pair_rundir), env=_env(), text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert run.returncode == 0, run.stderr
+    assert _lnL_column(run.stdout) == pytest.approx([PREFIX_PAIR_LNL[model]], abs=1e-9)
+
+
+def test_marginalized_net_keeps_a_prefix_pair_as_two_models(prefix_pair_rundir):
+    """The lazy regex must stop at _consolidated, not at the first underscore."""
+    run = subprocess.run([str(prefix_pair_rundir / "unify.sh")],
+                         cwd=str(prefix_pair_rundir), env=_env(), text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert run.returncode == 0, run.stderr
+    expected = np.log(np.mean(np.exp(list(PREFIX_PAIR_LNL.values()))))
+    assert _lnL_column(run.stdout) == pytest.approx([expected], abs=1e-9)
+
+
 def test_cat_job_is_model_scoped_at_runtime(multiapprox_rundir):
     """Each cat node must search only its model's terminal ILE directory."""
     cat_sub = (multiapprox_rundir / "cat.sub").read_text()

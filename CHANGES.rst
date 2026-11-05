@@ -20,6 +20,9 @@ development tree is rift_O4d; PRs refer to oshaughn/research-projects-RIT.
      repeats that line as a fixed fit.  BasicIteration still stops with IndexError on such a
      list.  BasicIteration and create_event_nr_pipeline_with_cip DAGs are unchanged
      (fork PR #525).
+   - Anchor the multi-approximant per-model unify glob at _consolidated_.  It also matched models
+     whose name extends the model's own (IMRPhenomPv2, IMRPhenomPv2_NRTidal), so the shorter model's
+     terminal CIP fit both.  Other model pairs do not change (fork PR #526).
 
    - (rc0) O4d base refresh: modern Python/numpy support, portable GPU execution, generic workflow
      backends, hyperpipe and simulation-manager support; distance-likelihood export, parsimonious

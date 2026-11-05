@@ -879,7 +879,9 @@ unify_job.write_sub_file()
 ##   Per-model unify, for the terminal forked CIP.  No --model-group-regex:
 ##   within one model the evaluations ARE replicas of one quantity, so the flat
 ##   ntot-weighted pool is the correct combination.
-unify_model_job, unify_model_job_name = dag_utils.write_unify_sub_simple(tag='unify_model',log_dir='',arg_str=clean_digits_args, base=opts.working_directory, target=opts.working_directory+'/approx_$(macroapprox)_all.net',universe=local_worker_universe,script_name='unify_model.sh',glob_pattern='approx_$(macroapprox)_*.composite',fail_on_error=True)
+##   The glob names _consolidated_: approx_<A>_*.composite also matches a model
+##   whose name extends A (IMRPhenomPv2 and IMRPhenomPv2_NRTidal).
+unify_model_job, unify_model_job_name = dag_utils.write_unify_sub_simple(tag='unify_model',log_dir='',arg_str=clean_digits_args, base=opts.working_directory, target=opts.working_directory+'/approx_$(macroapprox)_all.net',universe=local_worker_universe,script_name='unify_model.sh',glob_pattern='approx_$(macroapprox)_consolidated_*.composite',fail_on_error=True)
 unify_model_job.add_condor_cmd("initialdir",opts.working_directory)
 unify_model_job.set_log_file(opts.working_directory+"/approx_$(macroapprox)_iteration_$(macroiteration)_con/logs/unifymodel-$(cluster)-$(process).log")
 unify_model_job.set_stderr_file(opts.working_directory+"/approx_$(macroapprox)_iteration_$(macroiteration)_con/logs/unifymodel-$(cluster)-$(process).err")
