@@ -7,11 +7,14 @@ set -euo pipefail
 # production rather than a project on disk, so it lives outside asimov_integration/.
 # It still needs asimov importable, and this is the only lane that installs it, so run
 # it here: otherwise the suite is never invoked and the behaviour can regress while the
-# required checks stay green.
+# required checks stay green.  test_resource_profile.py tests the planner that
+# scheduler.resource profile drives; it needs pyyaml, not asimov.
 python -m pytest -q \
     MonteCarloMarginalizeCode/Code/test/asimov_integration \
     MonteCarloMarginalizeCode/Code/test/test_asimov_compatibility.py \
     MonteCarloMarginalizeCode/Code/test/test_asimov_bootstrap_source.py \
     MonteCarloMarginalizeCode/Code/test/test_eccentric_bootstrap.py \
     MonteCarloMarginalizeCode/Code/test/test_asimov_rift_ledger_options.py \
-    MonteCarloMarginalizeCode/Code/test/test_pr249_puff.py
+    MonteCarloMarginalizeCode/Code/test/test_pr249_puff.py \
+    MonteCarloMarginalizeCode/Code/test/test_resource_profile.py \
+    MonteCarloMarginalizeCode/Code/test/test_resource_profile_build.py

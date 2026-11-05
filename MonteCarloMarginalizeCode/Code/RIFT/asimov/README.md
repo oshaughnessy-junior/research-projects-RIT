@@ -92,3 +92,23 @@ copied, not evolved between frequencies. When a nonzero eccentricity posterior
 supplies a reference frequency, including native Bilby waveform metadata, a
 mismatch with ``waveform.reference frequency`` is rejected. Conversion errors
 stop the build instead of proceeding without a valid bootstrap grid.
+
+### Resource profile (opt-in)
+
+`scheduler: resource profile:` plans the ILE GPU requirement, points per
+worker and host memory from a site record of GPU classes and past runs:
+
+```yaml
+scheduler:
+  resource profile:
+    path: /home/pe.o4/rift-resources     # file, or directory with resources.yaml
+    workload label: bbh-loud             # selects draws-per-point records
+    harvest: true                        # append this run's observations on completion
+    policy: {worker wall target hours: 3}
+```
+
+ILE n chunk must be pinned (`--n-chunk` in `sampler: ile: manual extra args`,
+`internal-ile-n-chunk`, or `resource profile: n chunk`). A ledger
+`jobs per worker` caps the planned value. The plan is written to
+`resource-plan.json` in the run directory. Rule and schema:
+`RIFT/misc/DESIGN_resource_profile.md`.

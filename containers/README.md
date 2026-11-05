@@ -1,7 +1,7 @@
 # RIFT containers
 
 This directory holds the multi-architecture container build and the "container
-family" deployment mechanism. It has three related pieces:
+family" deployment mechanism. It has four related pieces:
 
 1. **Multi-target build** — build a *family* of RIFT containers (different base
    image + cupy/CUDA variant, targeting different GPU compute capabilities) from
@@ -12,6 +12,8 @@ family" deployment mechanism. It has three related pieces:
 3. **Survey + warmup scans** — survey a target Condor GPU pool and emit
    representative CuPy/JAX warmup jobs for the image bands that pool actually
    uses.
+4. **Resource profile** — build the record of GPU classes and measured memory
+   and speed that the asimov resource plan reads.
 
 The top-level [`rift_container.def`](../rift_container.def) is unchanged and
 remains the default single-image build.
@@ -304,3 +306,65 @@ expresses the equivalent build compatibility in `pixi.toml`. Runtime packages
 remain unpinned, so the canaries still detect new dependency incompatibilities.
 The jobs are non-blocking (advisory): they track upstream changes outside any PR
 author's control.
+
+---
+
+## 5. Building a resource profile
+
+The asimov `scheduler: resource profile:` key plans ILE GPU matching, points per
+worker and host memory from a profile directory
+(`MonteCarloMarginalizeCode/Code/RIFT/misc/DESIGN_resource_profile.md`). These
+commands build it. They wrap `util_RIFT_resource_profile.py`, which is installed
+with RIFT.
+
+```sh
+# 1. Classes from the pool. Repeat --pool: one collector sees only part of it.
+containers/resource_profile.sh survey profile \
+  --manifest container_family/rift_container_family.generated.yaml \
+  --pool condor.igwn.org --pool LOCAL_COLLECTOR
+
+# 2. Observations from finished runs, planned or not.
+containers/resource_profile.sh harvest profile RUNDIR \
+  --output profile/observations/run1.yaml
+
+# 3. Measure classes with no evidence: one bounded ILE group on one card each.
+containers/resource_profile.sh emit-probes profile --case CASE_DIR \
+  --arguments ile.args --label bbh --out probes --classes a100-pcie-40gb \
+  --manifest container_family/rift_container_family.generated.yaml \
+  --python /opt/ir1/bin/python --points 10 --n-chunk 10000 --n-eff 10 \
+  --pools IGWN,CIT --accounting-group ligo.dev.o4.cbc.pe.rift
+for s in probes/*/probe.sub; do (cd "$(dirname "$s")" && condor_submit probe.sub); done
+
+# 4. Receipts into observations, then refresh relative speeds.
+containers/resource_profile.sh collect-probes profile --probes probes \
+  --output profile/observations/probes-YYYYMMDD.yaml
+containers/resource_profile.sh refresh-speeds profile
+```
+
+`CASE_DIR` holds the ILE inputs, and `ile.args` holds an ILE command line with
+paths relative to it. `emit-probes` refuses a command line that does not reach
+NoLoop. Set `--points` to a real worker size, because memory can grow with the
+draws a worker has run. Observations carry no `--n-max`, so use a separate
+`--label` for a probe capped below production. Set `PYTHON` to an interpreter
+with pyyaml.
+
+`survey` behaves as follows:
+
+- It counts physical GPUs by id, not slots. A slot advertises one device name,
+  so a machine with mixed cards counts as its advertised card.
+- A new device gets a class that matches that device name exactly.
+- A class the survey does not see keeps its entry and slots, and is reported.
+  Glidein cards come and go. Only slot ratios matter, so check reported classes
+  against the others, or use `--keep-slots`.
+- With `--manifest`, each class's `memory family` is the image selection gives
+  it. A class moved to another image is reported. If it has observations, the
+  survey stops: they carry no image, so remove them and collect new ones, or
+  set the family by hand if they are from that image. A branch with
+  `select_requirements` cannot be evaluated here, so such a class keeps its
+  family and `emit-probes` needs `--image`.
+- It leaves out slots a run cannot reach: START opens with a job-side opt-in
+  (`TARGET.SGNL_GPU =?= true`, the SPIIR flag) or is plain `false`. Use
+  `--constraint` for a pool that spells this differently. `emit-probes` never
+  sets such an attribute.
+- It rewrites `resources.yaml` without comments, keeps the last version as
+  `resources.yaml.previous`, and saves the inventory under `surveys/`.
