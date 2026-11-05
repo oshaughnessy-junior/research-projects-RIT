@@ -52,9 +52,11 @@ CODE="MonteCarloMarginalizeCode/Code"
 fail=0
 
 echo "== RIFT/likelihood/test_q_window_interp_gpu.py + test_noloop_gpu_stencils.py (real cupy) =="
-"${PYTHON_BIN}" -m pytest -q \
+PYTHONPATH="${CODE}${PYTHONPATH:+:$PYTHONPATH}" RIFT_TEST_GPU=1 "${PYTHON_BIN}" -m pytest -q \
   "${CODE}/RIFT/likelihood/test_q_window_interp_gpu.py" \
-  "${CODE}/RIFT/likelihood/test_noloop_gpu_stencils.py" || fail=1
+  "${CODE}/RIFT/likelihood/test_noloop_gpu_stencils.py" \
+  "${CODE}/test/test_q2_fft_memory.py" || fail=1
+PYTHONPATH="${CODE}${PYTHONPATH:+:$PYTHONPATH}" "${PYTHON_BIN}" "${CODE}/test/validate_q2_fft_lifetime.py" || fail=1
 
 echo "== GMM sampling on the device (real cupy; RIFT_REQUIRE_GPU refuses a missing device) =="
 # PYTHONPATH: test/ has no __init__.py, so without it pytest imports the INSTALLED RIFT.
