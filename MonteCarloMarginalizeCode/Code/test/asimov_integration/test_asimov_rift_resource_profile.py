@@ -237,3 +237,20 @@ def test_completion_harvest_writes_one_whole_file_and_skips_an_empty_one(monkeyp
     (written,) = (root / "observations").iterdir()
     assert written.suffix == ".yaml"
     assert len(resource_profile.load_resource_profile(str(root))["observations"]) == 3
+
+
+@pytest.mark.parametrize("rows, loads", [
+    ([{"label": "fast", "build": "/x.sif"}], True),
+    ([{"label": "fast", "build": None}], False),
+    ([{"label": "fast"}, {"label": "out", "build": "/x.sif"}], False)])
+def test_built_run_check_loads_a_relative_manifest_from_the_run_directory(monkeypatch, tmp_path, rows, loads):
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, _, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(tmp_path / "profile.yaml"), "workload label": "bbh"})
+    from RIFT.misc import container_manifest, resource_profile_build
+    seen = {}
+    monkeypatch.setenv("SINGULARITY_RIFT_IMAGE", "family.yaml")
+    monkeypatch.setattr(container_manifest, "load_container_manifest", lambda path: seen.update(path=path) or "family")
+    monkeypatch.setattr(resource_profile_build, "check_built_run",
+                        lambda rundir, plan, manifest: seen.update(manifest=manifest) or [])
+    pipe._check_resource_plan("/run/dir", {"admitted": ["fast"], "classes": rows})
+    assert seen == ({"path": "/run/dir/family.yaml", "manifest": "family"} if loads else {"manifest": None})

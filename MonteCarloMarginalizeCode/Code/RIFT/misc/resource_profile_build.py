@@ -308,10 +308,23 @@ def _literal_image(text):
                         text, re.M | re.I)
     if len(images) != 1:
         return None
-    sources = images[0].startswith("./") and [
-        name for name in re.findall(r'[^\s,"]+/' + re.escape(images[0][2:]) + r'(?=[\s,"]|$)', text, re.M)
-        if name != images[0]]
-    return sources[0] if sources else images[0]
+    if not images[0].startswith("./"):
+        return images[0]
+    lists = re.findall(r'^\s*(?:transfer_input_files|\S*TransferInput)\s*=\s*(.*)$', text, re.M | re.I)
+    sources = {name.strip(' "\\') for line in lists for name in line.split(",")}
+    sources = [name for name in sources if "/" in name and name.split("/")[-1] == images[0][2:]]
+    return sources[0] if len(sources) == 1 else images[0]
+
+
+def _names_image(launched, image):
+    """True if the text names ``image``, and no other image of that file name.
+
+    A selector can carry the bare name, which build_family.sh reuses across builds.
+    """
+    name = _image_basename(image)
+    text = re.sub(r"^\s*#.*$", "", launched, flags=re.M)
+    found = {t for t in re.findall(r"[^\s,\"'()\[\]=]+", text) if t.split("/")[-1] == name}
+    return bool(found) and found <= {image, name, "./" + name}
 
 
 def run_builds(rundir, override=None):
@@ -347,7 +360,7 @@ def _build_differences(text, launched, plan, manifest):
         if r["label"] not in plan["admitted"] or not r.get("build"):
             continue
         entry = class_container(manifest, r) if contained and image is None and manifest else None
-        if entry and _image_basename(entry["image"]) not in launched:
+        if entry and not _names_image(launched, entry["image"]):
             entry = None                               # the run did not come from this manifest
         built = image or (entry and entry["image"])
         if built != r["build"]:

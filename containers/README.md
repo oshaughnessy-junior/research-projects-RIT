@@ -349,7 +349,7 @@ draws a worker has run. Observations carry no `--n-max`, so use a separate
 with pyyaml.
 
 `collect-probes` and `harvest` stamp each observation with its build. `harvest`
-takes it from the run's plan, else its one image. A family run with no plan
+takes it from the run's one image, else its plan. A family run with no plan
 stays unstamped. Use `--build` for an overlay or a bare checkout. Asimov refuses
 a built run that does not give each admitted class its `build`, which includes
 those two cases: drop `build` from the class for them.

@@ -673,6 +673,42 @@ def test_transferred_image_is_known_by_its_source(tmp_path, url):
     assert build.check_built_run(str(tmp_path), plan)
 
 
+@pytest.mark.parametrize("extra", [
+    'arguments = "--psd /scratch/old/r.sif"',
+    "# transfer_input_files = /scratch/old/r.sif",
+    "transfer_output_remaps = \"x=/scratch/old/r.sif\""])
+def test_image_source_comes_only_from_the_transfer_list(extra):
+    text = 'MY.SingularityImage = "./r.sif"\n{}\ntransfer_input_files = a,osdf:///x/r.sif\n'.format(extra)
+    assert build._literal_image(text) == "osdf:///x/r.sif"
+
+
+@pytest.mark.parametrize("names", [
+    "osdf:///a/r.sif,osdf:///b/r.sif",                      # two sources: not a guess
+    "osdf:///a/xr.sif", "osdf:///a/r.sifx", "osdf:///a/rxsif"])
+def test_image_source_must_be_unique_and_exact(names):
+    text = 'MY.SingularityImage = "./r.sif"\ntransfer_input_files = {}\n'.format(names)
+    assert build._literal_image(text) == "./r.sif"
+
+
+def test_only_a_transferred_image_looks_for_a_source():
+    text = "container_image = /x/r.sif\ntransfer_input_files = osdf:///y/r.sif\n"
+    assert build._literal_image(text) == "/x/r.sif"
+
+
+@pytest.mark.parametrize("text, expected", [
+    ('x ? "/cvmfs/rc14/m.sif" : "/cvmfs/d.sif"', True),
+    ('$$([x ? "m.sif" : "d.sif"])', True),
+    ('"./m.sif"', True),
+    ("IMAGE=/cvmfs/rc14/m.sif\n", True),
+    ('x ? "/cvmfs/rc13/m.sif" : "/cvmfs/d.sif"', False),
+    ('"m.sif" "osdf:///old/m.sif"', False),
+    ('"ultra-m.sif"', False),
+    ('"m.sif.old"', False),
+    ("# m.sif\n", False)])
+def test_family_guard_matches_whole_image_names(text, expected):
+    assert build._names_image(text, "/cvmfs/rc14/m.sif") is expected
+
+
 def test_class_container_splits_a_class_at_a_capability_max():
     top = {"label": "B", "image": "/b.sif", "cuda_capability_min": 7.0, "cuda_capability_max": 8.0,
            "select_requirements": None}
