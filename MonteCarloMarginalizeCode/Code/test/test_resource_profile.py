@@ -782,3 +782,129 @@ def test_thin_host_line_limits_the_worker(tmp_path):
     profile = rp.load_resource_profile(_write_profile(tmp_path, [observation]))
     (ceiling, reason), = rp._host_ceilings(profile, profile["classes"][2], rp.normalize_workload(WORKLOAD))
     assert ceiling == pytest.approx(6.4e6) and "extreme workers" in reason   # 12800 MB at 2000 MB per Mdraw
+
+
+def _success(label="legacy-16gb", samples=None, **extra):
+    fields = dict(_t(60), **({"memory samples": samples} if samples else {}))
+    return dict({"class": label, "outcome": "success", "workload": WORKLOAD}, **dict(fields, **extra))
+
+
+def _built_classes(**extra):
+    return [dict(CLASSES[1], **extra)]
+
+
+def _plan_row(tmp_path, observations, classes):
+    profile = rp.load_resource_profile(_write_profile(tmp_path, observations, classes=classes))
+    return rp.plan_resources(profile, WORKLOAD)["classes"][0]
+
+
+def test_class_with_no_build_plans_as_before_and_reports_its_evidence(tmp_path):
+    row = _plan_row(tmp_path, [_success(), _success(build="a.sif")], [CLASSES[1]])
+    assert row["build"] is None
+    assert row["evidence"] == {"used": 2, "set aside": 0, "unstamped used": 1, "builds used": ["a.sif"]}
+
+
+def test_memory_fit_needs_the_class_build(tmp_path):
+    old = _success(samples=_growing(500.0, 300.0), build="rc13.sif")
+    new = _success(build="rc14.sif")
+    row = _plan_row(tmp_path, [old, new], _built_classes(build="rc14.sif"))
+    assert row["evidence"]["set aside"] == 1 and row["evidence"]["builds used"] == ["rc14.sif"]
+    assert "300" not in row["memory"]
+    assert "300" in _plan_row(tmp_path, [old, new], _built_classes(build="rc13.sif"))["memory"]
+
+
+def test_family_fit_needs_the_class_build(tmp_path):
+    other = dict(CLASSES[2], build="rc13.sif")
+    old = _success("modern-24gb", samples=_growing(500.0, 300.0), build="rc13.sif")
+    row = _plan_row(tmp_path, [old, _success(build="rc14.sif")], _built_classes(build="rc14.sif") + [other])
+    assert "family" not in row["memory"] and row["evidence"]["set aside"] == 1
+
+
+def test_unstamped_observations_are_set_aside_unless_the_class_names_their_build(tmp_path):
+    with pytest.raises(rp.ResourceProfileError, match="1 observations of other builds set aside"):
+        _plan_row(tmp_path, [_success()], _built_classes(build="rc14.sif"))
+    row = _plan_row(tmp_path, [_success()], _built_classes(**{"build": "rc13.sif", "unstamped build": "rc13.sif"}))
+    assert row["evidence"]["used"] == 1 and row["evidence"]["unstamped used"] == 1
+    # the next rebuild leaves them behind with no further edit
+    with pytest.raises(rp.ResourceProfileError, match="set aside"):
+        _plan_row(tmp_path, [_success()], _built_classes(**{"build": "rc14.sif", "unstamped build": "rc13.sif"}))
+
+
+@pytest.mark.parametrize("failed_build, capped", [("rc13.sif", False), ("rc14.sif", True)])
+def test_failure_caps_only_its_own_build(tmp_path, failed_build, capped):
+    crash = {"class": "legacy-16gb", "outcome": "crash", "workload": WORKLOAD, "failure draws": [9.5e6],
+             "build": failed_build}
+    row = _plan_row(tmp_path, [_success(build="rc14.sif"), crash], _built_classes(build="rc14.sif"))
+    assert ("crash on" in row["memory"]) is capped
+
+
+def test_host_request_ignores_other_builds(tmp_path):
+    host = [[1e6 * (i + 1), 1000.0, 1000.0 + 900.0 * (i + 1)] for i in range(8)]
+    flat = [[1e6 * (i + 1), 1000.0, 1000.0] for i in range(8)]
+    observations = [_success(samples=host, build="rc13.sif", **{"host memory mb": 8000}),
+                    _success(samples=flat, build="rc14.sif")]
+    profile = rp.load_resource_profile(_write_profile(tmp_path, observations, classes=_built_classes(build="rc14.sif")))
+    assert rp.plan_resources(profile, WORKLOAD)["request memory mb"] == 2000
+
+
+def test_timing_transfers_across_builds(tmp_path):
+    old = _success(build="rc13.sif")
+    new = dict(_success(build="rc14.sif"), **{"draws per point": [], "draws per second": []})
+    row = _plan_row(tmp_path, [old, new], _built_classes(build="rc14.sif"))
+    assert row["draws per second"] == DPP / 60 and "excluded" not in row
+
+
+@pytest.mark.parametrize("field", ["build", "unstamped build"])
+def test_class_build_must_be_text(tmp_path, field):
+    with pytest.raises(rp.ResourceProfileError, match=field):
+        rp.load_resource_profile(_write_profile(tmp_path, classes=_built_classes(**{field: 3})))
+
+
+def test_observation_build_must_be_text(tmp_path):
+    with pytest.raises(rp.ResourceProfileError, match="observation build"):
+        rp.load_resource_profile(_write_profile(tmp_path, [_success(build=3)]))
+
+
+@pytest.mark.parametrize("builds, expected", [(None, None), ("one.sif", "one.sif"),
+                                              ({"legacy-16gb": "two.sif"}, "two.sif"), ({"other": "x"}, None)])
+def test_harvest_stamps_the_build(tmp_path, builds, expected):
+    profile = rp.load_resource_profile(_write_profile(tmp_path))
+    run = tmp_path / "run"
+    _ile(run, "ILE-50-6-0", "Tesla T4", 75, AD_LOG.format(minutes=5, memory=1, rc=0),
+         outputs=["CME_out-50-6-0.xml_0_.dat"])
+    observations, _ = rp.harvest_rundir(str(run), profile, WORKLOAD, builds=builds)
+    assert observations[0].get("build") == expected
+
+
+def test_host_values_of_another_build_do_not_set_the_request(tmp_path):
+    """No fit either way: a fit-only test would pass without the filters on the fallback paths."""
+    flat = [[1e6, 1000.0, None]] * 8 + [[3e6, 1000.0, None]]
+    old = _success(samples=[[1e6, None, 3000.0], [3e6, None, 9000.0]], build="rc13.sif",
+                   **{"host memory mb": 8000})
+    profile = rp.load_resource_profile(_write_profile(
+        tmp_path, [old, _success(samples=flat, build="rc14.sif")], classes=_built_classes(build="rc14.sif")))
+    assert rp.plan_resources(profile, WORKLOAD)["request memory mb"] is None
+
+
+def test_evidence_counts_only_what_bears_on_the_class(tmp_path):
+    peer = dict(CLASSES[2], **{"memory family": None, "build": "rc14.sif"})
+    mine = dict(CLASSES[1], **{"memory family": None, "build": "rc14.sif"})
+    profile = rp.load_resource_profile(_write_profile(tmp_path, [
+        _success("modern-24gb", build="rc14.sif"),                # no family: cannot vouch
+        _success("modern-24gb", build="rc13.sif"),
+        {"class": "legacy-16gb", "outcome": "failure", "workload": WORKLOAD, "build": "rc14.sif"},
+        {"class": "legacy-16gb", "outcome": "success", "workload": WORKLOAD, "build": "rc14.sif",
+         "draws per second": [100.0]},                            # timing only
+        _success(build="rc14.sif", workload=dict(WORKLOAD, lmax=2)),
+        _success(build="rc14.sif")], classes=[mine, peer]))
+    assert rp._build_evidence(profile, profile["classes"][0], rp.normalize_workload(WORKLOAD)) == {
+        "used": 1, "set aside": 0, "unstamped used": 0, "builds used": ["rc14.sif"]}
+
+
+def test_harvest_stamps_failures_too(tmp_path):
+    profile = rp.load_resource_profile(_write_profile(tmp_path))
+    run = tmp_path / "run"
+    _ile(run, "ILE-10-5-0", "NVIDIA GeForce GTX 1050 Ti", 61, AD_LOG.format(minutes=5, memory=900, rc=1),
+         err="cupy.cuda.memory.OutOfMemoryError: out of memory allocating")
+    observations, _ = rp.harvest_rundir(str(run), profile, WORKLOAD, builds="one.sif")
+    assert observations[0]["outcome"] == "memory-failure" and observations[0]["build"] == "one.sif"

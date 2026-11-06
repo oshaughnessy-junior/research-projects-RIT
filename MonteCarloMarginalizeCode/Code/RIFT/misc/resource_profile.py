@@ -24,9 +24,12 @@ monitors never edit the same file).
         slots: 400                # GPUs a run can typically hold at once
         relative speed: 0.3       # optional; transfers draws per second between classes
         memory family: cuda118    # optional; classes sharing an image share a memory fit
+        build: /cvmfs/x/rc14.sif  # optional; what the class runs now: memory evidence must match
+        unstamped build: /cvmfs/x/rc13.sif  # optional; the build of its observations with none
     observations:
       - class: pascal-4gb
         outcome: memory-failure   # success | memory-failure | crash | failure
+        build: /cvmfs/x/rc14.sif  # optional; image path, or a name for a bare checkout
         workload: {label: bbh-loud, n chunk: 40000, n eff: 20, sample rate: 4096,
                    q pregrid factor: 2, ifos: 2, approximant: IMRPhenomXPHM,
                    lmax: 4, time resampling: 32768}
@@ -180,8 +183,9 @@ def _validate_class(entry, path):
         raise ResourceProfileError("{}: class {} memory mb max is below memory mb".format(path, label))
     if entry.get("relative speed") == 0:
         raise ResourceProfileError("{}: class {} relative speed must be positive".format(path, label))
-    if entry.get("memory family") is not None and not isinstance(entry["memory family"], str):
-        raise ResourceProfileError("{}: class {} memory family must be a string".format(path, label))
+    for key in ("memory family", "build", "unstamped build"):
+        if entry.get(key) is not None and not isinstance(entry[key], str):
+            raise ResourceProfileError("{}: class {} {} must be a string".format(path, label, key))
     names = entry.get("device names") or []
     if isinstance(names, str) or not all(isinstance(n, str) for n in names):
         raise ResourceProfileError("{}: class {} device names must be a list of regexes".format(path, label))
@@ -204,6 +208,8 @@ def _validate_observation(entry, labels, path):
             path, entry.get("class")))
     if entry.get("outcome") not in OUTCOMES:
         raise ResourceProfileError("{}: observation outcome must be one of {}".format(path, OUTCOMES))
+    if entry.get("build") is not None and not isinstance(entry["build"], str):
+        raise ResourceProfileError("{}: observation build must be a string".format(path))
     obs = dict(entry)
     obs["workload"] = normalize_workload(entry.get("workload") or {})
     host = entry.get("host memory mb")
@@ -279,6 +285,11 @@ def load_resource_profile(path, policy_overrides=None):
         if not isinstance(chunk, list):
             raise ResourceProfileError("{}: expected a list of observations".format(name))
         observations += [_validate_observation(o, labels, name) for o in chunk]
+    by_label = {c["label"]: c for c in classes}
+    for o in observations:
+        if o.get("build") is None:
+            o["unstamped"] = True
+            o["build"] = by_label[o["class"]].get("unstamped build")
     return {
         "source": path,
         "files": {name: _sha256(name) for name in [main] + extra},
@@ -355,6 +366,31 @@ def _same_family(a, b):
     return a.get("memory family") == b.get("memory family")
 
 
+def _same_build(o, c):
+    """True if observation ``o`` is memory evidence for class ``c``.
+
+    Memory follows the image and the RIFT in it; a class with no build takes everything.
+    """
+    return c.get("build") is None or o.get("build") == c["build"]
+
+
+def _build_evidence(profile, c, workload):
+    """What the build rule did to a class's memory evidence, for the plan record."""
+    by_label = {k["label"]: k for k in profile["classes"]}
+
+    def bears_on(o):
+        k = by_label[o["class"]]
+        if o["outcome"] == "success":
+            return _vouches_for(k, c) and bool(o["memory samples"] or o["draws per point"])
+        return o["outcome"] in BLOCKING_OUTCOMES and _same_family(k, c) and k["memory mb"] >= c["memory mb"]
+
+    pool = [o for o in profile["observations"] if _same_signature(o["workload"], workload) and bears_on(o)]
+    used = [o for o in pool if _same_build(o, c)]
+    return {"used": len(used), "set aside": len(pool) - len(used),
+            "unstamped used": sum(bool(o.get("unstamped")) for o in used),
+            "builds used": sorted({o["build"] for o in used if o.get("build")})}
+
+
 def _vouches_for(source, c):
     """True if a success on class ``source`` says anything about class ``c``.
 
@@ -391,7 +427,7 @@ def _memory_models(profile, c, workload, column):
         # Device memory follows the draws on one GPU; host memory holds all of a worker's.
         return [(sample[0] / (sample[3] if column == 1 else 1), sample[column]) for o in profile["observations"]
                 if o["outcome"] == "success" and keep(by_label[o["class"]])
-                and _same_signature(o["workload"], workload)
+                and _same_signature(o["workload"], workload) and _same_build(o, c)
                 for sample in o["memory samples"] if sample[column] is not None]
 
     found = []
@@ -436,7 +472,8 @@ def _draw_ceiling(profile, c, workload):
     by_label = {k["label"]: k for k in profile["classes"]}
     policy = profile["policy"]
     mem = c["memory mb"]
-    comparable = [o for o in profile["observations"] if _same_signature(o["workload"], workload)]
+    comparable = [o for o in profile["observations"]
+                  if _same_signature(o["workload"], workload) and _same_build(o, c)]
     reaches = [r for o in comparable if o["outcome"] == "success"
                and _vouches_for(by_label[o["class"]], c) and by_label[o["class"]]["memory mb"] <= mem
                for r in _worker_reaches(o)]
@@ -476,7 +513,7 @@ def _host_line(pairs):
 def _own_host_pairs(profile, c, workload):
     return sorted((s[0], s[2]) for o in profile["observations"]
                   if o["class"] == c["label"] and o["outcome"] == "success"
-                  and _same_signature(o["workload"], workload)
+                  and _same_signature(o["workload"], workload) and _same_build(o, c)
                   for s in o["memory samples"] if s[2] is not None)
 
 
@@ -563,7 +600,8 @@ def _host_request(profile, workload, admitted, by_label, draws):
     for r in admitted:
         fits = _memory_models(profile, by_label[r["label"]], workload, 2)
         own = [o for o in profile["observations"]
-               if o["class"] == r["label"] and _same_signature(o["workload"], workload)]
+               if o["class"] == r["label"] and _same_signature(o["workload"], workload)
+               and _same_build(o, by_label[r["label"]])]
         pairs = _own_host_pairs(profile, by_label[r["label"]], workload)
         if not (fits and pairs):  # a value with no draws would outweigh the fit at small workers
             needs += [float(o["host memory mb"]) for o in own if o.get("host memory mb") is not None]
@@ -610,8 +648,12 @@ def plan_resources(profile, workload, draws_per_point=None, jobs_per_worker_cap=
 
     rows, candidates = [], []
     for c in profile["classes"]:
-        row = {"label": c["label"], "memory mb": c["memory mb"], "slots": c.get("slots", 0)}
+        row = {"label": c["label"], "memory mb": c["memory mb"], "slots": c.get("slots", 0),
+               "capability": c["capability"], "build": c.get("build"),
+               "evidence": _build_evidence(profile, c, workload)}
         ceiling, row["memory"] = _draw_ceiling(profile, c, workload)
+        if ceiling is None and row["evidence"]["set aside"]:
+            row["memory"] += "; {} observations of other builds set aside".format(row["evidence"]["set aside"])
         rate, row["speed"] = _draw_rate(profile, c, workload)
         row["draws per second"] = rate
         row["max worker draws"] = ceiling
@@ -795,7 +837,7 @@ def _parse_condor_log(path):
     return out
 
 
-def harvest_rundir(rundir, profile, workload, source=None):
+def harvest_rundir(rundir, profile, workload, source=None, builds=None):
     """Observations for every ILE worker in ``rundir`` whose GPU matches a class.
 
     Returns (observations, skipped) where skipped counts workers with no GPU
@@ -808,6 +850,7 @@ def harvest_rundir(rundir, profile, workload, source=None):
     only) and MemoryUsage.
     Held-then-removed workers have no termination and are skipped; those held
     for host memory are counted apart, because the host fits never see them.
+    ``builds`` stamps the observations: one build, or a mapping of class to build.
     """
     workload = normalize_workload(workload)
     setup = float(profile["policy"]["worker setup seconds"])
@@ -891,4 +934,8 @@ def harvest_rundir(rundir, profile, workload, source=None):
             if log["wall"] > 0 and draws:
                 busy = max(log["wall"] - setup, 0.5 * log["wall"])
                 obs["draws per second"].append(sum(draws) / (busy * gpus))
+    for obs in grouped.values():
+        stamp = builds.get(obs["class"]) if isinstance(builds, dict) else builds
+        if stamp:
+            obs["build"] = stamp
     return list(grouped.values()), skipped

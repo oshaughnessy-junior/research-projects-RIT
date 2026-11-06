@@ -681,6 +681,24 @@ class Rift(Pipeline):
             "time resampling": pipeline.get("internal-ile-srate-time-resampling"),
         }
 
+    @staticmethod
+    def _ini_pseudo_pipe_setting(ini, key):
+        """A [rift-pseudo-pipe] setting of ``ini``, or None.
+
+        pseudo_pipe exports several of these into its own environment when the
+        inherited environment has no value, so the planner has to read the ini
+        to see what the builder will actually use.  ``key`` must be the only
+        spelling pseudo_pipe reads.
+        """
+        if not ini or not os.path.isfile(ini):
+            return None
+        settings = configparser.ConfigParser(interpolation=None)
+        settings.optionxform = str
+        settings.read(ini)
+        if not settings.has_section("rift-pseudo-pipe"):
+            return None
+        return settings["rift-pseudo-pipe"].get(key)
+
     def _apply_resource_profile(self, ini, dryrun=False):
         """Plan ILE matching from the resource profile; return (ini to build from, plan).
 
@@ -726,14 +744,9 @@ class Rift(Pipeline):
             raise PipelineException("Resource profile: {}".format(error),
                                     production=self.production.name) from error
         user = os.environ.get("RIFT_REQUIRE_GPUS")
-        if user is None and os.path.isfile(ini):
+        if user is None:
             # pseudo_pipe reads the ini requirement only when the environment has none.
-            settings_ini = configparser.ConfigParser(interpolation=None)
-            settings_ini.optionxform = str
-            settings_ini.read(ini)
-            if settings_ini.has_section("rift-pseudo-pipe"):
-                section = settings_ini["rift-pseudo-pipe"]
-                user = section.get("ile_require_gpus")   # the only spelling pseudo_pipe reads
+            user = self._ini_pseudo_pipe_setting(ini, "ile_require_gpus")
         plan["require gpus composed"] = (
             plan["require gpus"] if not user else "({}) && {}".format(user, plan["require gpus"]))
         self.logger.info("Resource plan: {} points per worker on {}; require_gpus {}".format(
@@ -754,10 +767,19 @@ class Rift(Pipeline):
 
     def _check_resource_plan(self, rundir, plan):
         """Refuse a built run whose ILE.sub does not carry the plan."""
-        from RIFT.misc import resource_profile, resource_profile_build
+        from RIFT.misc import container_manifest, resource_profile, resource_profile_build
         try:
-            differences = resource_profile_build.check_built_run(rundir, plan)
-        except resource_profile.ResourceProfileError as error:
+            image = os.environ.get("SINGULARITY_RIFT_IMAGE")
+            if image is None:
+                # The planned ini can carry the family the builder deployed.
+                image = self._ini_pseudo_pipe_setting(plan.get("ini"), "singularity_rift_image")
+            manifest = None
+            if container_manifest.is_container_manifest(image) and any(
+                    row.get("build") for row in plan.get("classes", ()) if row["label"] in plan["admitted"]):
+                # pseudo_pipe resolves a relative manifest from the run directory.
+                manifest = container_manifest.load_container_manifest(os.path.join(rundir, image))
+            differences = resource_profile_build.check_built_run(rundir, plan, manifest)
+        except (resource_profile.ResourceProfileError, container_manifest.ContainerManifestError) as error:
             differences = [str(error)]
         if differences:
             self.production.status = "stuck"
@@ -771,14 +793,15 @@ class Rift(Pipeline):
             if not settings or not settings.get("harvest"):
                 return
             rundir = self.production.rundir
-            from RIFT.misc import resource_profile
+            from RIFT.misc import resource_profile, resource_profile_build
             import yaml
             with open(os.path.join(rundir, "resource-plan.json")) as f:
                 plan = json.load(f)
             if not os.path.isdir(os.path.expanduser(settings["path"])):
                 raise ValueError("harvest needs a directory profile")
             profile = resource_profile.load_resource_profile(settings["path"], settings.get("policy"))
-            observations, skipped = resource_profile.harvest_rundir(rundir, profile, plan["workload"])
+            observations, skipped = resource_profile.harvest_rundir(
+                rundir, profile, plan["workload"], builds=resource_profile_build.run_builds(rundir))
             target = os.path.join(os.path.expanduser(settings["path"]), "observations")
             os.makedirs(target, exist_ok=True)
             name = "{}-{}-{}.yaml".format(self.production.event.name, self.production.name,
