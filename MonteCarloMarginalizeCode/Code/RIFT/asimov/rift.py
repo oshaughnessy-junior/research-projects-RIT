@@ -681,8 +681,7 @@ class Rift(Pipeline):
             "time resampling": pipeline.get("internal-ile-srate-time-resampling"),
         }
 
-    @staticmethod
-    def _ini_pseudo_pipe_setting(ini, key):
+    def _ini_pseudo_pipe_setting(self, ini, key):
         """A [rift-pseudo-pipe] setting of ``ini``, or None.
 
         pseudo_pipe exports several of these into its own environment when the
@@ -692,12 +691,21 @@ class Rift(Pipeline):
         """
         if not ini or not os.path.isfile(ini):
             return None
-        settings = configparser.ConfigParser(interpolation=None)
+        settings = configparser.ConfigParser()     # interpolates, as pseudo_pipe does
         settings.optionxform = str
-        settings.read(ini)
-        if not settings.has_section("rift-pseudo-pipe"):
-            return None
-        return settings["rift-pseudo-pipe"].get(key)
+        try:
+            settings.read(ini)
+            if not settings.has_section("rift-pseudo-pipe"):
+                return None
+            return settings["rift-pseudo-pipe"].get(key)
+        except configparser.Error as error:
+            raise PipelineException("Cannot read {}: {}".format(ini, error),
+                                    production=self.production.name) from error
+
+    def _family_image(self, ini):
+        """The image setting pseudo_pipe will use: the environment, else ``ini``."""
+        image = os.environ.get("SINGULARITY_RIFT_IMAGE")
+        return self._ini_pseudo_pipe_setting(ini, "singularity_rift_image") if image is None else image
 
     def _apply_resource_profile(self, ini, dryrun=False):
         """Plan ILE matching from the resource profile; return (ini to build from, plan).
@@ -720,15 +728,18 @@ class Rift(Pipeline):
         # check_built_run tests the result; this says why before any build.
         overrides = [key for key in (ile.get("condor commands") or {})
                      if re.sub(r"^(\+|my\.)|_", "", str(key).strip().lower()) in ("requestmemory", "requiregpus")]
-        image = os.environ.get("SINGULARITY_RIFT_IMAGE")
+        image = self._family_image(ini)
         if container_manifest.is_container_manifest(image):
-            # The builder runs in the event work_dir, so resolve a relative manifest there.
-            image = os.path.join(self.production.event.work_dir, image)
+            # pseudo_pipe resolves a relative manifest from the run directory, which
+            # does not exist yet, so normalize before testing the path.
+            rundir = self.production.rundir or os.path.join(
+                os.path.expanduser("~"), self.production.event.name, self.production.name)
+            image = os.path.normpath(os.path.join(os.path.abspath(rundir), image))
         if container_manifest.is_container_manifest(image) and os.path.isfile(image):
             try:
                 if container_manifest.has_ile_profiles(container_manifest.load_container_manifest(image)):
                     overrides.append("container manifest ile_exe/request_memory")
-            except container_manifest.ContainerManifestError:
+            except (container_manifest.ContainerManifestError, UnicodeDecodeError):
                 pass
         if overrides:
             raise PipelineException(
@@ -769,10 +780,7 @@ class Rift(Pipeline):
         """Refuse a built run whose ILE.sub does not carry the plan."""
         from RIFT.misc import container_manifest, resource_profile, resource_profile_build
         try:
-            image = os.environ.get("SINGULARITY_RIFT_IMAGE")
-            if image is None:
-                # The planned ini can carry the family the builder deployed.
-                image = self._ini_pseudo_pipe_setting(plan.get("ini"), "singularity_rift_image")
+            image = self._family_image(plan.get("ini"))
             manifest = None
             if container_manifest.is_container_manifest(image) and any(
                     row.get("build") for row in plan.get("classes", ()) if row["label"] in plan["admitted"]):

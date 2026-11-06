@@ -272,3 +272,60 @@ def test_built_run_check_reads_the_family_from_the_planned_ini(monkeypatch, tmp_
     pipe._check_resource_plan("/run/dir", {"admitted": ["fast"], "ini": str(planned_ini),
                                            "classes": [{"label": "fast", "build": "/x.sif"}]})
     assert seen == {"path": str(manifest), "manifest": "family"}
+
+
+@pytest.mark.parametrize("env, ini_image, refused", [
+    (None, "{profiled}", True),            # the ini alone names the family
+    (None, "../family.yaml", True),        # relative to the run directory, as in pseudo_pipe
+    (None, "family.yaml", False),          # not in the fresh run directory
+    (None, "%(base)s", True),              # pseudo_pipe interpolates
+    ("", "{profiled}", False),             # set but empty still wins
+    (None, "{plain}", False),
+    (None, None, False),
+    ("{plain}", "{profiled}", False),      # the environment wins, as in pseudo_pipe
+    ("{profiled}", "{plain}", True)])
+def test_override_refusal_finds_the_family_as_pseudo_pipe_does(monkeypatch, tmp_path, env, ini_image, refused):
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, _, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(tmp_path / "profile.yaml"), "workload label": "bbh"})
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
+    entry = {"label": "only", "image": "/x.sif", "cuda_capability_min": 6.1}
+    paths = {"plain": tmp_path / "plain.yaml", "profiled": tmp_path / "family.yaml"}
+    paths["plain"].write_text(yaml.safe_dump({"containers": [entry]}))
+    paths["profiled"].write_text(yaml.safe_dump({"containers": [dict(entry, request_memory=9000)]}))
+    if env is None:
+        monkeypatch.delenv("SINGULARITY_RIFT_IMAGE", raising=False)
+    else:
+        monkeypatch.setenv("SINGULARITY_RIFT_IMAGE", env.format(**paths))
+    ini = tmp_path / "rendered.ini"
+    ini.write_text("[rift-pseudo-pipe]\nbase={}\n".format(paths["profiled"])
+                   + ("singularity_rift_image={}\n".format(ini_image.format(**paths) if "%" not in ini_image else ini_image)
+                      if ini_image else ""))
+    if refused:
+        with pytest.raises(PipelineException, match="container manifest ile_exe/request_memory"):
+            pipe._apply_resource_profile(str(ini), dryrun=True)
+    else:
+        pipe._apply_resource_profile(str(ini), dryrun=True)
+
+
+def test_override_refusal_survives_a_missing_ini_and_an_undecodable_manifest(monkeypatch, tmp_path):
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, _, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(tmp_path / "profile.yaml"), "workload label": "bbh"})
+    monkeypatch.delenv("SINGULARITY_RIFT_IMAGE", raising=False)
+    pipe._apply_resource_profile(str(tmp_path / "absent.ini"), dryrun=True)
+    (tmp_path / "bad.yaml").write_bytes(b"\xff\xfe")
+    ini = tmp_path / "rendered.ini"
+    ini.write_text("[rift-pseudo-pipe]\nsingularity_rift_image={}\n".format(tmp_path / "bad.yaml"))
+    pipe._apply_resource_profile(str(ini), dryrun=True)
+
+
+@pytest.mark.parametrize("text", ["no section header\n", "[rift-pseudo-pipe]\na=1\na=2\n",
+                                  "[rift-pseudo-pipe]\nsingularity_rift_image=%(missing)s\n"])
+def test_unreadable_ini_is_a_pipeline_error(monkeypatch, tmp_path, text):
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, _, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(tmp_path / "profile.yaml"), "workload label": "bbh"})
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
+    monkeypatch.delenv("SINGULARITY_RIFT_IMAGE", raising=False)
+    ini = tmp_path / "rendered.ini"
+    ini.write_text(text)
+    with pytest.raises(PipelineException, match="Cannot read"):
+        pipe._apply_resource_profile(str(ini), dryrun=True)
