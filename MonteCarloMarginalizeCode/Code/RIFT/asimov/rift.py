@@ -731,10 +731,10 @@ class Rift(Pipeline):
         image = self._family_image(ini)
         if container_manifest.is_container_manifest(image):
             # pseudo_pipe resolves a relative manifest from the run directory, which
-            # does not exist yet, so normalize before testing the path.
+            # does not exist yet, so resolve the path before testing it.
             rundir = self.production.rundir or os.path.join(
                 os.path.expanduser("~"), self.production.event.name, self.production.name)
-            image = os.path.normpath(os.path.join(os.path.abspath(rundir), image))
+            image = os.path.realpath(os.path.join(os.path.expanduser(rundir), image))
         if container_manifest.is_container_manifest(image) and os.path.isfile(image):
             try:
                 if container_manifest.has_ile_profiles(container_manifest.load_container_manifest(image)):

@@ -329,3 +329,37 @@ def test_unreadable_ini_is_a_pipeline_error(monkeypatch, tmp_path, text):
     ini.write_text(text)
     with pytest.raises(PipelineException, match="Cannot read"):
         pipe._apply_resource_profile(str(ini), dryrun=True)
+
+
+@pytest.mark.parametrize("rundir, image, family", [
+    ("{root}/run", "../family.yaml", "{root}/family.yaml"),
+    ("run", "../family.yaml", "{root}/family.yaml"),                      # relative to the current directory
+    ("~/run", "../family.yaml", "{root}/home/family.yaml"),
+    (None, "../family.yaml", "{root}/home/GW150914/family.yaml"),         # the default run directory
+    ("{root}/link/run", "../../family.yaml", "{root}/real/family.yaml")])  # through a symlink
+def test_override_refusal_resolves_a_manifest_from_each_run_directory(monkeypatch, tmp_path, rundir, image, family):
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, production, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(tmp_path / "profile.yaml"), "workload label": "bbh"})
+    from asimov.pipeline import PipelineException     # after _pipe's skip guards
+    (tmp_path / "home" / "GW150914").mkdir(parents=True)
+    (tmp_path / "real" / "sub").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / "real" / "sub")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SINGULARITY_RIFT_IMAGE", image)
+    production.rundir = rundir.format(root=tmp_path) if rundir else None
+    pathlib.Path(family.format(root=tmp_path)).write_text(yaml.safe_dump(
+        {"containers": [{"label": "only", "image": "/x.sif", "cuda_capability_min": 6.1, "request_memory": 9000}]}))
+    with pytest.raises(PipelineException, match="container manifest ile_exe/request_memory"):
+        pipe._apply_resource_profile(str(tmp_path / "absent.ini"), dryrun=True)
+
+
+def test_plan_composes_the_ini_gpu_requirement_as_pseudo_pipe_reads_it(monkeypatch, tmp_path):
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, _, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(tmp_path / "profile.yaml"), "workload label": "bbh"})
+    monkeypatch.delenv("RIFT_REQUIRE_GPUS", raising=False)
+    monkeypatch.delenv("SINGULARITY_RIFT_IMAGE", raising=False)
+    ini = tmp_path / "rendered.ini"
+    ini.write_text("[rift-pseudo-pipe]\nile_require_gpus=(Slot %% 2 == 0)\n")
+    _, plan = pipe._apply_resource_profile(str(ini), dryrun=True)
+    assert plan["require gpus composed"].startswith("((Slot % 2 == 0)) && ")
