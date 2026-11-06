@@ -254,3 +254,21 @@ def test_built_run_check_loads_a_relative_manifest_from_the_run_directory(monkey
                         lambda rundir, plan, manifest: seen.update(manifest=manifest) or [])
     pipe._check_resource_plan("/run/dir", {"admitted": ["fast"], "classes": rows})
     assert seen == ({"path": "/run/dir/family.yaml", "manifest": "family"} if loads else {"manifest": None})
+
+
+def test_built_run_check_reads_the_family_from_the_planned_ini(monkeypatch, tmp_path):
+    """pseudo_pipe takes the family from the ini when the environment has none."""
+    (tmp_path / "profile.yaml").write_text(yaml.safe_dump(PROFILE))
+    pipe, _, _, _ = _pipe(monkeypatch, tmp_path, {"path": str(tmp_path / "profile.yaml"), "workload label": "bbh"})
+    from RIFT.misc import container_manifest, resource_profile_build
+    manifest = tmp_path / "family.yaml"
+    planned_ini = tmp_path / "planned.ini"
+    planned_ini.write_text("[rift-pseudo-pipe]\nsingularity_rift_image={}\n".format(manifest))
+    seen = {}
+    monkeypatch.delenv("SINGULARITY_RIFT_IMAGE", raising=False)
+    monkeypatch.setattr(container_manifest, "load_container_manifest", lambda path: seen.update(path=path) or "family")
+    monkeypatch.setattr(resource_profile_build, "check_built_run",
+                        lambda rundir, plan, m: seen.update(manifest=m) or [])
+    pipe._check_resource_plan("/run/dir", {"admitted": ["fast"], "ini": str(planned_ini),
+                                           "classes": [{"label": "fast", "build": "/x.sif"}]})
+    assert seen == {"path": str(manifest), "manifest": "family"}
