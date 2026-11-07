@@ -206,3 +206,70 @@ def test_classic_alias_baseline_keeps_hl_with_virgo_first():
     adapter = samplers._AVNetworkSky(like, exclude_detectors=("V1", "K1"))
     assert adapter.baseline == ("H1", "L1")
     assert adapter.physical.data.detector_names == ["V1", "H1", "L1"]
+
+
+@pytest.mark.parametrize("count", [0, 1, 16, 17, 35])
+@pytest.mark.parametrize("dimensions", [3, 6, 7])
+def test_retained_cloud_host_conversion_has_no_gpu_dispatch(count, dimensions, monkeypatch):
+    adapter = samplers._AVNetworkSky(RingLikelihood())
+    theta = np.zeros((count, dimensions))
+    if count:
+        theta[:, :3] = samplers._av_prior_draw(adapter.ANGULAR_PARAM_ORDER, count,
+                                             np.random.default_rng(79), 1., 100.)
+        theta[:, 3:] = np.random.default_rng(2).normal(size=(count, dimensions-3))
+    transform = adapter.to_physical
+    def forbidden(*args):
+        raise AssertionError("retained cloud must never be transformed on GPU")
+    adapter.to_physical = forbidden
+    original = theta.copy()
+    calls = []
+    column_stack = np.column_stack
+    def bounded_host_stack(columns):
+        calls.append(len(columns[0]))
+        assert len(columns[0]) <= 16
+        return column_stack(columns)
+    with monkeypatch.context() as patch:
+        patch.setattr(samplers.np, "column_stack", bounded_host_stack)
+        actual = samplers._av_network_to_physical_host(adapter, theta, 16)
+    assert len(calls) == (count + 15) // 16
+    assert actual.shape == (count, dimensions)
+    np.testing.assert_array_equal(theta, original)
+    if count:
+        expected = np.asarray(transform(theta[:, :3]))
+        np.testing.assert_allclose(np.angle(np.exp(1j*(actual[:, 0]-expected[:, 0]))), 0., atol=1e-12)
+        np.testing.assert_allclose(actual[:, 1], expected[:, 1], atol=1e-12)
+        np.testing.assert_array_equal(actual[:, 2:], theta[:, 2:])
+        # Coordinate Jacobians cancel in weights across host block boundaries.
+        lnL = np.asarray(adapter.physical.log_likelihood(*actual[:, :3].T))
+        lp, lq = np.arange(count)*.03, np.arange(count)*.02
+        jacobian = np.log(np.cos(actual[:, 1]))
+        np.testing.assert_allclose(lnL + lp + jacobian - lq - jacobian,
+                                   lnL + lp - lq, atol=1e-12)
+
+
+def test_host_conversion_poles_and_ra_wrap():
+    adapter = samplers._AVNetworkSky(RingLikelihood())
+    # Identity ECEF frame gives exact polar endpoints and azimuth wrapping.
+    adapter.rotation = jnp.eye(3)
+    adapter.rotation_host = np.eye(3)
+    theta = np.array([[1., 0., 1.], [-1., 2*np.pi, 1.],
+                      [0., -2*np.pi+.1, 1.], [0., 2*np.pi+.1, 1.]])
+    expected = np.asarray(adapter.to_physical(theta))
+    actual = samplers._av_network_to_physical_host(adapter, theta, 3)
+    np.testing.assert_allclose(actual, expected, atol=1e-12)
+    np.testing.assert_allclose(actual[:2, 1], [np.pi/2., -np.pi/2.], atol=1e-12)
+    assert np.all((actual[:, 0] >= 0.) & (actual[:, 0] < 2*np.pi))
+
+
+def test_actual_av_export_never_calls_gpu_conversion(monkeypatch):
+    def forbidden(*args):
+        raise AssertionError("final AV return conversion must stay on host")
+    monkeypatch.setattr(samplers._AVNetworkSky, "to_physical", forbidden)
+    like = RingLikelihood(width=.08)
+    result = samplers.adaptive_volume_sample(
+        like, 1., 100., sky_coords="network", nmax=10000,
+        n_chunk=1024, eval_chunk=64, neff=100., seed=42)
+    assert len(result["theta"]) > 64
+    np.testing.assert_allclose(result["lnL"], like.log_likelihood(*result["theta"].T), atol=1e-12)
+    np.testing.assert_allclose(result["log_weight"], result["lnL"] +
+                               result["log_joint_prior"] - result["log_joint_s_prior"], atol=1e-12)
