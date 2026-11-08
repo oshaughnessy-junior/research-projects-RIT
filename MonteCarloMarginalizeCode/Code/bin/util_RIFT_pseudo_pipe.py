@@ -837,6 +837,7 @@ parser.add_argument("--internal-ile-supplementary-waveform-transform-parameter",
 parser.add_argument("--internal-supplementary-waveform-transform-parameter-range",action='append',default=None,help="With --internal-ile-supplementary-waveform-transform-code: NAME:[a,b] (repeatable, one per extra parameter).  Fit and sample the declared extra parameter NAME on [a,b] (uniform prior) in EVERY CIP iteration (adds --parameter NAME --integration-parameter-range NAME:[a,b]) and puff it inside [a,b] (same arguments on the PUFF line).  Every --manual-initial-grid value of NAME must lie in [a,b].")
 parser.add_argument("--internal-supplementary-waveform-transform-parameter-pin",action='append',default=None,help="With --internal-ile-supplementary-waveform-transform-code: NAME:VALUE (repeatable).  Pin the declared extra parameter NAME in every CIP iteration (adds --extra-column-pin NAME:VALUE: CIP keeps only rows at VALUE and writes VALUE back to the grid); PUFF passes it through.  Some --manual-initial-grid row must have NAME = VALUE.")
 parser.add_argument("--internal-supplementary-waveform-transform-parameter-reflect",action='append',default=None,help="With --internal-supplementary-waveform-transform-parameter-range NAME:[a,b]: NAME (repeatable).  PUFF reflects NAME into [a,b] (--reflect-parameter NAME) instead of dropping puffed points outside it.")
+parser.add_argument("--puff-periodic-mode", choices=["off", "gap", "mean"], default="off", help="Unwrap every native periodic puff coordinate before covariance estimation. gap cuts at the largest empty arc; mean cuts opposite the circular mean. Opt-in pending campaign backtests; effective eccentric phase retains its own chart.")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--internal-puff-mu-random-transverse", action='store_true',
                     help="Opt-in BBH/BasicIteration: use mu1,mu2,q,s2z puff plus RANDOM transverse spins for the first CIP batch; later batches (including refinement subdags) use internal-puff-transverse covariance puff. Default: unchanged legacy puff.")
@@ -950,6 +951,11 @@ if (opts.use_ini):
         for item in rift_items:
             val = rift_items[item].strip()
             ile_condor_commands.append([item, val])
+
+if opts.puff_periodic_mode not in ('off', 'gap', 'mean'):
+    parser.error('--puff-periodic-mode must be off, gap, or mean')
+if opts.puff_periodic_mode != 'off' and opts.internal_use_amr:
+    parser.error('--puff-periodic-mode requires the covariance puff workflow, not AMR')
 
 # --internal-ile-td-gap is refused, from the command line or the ini above.
 _TD_GAP_REFUSAL = (" FAILURE: --internal-ile-td-gap is disabled (the gap-marginalized td-toeplitz "
@@ -2846,6 +2852,8 @@ with open("args_puff.txt",'w') as f:
             puff_args += _wt_pipeline.puff_injection(_wt_ranges, _wt_reflect)
         if not(opts.manual_extra_puff_args is None):
             puff_args += " {} ".format(opts.manual_extra_puff_args)  # embed with space on each side, avoid collisions
+        from RIFT.misc import periodic_puff_pipeline
+        puff_args = periodic_puff_pipeline.arguments(puff_args, opts.puff_periodic_mode)
         f.write("X " + puff_args)
 
 if opts.internal_puff_mu_random_transverse:
