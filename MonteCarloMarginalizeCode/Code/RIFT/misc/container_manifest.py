@@ -296,6 +296,25 @@ def _capability_attr(manifest):
     return os.environ.get("RIFT_GPU_CAPABILITY_ATTR") or manifest["capability_attr"]
 
 
+def selection_order(manifest):
+    """Containers in the order selection tests them, the fallback excluded.
+
+    At equal min, an entry with select_requirements is tested first.
+    """
+    fallback = manifest["fallback"]
+    thresholds = [
+        c
+        for c in manifest["containers"]
+        if (c["cuda_capability_min"] is not None or c.get("select_requirements"))
+        and c["label"] != fallback
+    ]
+    thresholds.sort(key=lambda c: (
+        c["cuda_capability_min"] if c["cuda_capability_min"] is not None else float("-inf"),
+        bool(c.get("select_requirements")),
+    ))
+    return thresholds[::-1]
+
+
 def _build_selector(manifest, value_fn, ternary=False):
     """Build a nested capability selector over the family.
 
@@ -321,23 +340,9 @@ def _build_selector(manifest, value_fn, ternary=False):
     by_label = {c["label"]: c for c in containers}
     fb = by_label[manifest["fallback"]]
 
-    # Containers that contribute a capability threshold test (exclude the
-    # fallback so it is not duplicated as both a branch and the else).
-    thresholds = [
-        c
-        for c in containers
-        if (c["cuda_capability_min"] is not None or c.get("select_requirements"))
-        and c["label"] != fb["label"]
-    ]
-    # Fold ascending so the highest min ends up outermost; at equal min, an entry
-    # with select_requirements is folded last, i.e. tested first.
-    thresholds.sort(key=lambda c: (
-        c["cuda_capability_min"] if c["cuda_capability_min"] is not None else float("-inf"),
-        bool(c.get("select_requirements")),
-    ))
-
     expr = value_fn(fb)
-    for c in thresholds:
+    # Fold last-tested first, so the first-tested container ends up outermost.
+    for c in reversed(selection_order(manifest)):
         terms = []
         if c["cuda_capability_min"] is not None:
             terms.append("TARGET.{attr} >= {mn}".format(attr=attr, mn=_fmt_cap(c["cuda_capability_min"])))

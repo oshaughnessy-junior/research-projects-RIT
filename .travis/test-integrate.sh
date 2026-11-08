@@ -76,7 +76,7 @@ python -m pytest -q "$_CIP_EXPORT_TESTS"
 # integrals as four N=1 jobs, from row 0 and across the end of the grid.
 _CIP_MULTIROW_TESTS=MonteCarloMarginalizeCode/Code/test/test_cip_multi_row.py
 # Raise EXPECTED by RUNNING collection, never by arithmetic.
-_CIP_MULTIROW_EXPECTED=10
+_CIP_MULTIROW_EXPECTED=33
 _CIP_MULTIROW_FOUND=$(python -m pytest -q --collect-only "$_CIP_MULTIROW_TESTS" 2>/dev/null | grep -c '::' || true)
 if [ "$_CIP_MULTIROW_FOUND" -ne "$_CIP_MULTIROW_EXPECTED" ]; then
     echo "cip-multi-row gate: collected $_CIP_MULTIROW_FOUND tests, expected $_CIP_MULTIROW_EXPECTED" >&2
@@ -342,6 +342,9 @@ python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_nal_io.py \
 # create_event_parameter_pipeline_BasicIteration -> ILE*.sub, and the last link is an
 # INHERITANCE (ile_args_extr = ile_args + ...), not an explicit forward.  An unlisted test never
 # runs in this CI, so wiring the file in is part of shipping the wiring.
+# Fixed FFT row shapes and hard GPU/resource failure propagation.
+python -m pytest -q MonteCarloMarginalizeCode/Code/test/test_q2_fft_memory.py
+
 _TMARG_TESTS=(
     MonteCarloMarginalizeCode/Code/test/test_time_marginalization_quadrature.py
     MonteCarloMarginalizeCode/Code/test/test_time_marginalization_quadrature_pipeline.py

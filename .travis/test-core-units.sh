@@ -64,6 +64,7 @@ C="MonteCarloMarginalizeCode/Code"
 
 FILES=(
   "$C/test/test_posterior_compression.py"
+  "$C/test/test_raw_distance_contract.py"
   # Experimental TD operators; only the public PCG backend test is optional.
   "$C/test/test_td_calmarg_guard.py"
   "$C/test/test_td_factory.py"
@@ -189,6 +190,9 @@ FILES=(
   # -- coordinate plugin through the hyperpipe post and puff stages; puffball ranges; CEP
   # get_bounds.  ~13 tests, about ten driver subprocesses.
   "$C/test/test_hyperpipe_coordinate_passing.py"
+  # -- coordinate-plugin API adapter: rift vs inplace (PR #434 shape) classification, the
+  # inplace wrapper, and the rotation demo through CEP and PUFF.  66 tests, about thirty subprocesses.
+  "$C/test/test_coordinate_plugin_api_adapter.py"
   # -- promoted out of the roster after roster-verify-check caught its reason being false ON
   # THE RUNNER: it was OPTDEP needs:glue,htcondor, and with htcondor absent there it still
   # collected 15 and passed 15.  Confirmed locally with BOTH blocked via a sys.meta_path
@@ -238,6 +242,7 @@ FILES=(
   # Its companion test_lalsim_eos_reviewed_integration.py needs a private reviewed LALSuite
   # and is rostered EXPENSIVE.
   "$C/test/test_lalsim_eos_compat.py"
+  "$C/test/test_waveform_sample_rejection.py"
   # -- packaging / config contracts / waveform conventions
   "$C/test/test_advanced_parameter_ports.py"
   "$C/test/test_container_manifest.py"
@@ -583,10 +588,18 @@ done
 # #489: poisoned real IMRPv2 allocations (6) and EFPE buffer checks (6) -> 1218.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1220.
 # test_dslice_refine.py adds 10 tests and no skips -> 1230.
+# test_coordinate_plugin_api_adapter.py adds 55 tests and no skips -> 1336 (provisional: S1 refusal,
+# census, file-basis box, round-trip preflight and tolerance, PUFF reflect refusal tests added
+# after two reviews).
+# Review 3: round-trip preflight cases (10) and the inapplicable-option warning test (1) add 11
+# -> 1347 (provisional).
+# test_raw_distance_contract.py adds 44 tests and no skips -> 1391.
+# EOS rejection adds 13 EOS and 19 waveform regressions to the merged manifest.
 # PR #181 catch-up merge (2026-11-01): PR 181 measured 872/859 against a 658/645 base, i.e.
 # +214 collected / +214 passed and no new skips.  PROVISIONAL floors below are that delta
-# added to the 1281/1255 base; RE-MEASURE whole-manifest on CIT before merging (never summed).
-EXPECTED_TESTS=1495
+# added to the base floors; RE-MEASURE whole-manifest on CIT before merging (never summed).
+# PR #181 merge with rift_O4d 93305ba0 (2026-11-08): base 1423 + 214 (provisional).
+EXPECTED_TESTS=1637
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -623,8 +636,13 @@ EXPECTED_TESTS=1495
 # #489: six IMRPv2 and six EFPE buffer cases, all required -> 1192.
 # test_dslice_warm.py: collapsed-seed fallback and never-trusted tests add 2 -> 1194.
 # test_dslice_refine.py adds 10 passes -> 1204.
+# test_coordinate_plugin_api_adapter.py adds 55 passes -> 1310 (provisional, as above).
+# Review 3 adds 11 passes -> 1321 (provisional).
+# test_raw_distance_contract.py adds 44 passes -> 1365.
+# EOS and waveform rejection regressions add 32 required passes.
 # PR #181 catch-up merge: +214 passes (provisional, see EXPECTED_TESTS).
-EXPECTED_PASSED=1469
+# PR #181 merge with rift_O4d 93305ba0 (2026-11-08): base 1397 + 214 (provisional).
+EXPECTED_PASSED=1611
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
@@ -684,7 +702,10 @@ for f in "${FILES[@]}"; do
   printf '  %-72s %3d\n' "$f" "$n"
   collected_total=$(( collected_total + n ))
   file_floor=1
+  if [ "$f" = "$C/test/test_lalsim_eos_compat.py" ]; then file_floor=49; fi
+  if [ "$f" = "$C/test/test_waveform_sample_rejection.py" ]; then file_floor=19; fi
   if [ "$f" = "$C/test/test_posterior_compression.py" ]; then file_floor=41; fi
+  if [ "$f" = "$C/test/test_raw_distance_contract.py" ]; then file_floor=44; fi
   # Transfer matrix, container guards, and newline requirements must remain covered.
   if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=18; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi

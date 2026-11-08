@@ -943,3 +943,13 @@ def test_integration_profiles_effective_job_ad(tmp_path, monkeypatch, container_
         assert ad["RIFTILEExe"].startswith("ifThenElse(")
         if container_universe:
             assert "/" not in json.loads(ad["ContainerImage"])
+
+
+def test_equal_min_entries_keep_their_selection_order():
+    # Later entries test first: this is how the selector has always folded a tie.
+    entries = [{"label": label, "image": "/x/{}.sif".format(label), "cuda_capability_min": 7.0,
+                "select_requirements": "GlobalMemoryMb >= {}".format(memory)}
+               for label, memory in (("a", 20000), ("b", 10000))]
+    manifest = {"fallback": "f", "containers": entries + [
+        {"label": "f", "image": "/x/f.sif", "cuda_capability_min": None, "select_requirements": None}]}
+    assert [c["label"] for c in cm.selection_order(manifest)] == ["b", "a"]
