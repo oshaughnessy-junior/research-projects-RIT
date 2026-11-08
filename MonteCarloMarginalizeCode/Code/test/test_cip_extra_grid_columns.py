@@ -94,7 +94,8 @@ def recovery_run(tmp_path_factory):
     grid = _write_lambda_grid(os.path.join(tmp, "grid.dat"))
     proc = _run(os.path.join(tmp, "run"), grid,
                 _FIT + ["--extra-column-pin", "lens_other:0.25", "--n-max", "100000",
-                        "--n-eff", "300", "--n-output-samples", "2000"])
+                        "--n-eff", "300", "--n-output-samples", "2000"],
+                seeded=True)  # seeded: the 15% width bounds are statistical, so pin the draw
     return proc, os.path.join(tmp, "run")
 
 
