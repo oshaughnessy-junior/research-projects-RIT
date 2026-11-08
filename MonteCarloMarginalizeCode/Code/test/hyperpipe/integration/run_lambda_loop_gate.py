@@ -36,7 +36,8 @@ _spec = importlib.util.spec_from_file_location(
 gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 STUB = HERE / "lambda_marg_stub.py"
-A_PEAK, SIGMA = 1.2, 0.05
+A_PEAK, SIGMA = 1.2, 0.05            # lambda_marg_stub.py's lnL parameters
+SLOPE, MC_REF = 0.2, 23.0
 LO, HI = 1.0, 2.0
 PIN = math.pi / 2
 
@@ -149,14 +150,16 @@ def _check(rundir, n_seed):
     assert _key(m1) == _key(np.vstack([cip1, puffed])), \
         "iteration-1 ILE rows do not carry the lambda of grid-1 (CIP) + grid_puff-1 (PUFF)"
     final, t2 = _lam(rundir / "grid-2.dat")
-    mean, std = final[:, 0].mean(), final[:, 0].std()
-    assert abs(mean - A_PEAK) < 0.15 and std < 0.25, (mean, std)
     m1c, m2c = np.asarray(t2["m1"], float), np.asarray(t2["m2"], float)
     mc = (m1c * m2c) ** 0.6 / (m1c + m2c) ** 0.2
+    # the stub's conditional peak is A_PEAK + SLOPE (mc - MC_REF): test lambda about it
+    resid = final[:, 0] - SLOPE * (mc - MC_REF)
+    mean, std = resid.mean(), resid.std()
+    assert abs(mean - A_PEAK) < 0.1 and std < 0.2, (mean, std)
     corr = float(np.corrcoef(mc, final[:, 0])[0, 1])
     assert corr > 0.5, ("lambda is not paired with its intrinsic point", corr)
     return dict(n_seed=n_seed, n_marg1=len(m1), n_cip1=len(cip1), n_puff1=len(puffed),
-                final_mean=mean, final_std=std, final_corr_mc_lambda=corr)
+                final_resid_mean=mean, final_resid_std=std, final_corr_mc_lambda=corr)
 
 
 def main(argv=None):

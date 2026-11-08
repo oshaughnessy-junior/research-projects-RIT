@@ -617,7 +617,6 @@ done
 # +214 collected / +214 passed and no new skips.  PROVISIONAL floors below are that delta
 # added to the base floors; RE-MEASURE whole-manifest on CIT before merging (never summed).
 # PR #181 merge with rift_O4d 93305ba0 (2026-11-08): base 1423 + 214 (provisional).
-# added to the 1281/1255 base; RE-MEASURE whole-manifest on CIT before merging (never summed).
 # test_hlm_transform.py adds 23 tests and no skips (23 passed locally, venv python 3.13 /
 # lalsuite 8, no cupy) -> PROVISIONAL 1518/1492, same re-measure caveat.
 # PR #518 review fixes add 8 more (31 passed locally, same env) -> PROVISIONAL 1526/1500.
@@ -628,9 +627,10 @@ done
 # test_hyperpipeline_io.py, no skips -> PROVISIONAL 1554/1528.
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 in test_waveform_transform_pseudo_build.py
 # (26 passed locally, no skips) -> PROVISIONAL 1569/1543.
-# PR #518 merge with #181 at rift_O4d 93305ba0: 1637 + 74 (provisional).
-# PR #518 seam review: wrap guard (2), opts copy (1), refusals (8), no-parameter exit (1): +12 (provisional).
-EXPECTED_TESTS=1723
+# PR #518 at rift_O4d 93305ba0 plus both review rounds (2026-11-08): MEASURED whole-manifest
+# locally (venv python 3.13, lalsuite 8, no cupy/jax): 1775 collected / 1743 passed / 32 skipped.
+# Re-measure on CIT before merging.
+EXPECTED_TESTS=1775
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -678,9 +678,8 @@ EXPECTED_TESTS=1723
 # test_hlm_transform_injection.py: +2 passes (provisional).
 # CIP/PUFF named extra grid columns: +15 passes (provisional, see EXPECTED_TESTS).
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 passes (provisional).
-# PR #518 merge with #181 at rift_O4d 93305ba0: 1611 + 74 (provisional).
-# PR #518 seam review: wrap guard (2), opts copy (1), refusals (8), no-parameter exit (1): +12 (provisional).
-EXPECTED_PASSED=1697
+# PR #518 at rift_O4d 93305ba0 plus both review rounds: measured locally, see EXPECTED_TESTS.
+EXPECTED_PASSED=1743
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
