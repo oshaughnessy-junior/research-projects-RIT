@@ -3,8 +3,8 @@
 
 util_RIFT_pseudo_pipe.py --pipeline-builder Hyperpipe builds a two-iteration run with ILE's
 extra-parameter seam (--internal-ile-supplementary-waveform-transform-*): lens_amplitude is
-fit on [0.5, 2] (--internal-supplementary-waveform-transform-parameter-range) and puffed with
-reflection, lens_extra is pinned at 1 (-pin).  The generated DAG then runs with the
+fit on [1, 2] (--internal-supplementary-waveform-transform-parameter-range) and puffed with
+reflection, lens_extra is pinned at pi/2 (-pin; not exact at consolidation's 5 decimals).  The generated DAG then runs with the
 constant-likelihood gate's HTCondor-file executor (one
 distinct $(cluster) per node, as HTCondor assigns), the REAL CIP, PUFF, consolidation, convergence
 and evidence stages, and lambda_marg_stub.py as the MARG worker.  The stub checks it got the
@@ -13,11 +13,14 @@ data, because ILE's seam refuses --zero-likelihood.
 
 Checks: lambda survives ILE -> CIP -> PUFF -> ILE.  The iteration-1 MARG rows carry exactly
 the lambda values of grid-1.dat (CIP) and grid_puff-1.dat (PUFF); every stage's grid has both
-columns, lens_amplitude in range and lens_extra == 1; and the final CIP grid concentrates
-lens_amplitude near A_PEAK (so lambda is fit, not just copied).
+columns, lens_amplitude in range and lens_extra == pi/2; PUFF loses no row to the lambda range
+(reflection keeps rows pushed past the lower edge); and the final CIP grid keeps the stub's
+strong mc-lambda correlation (lambda stays paired with its own intrinsic point) and
+concentrates lens_amplitude near the peak (so lambda is fit, not just copied).
 """
 import argparse
 import importlib.util
+import math
 import subprocess
 import sys
 import tempfile
@@ -33,8 +36,9 @@ _spec = importlib.util.spec_from_file_location(
 gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 STUB = HERE / "lambda_marg_stub.py"
-A_PEAK, SIGMA = 1.1, 0.08
-LO, HI = 0.5, 2.0
+A_PEAK, SIGMA = 1.2, 0.05
+LO, HI = 1.0, 2.0
+PIN = math.pi / 2
 
 PLUGIN = '''
 import numpy
@@ -46,11 +50,11 @@ def transfer_function(f, extra_params, P=None, xpy=numpy, **kw):
 
 def _seed(path):
     rows = []
-    amps = np.linspace(0.6, 1.9, 6)
+    amps = np.linspace(1.05, 1.9, 6)
     for i, (m1, m2) in enumerate([(30., 20.), (32., 22.), (34., 24.), (31., 21.)]):
         for a in amps:
-            rows.append([0., 0., m1, m2, 0., 0., 0., 0., 0., 0., a, 1.0])
-    rows.append([0., 0., 33., 23., 0., 0., 0., 0., 0., 0., 1.1, 2.0])  # off the pin: CIP drops it
+            rows.append([0., 0., m1, m2, 0., 0., 0., 0., 0., 0., a, PIN])
+    rows.append([0., 0., 33., 23., 0., 0., 0., 0., 0., 0., 1.2, 2.0])  # off the pin: CIP drops it
     hpio.write_table(str(path), tuple(hpio.DEFAULT_BASE_COLUMNS) + ("lens_amplitude", "lens_extra"), rows)
     return len(rows)
 
@@ -77,7 +81,7 @@ def _build(base):
            "--internal-ile-supplementary-waveform-transform-parameter", "lens_extra",
            "--internal-supplementary-waveform-transform-parameter-range", "lens_amplitude:[{},{}]".format(LO, HI),
            "--internal-supplementary-waveform-transform-parameter-reflect", "lens_amplitude",
-           "--internal-supplementary-waveform-transform-parameter-pin", "lens_extra:1"]
+           "--internal-supplementary-waveform-transform-parameter-pin", "lens_extra:{!r}".format(PIN)]
     env = gate._environment(base)
     r = subprocess.run(cmd, cwd=str(base), env=env, text=True,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -137,17 +141,22 @@ def _check(rundir, n_seed):
         lam, _ = _lam(rundir / name)
         assert len(lam), name
         assert np.all((lam[:, 0] >= LO) & (lam[:, 0] <= HI)), (name, lam[:, 0].min(), lam[:, 0].max())
-        assert np.allclose(lam[:, 1], 1.0), (name, np.unique(lam[:, 1]))
+        assert np.allclose(lam[:, 1], PIN, rtol=0, atol=1e-12), (name, np.unique(lam[:, 1]))
     puffed, _ = _lam(rundir / "grid_puff-1.dat")
     cip1, _ = _lam(rundir / "grid-1.dat")
     assert len(np.unique(np.round(puffed[:, 0], 9))) > 1
     m1 = _marg_rows(rundir, 1)
     assert _key(m1) == _key(np.vstack([cip1, puffed])), \
         "iteration-1 ILE rows do not carry the lambda of grid-1 (CIP) + grid_puff-1 (PUFF)"
-    final, _ = _lam(rundir / "grid-2.dat")
+    final, t2 = _lam(rundir / "grid-2.dat")
     mean, std = final[:, 0].mean(), final[:, 0].std()
-    assert abs(mean - A_PEAK) < 0.1 and std < 0.25, (mean, std)
-    return dict(n_seed=n_seed, n_marg1=len(m1), final_mean=mean, final_std=std)
+    assert abs(mean - A_PEAK) < 0.15 and std < 0.25, (mean, std)
+    m1c, m2c = np.asarray(t2["m1"], float), np.asarray(t2["m2"], float)
+    mc = (m1c * m2c) ** 0.6 / (m1c + m2c) ** 0.2
+    corr = float(np.corrcoef(mc, final[:, 0])[0, 1])
+    assert corr > 0.5, ("lambda is not paired with its intrinsic point", corr)
+    return dict(n_seed=n_seed, n_marg1=len(m1), n_cip1=len(cip1), n_puff1=len(puffed),
+                final_mean=mean, final_std=std, final_corr_mc_lambda=corr)
 
 
 def main(argv=None):

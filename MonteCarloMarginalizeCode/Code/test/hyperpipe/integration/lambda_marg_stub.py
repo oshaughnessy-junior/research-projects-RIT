@@ -8,8 +8,9 @@ extra-parameter seam: all four NoLoop flags and ``--supplementary-waveform-trans
 Every declared lambda (plugin ``EXTRA_PARAMETERS`` plus ``-parameter``) must be a finite
 column of the grid it is handed -- the property the loop must preserve.
 
-lnL = -(lens_amplitude - A_PEAK)^2 / (2 SIGMA^2), independent of the intrinsic point, so
-CIP's posterior for lens_amplitude is a Gaussian at A_PEAK (truncated to the prior range).
+lnL = -(A - A_PEAK - SLOPE (mc - MC_REF))^2 / (2 SIGMA^2) - (mc - MC_REF)^2 / (2 MC_W^2), with
+A = lens_amplitude: a Gaussian in (mc, A) with a strong mc-A correlation, so a row whose
+lambda is paired with the wrong intrinsic point changes lnL and breaks the correlation.
 """
 import argparse
 import importlib.util
@@ -19,7 +20,8 @@ import numpy as np
 
 from RIFT.misc import hyperpipeline_io as hpio
 
-A_PEAK, SIGMA = 1.1, 0.08
+A_PEAK, SIGMA = 1.2, 0.05
+SLOPE, MC_REF, MC_W = 0.2, 23.0, 1.0
 NOLOOP = ("--time-marginalization", "--vectorized", "--gpu", "--force-xpy")
 
 
@@ -54,7 +56,10 @@ def main():
         if not all(np.isfinite(v) for v in lam.values()):
             sys.exit("lambda_marg_stub: non-finite lambda {} in row {}".format(lam, i))
         values = [float(row[c]) for c in cols]
-        values[cols.index("lnL")] = -0.5 * ((lam["lens_amplitude"] - A_PEAK) / SIGMA) ** 2
+        m1, m2 = float(row["m1"]), float(row["m2"])
+        mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+        values[cols.index("lnL")] = (-0.5 * ((lam["lens_amplitude"] - A_PEAK - SLOPE * (mc - MC_REF)) / SIGMA) ** 2
+                                     - 0.5 * ((mc - MC_REF) / MC_W) ** 2)
         values[cols.index("sigma_lnL")] = 0.01
         out = "{}_{}_.dat".format(opts.output_file, i)
         hpio.write_row(out, cols, values)

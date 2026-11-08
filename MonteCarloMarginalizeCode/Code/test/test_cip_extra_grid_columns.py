@@ -306,3 +306,36 @@ def test_puff_refuses_puffed_lambda_without_range(tmp_path):
     grid = _posterior_grid(str(tmp_path / "post.dat"))
     proc = _puff(str(tmp_path / "run"), ["--inj-file", grid, "--parameter", "mc", "--parameter", "lens_amp"])
     assert proc.returncode == 2 and "--integration-parameter-range lens_amp" in proc.stdout, proc.stdout[-2000:]
+
+
+def test_puff_refuses_lambda_only_parameters(tmp_path):
+    grid = _posterior_grid(str(tmp_path / "post.dat"))
+    proc = _puff(str(tmp_path / "run"), ["--inj-file", grid, "--parameter", "lens_amp",
+                                         "--integration-parameter-range", "lens_amp:[%g,%g]" % LAM_RANGE])
+    assert proc.returncode == 2 and "puffs only extra column" in proc.stdout, proc.stdout[-2000:]
+
+
+def test_puff_lambda_keeps_periodic_downselect_wrapped(tmp_path):
+    """Puffing lambda must not bypass the wrapped-angle downselect (O4d #528): rows whose
+    unwrapped phi1 sits just below 0 survive a [0, 2 pi] downselect with and without lambda."""
+    rng = np.random.default_rng(5)
+    n = 200
+    m1 = rng.normal(30.4, 0.2, n)
+    m2 = rng.normal(20.2, 0.2, n)
+    ang = rng.normal(0.0, 0.05, n)                         # in-plane spin angle straddling 0
+    z = np.zeros(n)
+    grid = str(tmp_path / "g.dat")
+    hpio.write_table(grid, hpio.build_column_list() + ("lens_amp",),
+                     np.column_stack([z, np.full(n, 0.01), m1, m2, 0.5 * np.cos(ang), 0.5 * np.sin(ang),
+                                      np.full(n, 0.1), z, z, z, rng.uniform(0.8, 1.2, n)]))
+    base = ["--inj-file", grid, "--parameter", "mc", "--parameter", "delta_mc", "--parameter", "phi1",
+            "--unwrap-parameter", "phi1", "--downselect-parameter", "phi1",
+            "--downselect-parameter-range", "[0,6.283185307179586]", "--puff-factor", "0.1"]
+    p_plain = _puff(str(tmp_path / "plain"), base)
+    p_lam = _puff(str(tmp_path / "lam"), base + ["--parameter", "lens_amp",
+                                                 "--integration-parameter-range", "lens_amp:[0,10]"])
+    assert p_plain.returncode == 0 and p_lam.returncode == 0, (p_plain.stdout[-2000:], p_lam.stdout[-2000:])
+    a_plain, _ = hpio.read_table(str(tmp_path / "plain" / "puff.dat"))
+    a_lam, _ = hpio.read_table(str(tmp_path / "lam" / "puff.dat"))
+    assert len(a_plain) > 0.9 * n, len(a_plain)
+    assert len(a_lam) > 0.9 * n, (len(a_lam), len(a_plain))

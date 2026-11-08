@@ -425,7 +425,8 @@ def check_grid_treatments(grid_path, treatments, hpio, label="initial grid"):
                 errors.append("{} {}: {} values {} outside the declared range [{}, {}]".format(
                     label, grid_path, name, sorted(set(out.tolist()))[:5], lo, hi))
         else:
-            if not numpy.any(numpy.abs(col - value) <= 1e-9 * max(1.0, abs(value))):
+            # the same tolerance CIP's --extra-column-pin applies (5e-6 absolute + 1e-9 relative)
+            if not numpy.any(numpy.abs(col - value) <= 0.5e-5 + 1e-9 * max(1.0, abs(value))):
                 errors.append("{} {}: no row has {} = {} (CIP keeps only rows at the pin)".format(
                     label, grid_path, name, value))
     return errors

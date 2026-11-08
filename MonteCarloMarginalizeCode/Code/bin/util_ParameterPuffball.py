@@ -175,6 +175,10 @@ if _extra_all:
     _bad += ["--random-parameter " + n for n in opts.random_parameter if n in _extra_all]
     if _bad:
         parser.error("--inj-file carries extra column(s) {}; not supported with {}".format(list(_extra_all), _bad))
+    if _extra_puff and not [n for n in coord_names if n not in _extra_puff]:
+        parser.error("--parameter puffs only extra column(s) {}: also puff at least one intrinsic "
+                     "parameter (the mass downselects need one; a lambda-only puff would export "
+                     "no rows)".format(_extra_puff))
     for _name in _extra_puff:
         if _name not in _extra_ranges:
             parser.error("extra column {} is puffed (--parameter): give its range with "
@@ -468,7 +472,12 @@ elif _extra_puff:
     # lalsimutils cannot convert lambda (its per-row fallback would assign it to P and exit):
     # convert the standard columns alone.
     _std = [i for i, n in enumerate(coord_names) if n not in _extra_puff]
-    x_out_down = lalsimutils.convert_waveform_coordinates(X_out[:, _std], coord_names=names_downselect,
+    # Physical cuts use wrapped angles, as in the branch below (O4d #528).
+    _X_std = X_out[:, _std].copy()
+    for _col, _i in enumerate(_std):
+        if coord_names[_i] in lalsimutils.periodic_params:
+            _X_std[:, _col] %= lalsimutils.periodic_params[coord_names[_i]]
+    x_out_down = lalsimutils.convert_waveform_coordinates(_X_std, coord_names=names_downselect,
                                                           low_level_coord_names=[coord_names[i] for i in _std])
 else:
     X_native = X_out
