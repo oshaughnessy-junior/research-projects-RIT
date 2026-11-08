@@ -108,7 +108,8 @@ def test_two_sided_response_is_hermitian_on_the_lal_grid(n):
     assert F[m].imag == 0 and F[m].real == np.cos(0.3)              # DC = Re F(0)
     for k in range(n):
         if n % 2 == 0 and k == 0:
-            assert F[0] == 1.0                                        # Nyquist identity
+            fn = df * m                                               # Nyquist = Re F(fNyq)
+            assert F[0] == ((1 + fn) * np.exp(1j * (0.3 + fn))).real
             continue
         kk = 2 * m - k                                                # bin of -f
         assert np.isclose(f[kk], -f[k])
@@ -196,7 +197,7 @@ def test_pure_delay_moves_the_time_series_later_against_numpy_reference():
     fnp = np.fft.fftfreq(n, dt)
     ref = np.fft.ifft(np.fft.fft(h) * np.exp(-2j * np.pi * fnp * Delta))
     scale = np.max(np.abs(h))
-    # The seam forces the Nyquist bin to identity; the pulse has no power there.
+    # The seam keeps Re F at the Nyquist bin; the pulse has no power there.
     np.testing.assert_allclose(out, ref, atol=1e-10 * scale)
     np.testing.assert_allclose(out, np.roll(h, shift), atol=1e-10 * scale)
     assert np.argmax(np.abs(out)) == np.argmax(np.abs(h)) + shift     # LATER by Delta
@@ -206,6 +207,45 @@ def test_pure_delay_moves_the_time_series_later_against_numpy_reference():
     fr = lalsimutils.evaluate_fvals(_pulse_bank(n, dt, t0)[1])
     wrong = np.fft.ifft(np.fft.ifftshift(_pulse_bank(n, dt, t0)[1].data.data * np.exp(-2j * np.pi * fr * Delta)))
     assert np.argmax(np.abs(wrong)) == np.argmax(np.abs(h)) - shift
+
+
+@pytest.mark.parametrize("t0,Delta,should_raise", [
+    (1.0, 37 / 1024., False),     # pulse at 1 s of 4 s, delayed 36 ms: stays in the buffer
+    (3.9, 0.5, True),             # pulse near the end, delayed 0.5 s: wraps around entirely
+])
+def test_wrap_around_guard_against_linear_convolution(t0, Delta, should_raise):
+    n, dt = 4096, 1.0 / 1024
+    h, hf = _pulse_bank(n, dt, t0)
+    hf_conj = lalsimutils.DataFourier(_conj_ts(h, dt))
+    delay = _fn_transform(lambda f, lam, P=None, xpy=np: np.exp(-2j * np.pi * f * lam["Delta"]), ("Delta",))
+    F = HT.two_sided_response(delay, n, hf.deltaF, {"Delta": Delta})
+    frac = HT.wrapped_energy_fraction(hf.data.data, F)
+    # independent reference: linear (zero-padded) delay of the numpy time series
+    tt = np.arange(n) * dt
+    wrapped_ref = float(np.sum(np.abs(h[tt + Delta >= n * dt]) ** 2) / np.sum(np.abs(h) ** 2))
+    assert abs(frac - wrapped_ref) < 1e-6, (frac, wrapped_ref)
+    if should_raise:
+        with pytest.raises(HT.WaveformTransformError, match="wraps around"):
+            HT.apply_hlm_transform({(2, 2): hf}, {(2, 2): hf_conj}, transform=delay,
+                                   extra_params={"Delta": Delta})
+    else:
+        HT.apply_hlm_transform({(2, 2): hf}, {(2, 2): hf_conj}, transform=delay,
+                               extra_params={"Delta": Delta})
+
+
+def test_prepare_gets_a_copy_of_opts(tmp_path):
+    code = _write_plugin(tmp_path, "plug_opts", """
+        import numpy
+        EXTRA_PARAMETERS = ["lens_a"]
+        def prepare(config=None, extra_parameters=None, opts=None, **kw):
+            opts.gpu = False
+        def transfer_function(f, extra_params, P=None, xpy=numpy):
+            return numpy.ones(numpy.shape(f), dtype=complex)
+        """)
+    import types
+    opts = types.SimpleNamespace(gpu=True)
+    HT.load_waveform_transform(code, opts=opts)
+    assert opts.gpu is True
 
 
 def _conj_ts(h, dt):
@@ -220,7 +260,7 @@ def _real_kernel_td(x, dt, Ffun):
     F = np.asarray(Ffun(np.fft.rfftfreq(n, dt)), dtype=complex)
     F[0] = F[0].real
     if n % 2 == 0:
-        F[-1] = 1.0                                   # the seam's Nyquist choice
+        F[-1] = F[-1].real                            # the seam's Nyquist choice: Re F(fNyq)
     return np.fft.irfft(np.fft.rfft(x) * F, n)
 
 
@@ -424,6 +464,17 @@ def _ile_refusal(tmp_path, extra, hyperpipe=True, block_cupy=False):
     ("calmarg", REDLINE + ["--calibration-envelope-directory", "/nonexistent"], True, "calibration marginalization"),
     ("dgrid", REDLINE + ["--export-marginal-distance-grid"], True, "--export-marginal-distance-grid"),
     ("dslice", REDLINE + ["--export-distance-slices", "5"], True, "--export-distance-slices"),
+    ("freqresponse", REDLINE + ["--freqresponse"], True, "--freqresponse"),
+    ("early-time-multirate", REDLINE + ["--early-time-multirate", "/nonexistent.json"], True,
+     "--early-time-multirate"),
+    ("rom", REDLINE + ["--rom-group", "x"], True, "ROM templates"),
+    ("nr", REDLINE + ["--nr-lookup"], True, "NR templates"),
+    ("external-eob", REDLINE + ["--use-external-EOB"], True, "--use-external-EOB"),
+    ("maximize-only", REDLINE + ["--maximize-only"], True, "--maximize-only"),
+    ("td-inner-product", REDLINE + ["--internal-ile-inner-product", "td-toeplitz"], True,
+     "--internal-ile-inner-product td-toeplitz"),
+    ("cal-dump", REDLINE + ["--calibration-dump-responsibilities", "/nonexistent"], True,
+     "--calibration-dump-responsibilities"),
 ])
 def test_ile_refuses_unsupported_configurations(tmp_path, label, extra, hyperpipe, reason):
     grid = _hp_grid(tmp_path / "grid.dat")
@@ -453,6 +504,17 @@ def test_ile_refuses_sim_xml_and_legacy_grid_and_orphan_flags(tmp_path):
         (r.stdout + r.stderr)[-3000:]
     r = _ile_refusal(tmp_path, REDLINE + ["--supplementary-waveform-transform-parameter", "x"])
     assert r.returncode != 0 and "require --supplementary-waveform-transform-code" in r.stderr
+
+
+def test_ile_refuses_plugin_without_extra_parameters(tmp_path):
+    plug = _write_plugin(tmp_path, "no_params", """
+        import numpy
+        def transfer_function(f, extra_params, P=None, xpy=numpy):
+            return numpy.ones(numpy.shape(f), dtype=complex)
+        """)
+    r = _ile_refusal(tmp_path, REDLINE + ["--sim-grid", _hp_grid(tmp_path / "grid.dat"),
+                                         "--supplementary-waveform-transform-code", plug])
+    assert r.returncode != 0 and "declares no EXTRA_PARAMETERS" in r.stderr, (r.stdout + r.stderr)[-3000:]
 
 
 def test_ile_grid_column_checks(tmp_path):

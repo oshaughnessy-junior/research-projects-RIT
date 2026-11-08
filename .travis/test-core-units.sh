@@ -629,7 +629,8 @@ done
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 in test_waveform_transform_pseudo_build.py
 # (26 passed locally, no skips) -> PROVISIONAL 1569/1543.
 # PR #518 merge with #181 at rift_O4d 93305ba0: 1637 + 74 (provisional).
-EXPECTED_TESTS=1711
+# PR #518 seam review: wrap guard (2), opts copy (1), refusals (8), no-parameter exit (1): +12 (provisional).
+EXPECTED_TESTS=1723
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -678,7 +679,8 @@ EXPECTED_TESTS=1711
 # CIP/PUFF named extra grid columns: +15 passes (provisional, see EXPECTED_TESTS).
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 passes (provisional).
 # PR #518 merge with #181 at rift_O4d 93305ba0: 1611 + 74 (provisional).
-EXPECTED_PASSED=1685
+# PR #518 seam review: wrap guard (2), opts copy (1), refusals (8), no-parameter exit (1): +12 (provisional).
+EXPECTED_PASSED=1697
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them

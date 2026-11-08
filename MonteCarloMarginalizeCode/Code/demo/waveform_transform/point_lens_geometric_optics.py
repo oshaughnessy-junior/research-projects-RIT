@@ -22,8 +22,10 @@ Validity: geometric optics needs 8 pi G M_Lz f / c^3 >> 1 across the band, i.e. 
 M_Lz >~ 1e3 Msun at 20 Hz.  Wave-optics F(w, y) (1F1) is not implemented here.
 Delay limit: multiplication in the frequency domain is a CYCLIC convolution over the
 1/deltaF template buffer, so Delta t must be shorter than the zero padding that follows the
-ringdown in that buffer; otherwise the delayed image wraps around to the start.  Nothing
-guards this (roughly a concern for M_Lz >~ 1e5 Msun).
+ringdown in that buffer; otherwise the delayed image wraps around to the start.  The seam
+measures the wrapped energy and aborts above 1% (RIFT.likelihood.hlm_transform, WRAP-AROUND).
+With ~0.4 s of padding after the peak (deltaF = 1/4) about 27% wraps already at
+M_Lz = 2e4 Msun, y = 0.6 (PR #518 review); use a longer segment for heavy lenses.
 """
 import numpy
 

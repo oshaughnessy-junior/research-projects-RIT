@@ -669,12 +669,13 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
         mode banks immediately after internal_hlm_generator and BEFORE mode pruning and every
         U/V/Q/calibration-self-term inner product (the extra-parameter seam of
         RIFT.likelihood.hlm_transform, ILE --supplementary-waveform-transform-*).  Default None:
-        this function is unchanged.  Refused with td_gs_contexts and ROM_use_basis, which build
+        this function is unchanged.  Refused with td_gs_contexts, ROM, NR lookup and external EOB, which build
         their banks on routes the seam has not been validated on.
     """
-    if hlm_transform is not None and (td_gs_contexts is not None or ROM_use_basis):
+    if hlm_transform is not None and (td_gs_contexts is not None or ROM_use_basis or ROM_group
+                                      or nr_lookup or use_external_EOB):
         raise ValueError("hlm_transform (--supplementary-waveform-transform-*) is not supported "
-                         "with td_gs_contexts or ROM_use_basis")
+                         "with td_gs_contexts, ROM, NR lookup or external EOB templates")
     if td_gs_contexts is not None:
         if force_22_mode:
             raise NotImplementedError("force_22_mode is not implemented for the td-gs Precompute (td_gs_contexts)")
