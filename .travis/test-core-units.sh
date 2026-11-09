@@ -629,8 +629,12 @@ done
 # (26 passed locally, no skips) -> PROVISIONAL 1569/1543.
 # PR #518 at rift_O4d 93305ba0 plus both review rounds (2026-11-08): MEASURED whole-manifest
 # locally (venv python 3.13, lalsuite 8, no cupy/jax): 1775 JUnit outcomes / 1743 passed / 32 skipped.
-# CIT joint collection has 1772 items; JUnit can report three extra backend subtests.
-# Re-measure the passed/skipped floors on CIT before merging.
+# CIT whole-manifest remeasurement (2026-11-09), igwn-py311-20261013,
+# PYTHONNOUSERSITE=1, two workers, no GPU: 1772 items, 1739 passed, 32 skipped,
+# one xfailed; JUnit reports 33 skipped outcomes and no failures or errors.
+# Three backend subtest passes inflate the prior JUnit totals. CIT also skips
+# test_eos_posterior_tempering_kwarg::test_the_argparse_spelling_is_inert_at_the_sampler
+# when CuPy imports: that leg is not reproducible under NumPy seeding.
 EXPECTED_TESTS=1772
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
@@ -680,7 +684,7 @@ EXPECTED_TESTS=1772
 # CIP/PUFF named extra grid columns: +15 passes (provisional, see EXPECTED_TESTS).
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 passes (provisional).
 # PR #518 at rift_O4d 93305ba0 plus both review rounds: measured locally, see EXPECTED_TESTS.
-EXPECTED_PASSED=1743
+EXPECTED_PASSED=1739
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
@@ -688,7 +692,7 @@ EXPECTED_PASSED=1743
 # The six td-gs startup checks in test_td_upstream_guards.py (non-native template generators,
 # five cases, and the native-generator case) import td_gs_precompute, so they also skip here;
 # ci.yml's time-domain likelihood step runs them with tdanalysis installed.
-MAX_SKIPPED=32 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent
+MAX_SKIPPED=33 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
