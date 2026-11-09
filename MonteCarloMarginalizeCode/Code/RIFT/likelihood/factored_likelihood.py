@@ -819,6 +819,43 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
                 psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, N_shift, N_window,
                 analyticPSD_Q, inv_spec_trunc_Q, T_spec, calibration_realizations=cal_realization,
                 calibration_conjugate=calibration_conjugate, IP_factory=IP_factory)
+        # Glitch basis with arrival-time-dependent U'(t) (Eq. Uprime): replace the scalar
+        # U', V' (evaluated at the template's storage placement) by time series on the Q
+        # grid.  beta_lm(t)_j = <h_lm(t)|B_j> comes from the same overlap as Q, so it shares
+        # Q's time index; NoLoop then gathers U'(t) at each sample's arrival time.
+        _gti = getattr(IP_factory, "glitch_time_indexed_context", None)
+        _gctx = _gti(P.fmin, fMax, 1./2./P.deltaT, P.deltaF, psd_dict[det],
+                     analyticPSD_Q=analyticPSD_Q) if _gti is not None else None
+        if _gctx is not None:
+            if cal_realization is not None:
+                raise NotImplementedError("time-indexed glitch U'(t) with calibration marginalization")
+            _raw = IP_factory.uncorrected(_gctx)
+            _modes = list(rholms[det].keys())
+            _hl = {m: hlms[m] for m in _modes}
+            _hlc = {m: hlms_conj[m] for m in _modes}
+            _cols = [ComputeModeIPTimeSeries(_hl, _Bj, psd_dict[det], P.fmin, fMax, 1./2./P.deltaT,
+                                             N_shift, N_window, analyticPSD_Q, inv_spec_trunc_Q, T_spec,
+                                             IP_factory=_raw) for _Bj in _gctx.glitch_basis_fd()]
+            _cols_c = [ComputeModeIPTimeSeries(_hlc, _Bj, psd_dict[det], P.fmin, fMax, 1./2./P.deltaT,
+                                               N_shift, N_window, analyticPSD_Q, inv_spec_trunc_Q, T_spec,
+                                               IP_factory=_raw) for _Bj in _gctx.glitch_basis_fd()]
+            _beta = {m: np.stack([np.asarray(c[m].data.data) for c in _cols], axis=-1) for m in _modes}
+            _beta_c = {m: np.stack([np.asarray(c[m].data.data) for c in _cols_c], axis=-1) for m in _modes}
+            _U0 = ComputeModeCrossTermIP(hlms, hlms, psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, P.deltaF,
+                                         analyticPSD_Q, inv_spec_trunc_Q, T_spec, verbose=False, IP_factory=_raw)
+            _V0 = ComputeModeCrossTermIP(hlms_conj, hlms, psd_dict[det], P.fmin, fMax, 1./2./P.deltaT, P.deltaF,
+                                         analyticPSD_Q, inv_spec_trunc_Q, T_spec, prefix="V", verbose=False,
+                                         IP_factory=_raw)
+            _U0 = {k: v for k, v in _U0.items() if k[0] in _beta and k[1] in _beta}
+            _V0 = {k: v for k, v in _V0.items() if k[0] in _beta and k[1] in _beta}
+            crossTerms[det], crossTermsV[det] = IP_factory.glitch_time_indexed_terms(
+                det, _gctx, _beta, _beta_c, _U0, _V0)
+            _k22 = ((2, 2), (2, 2))
+            if _k22 in crossTerms[det]:
+                _u = np.real(crossTerms[det][_k22])
+                print("  [G3] %s U'(t) time-indexed: (2,2) absorbed fraction over the window "
+                      "min %.3e max %.3e" % (det, 1 - _u.max() / np.real(_U0[_k22]),
+                                             1 - _u.min() / np.real(_U0[_k22])))
 #        rhoXX = rholms[det][list(rholms[det].keys())[0]]
         # The vector of time steps within our window of interest
         # for which we have discrete values of the rholms
@@ -857,12 +894,14 @@ def PrecomputeLikelihoodTerms(event_time_geo, t_window, P, data_dict,
       for ifo in rholms:
         rho_max_ifo = 0
         for mode in rholms[ifo]:
-          if np.real(crossTerms[ifo][(mode,mode)]) >0:
+          # time-indexed U(t) (glitch U'(t)): the window mean serves this rough guess
+          U_mm = np.real(np.mean(crossTerms[ifo][(mode,mode)]))
+          if U_mm >0:
              # Skip SNR sanity check for modes which don't contribute
              rho_max_ifo= np.max(np.abs(rholms[ifo][mode].data.data))
-             delta_here= rho_max_ifo**2/np.real(crossTerms[ifo][(mode,mode)])
+             delta_here= rho_max_ifo**2/U_mm
              if verbose:
-               print("  ... ", ifo, mode,rho_max_ifo,np.real(crossTerms[ifo][(mode,mode)]), delta_here)
+               print("  ... ", ifo, mode,rho_max_ifo,U_mm, delta_here)
              rho_max+= delta_here
       rho_max = np.sqrt(rho_max)/2.3  # guesstimate, keep in mind there are sky location terms, coherence, etc
       print("SNR guess (internal, from det response) ", rho_max,rho_max**2/2)
