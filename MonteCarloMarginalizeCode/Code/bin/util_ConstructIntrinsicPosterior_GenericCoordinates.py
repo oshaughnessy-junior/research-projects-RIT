@@ -4825,6 +4825,9 @@ np.savetxt(opts.fname_output_samples+"+annotation_export.dat", [[opts.n_output_s
 # are all read as absolute lnL by the next stage, so a plugin's internal centring must not reach
 # them.  Adds 0.0 unless a supplementary-likelihood plugin reported an offset.
 lnL_list = np.array(lnL_list,dtype=internal_dtype) + supplemental_ln_likelihood_offset
+if eos_affine_central and opts.eos_branch_prior == "mass-per-branch":
+    # Branch multiplicity is a prior measure; exported lnL is the physical event likelihood.
+    lnL_list -= np.log(np.prod(np.asarray(eos_branch_list, dtype=float)[:, 2:], axis=1))
 # Hyperpipeline ASCII grid writer (opt-in via env var).  See note above the
 # earlier identical writer site -- same rationale.
 if _hpio.is_active():

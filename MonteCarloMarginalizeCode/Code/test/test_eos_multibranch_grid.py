@@ -6,9 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import lal
 import numpy as np
 import pytest
 
+from RIFT import lalsimutils
 from RIFT.physics import eos_affine
 from RIFT.physics.eos_sequence_grid import SequenceGrid
 from test_eos_affine_central import (CODE, DRIVER, FakeTwinEOS, _central,
@@ -139,6 +141,17 @@ def test_hyperpipe_assembled_marg_runs_varying_nmb_grid(tmp_path, prior, tide_se
     np.testing.assert_allclose(observed, expected / expected[0], rtol=.06)
     if prior == "mass-per-branch" and not tide_sensitive:
         assert observed[1] > 1.05 and observed[2] > observed[1]
+    # Cached sampler integrands include branch prior weights. Exported lnL must not.
+    for row_id in range(3):
+        samples = lalsimutils.xml_to_ChooseWaveformParams_array(str(tmp_path / ("samples-%d.xml.gz" % row_id)))
+        exported = np.loadtxt(tmp_path / ("samples-%d_lnL.dat" % row_id))[:len(samples)]
+        physical = []
+        for sample in samples:
+            m1, m2 = sample.m1 / lal.MSUN_SI, sample.m2 / lal.MSUN_SI
+            mc = (m1 * m2) ** .6 / (m1 + m2) ** .2
+            lt = lalsimutils.tidal_lambda_tilde(m1, m2, sample.lambda1, sample.lambda2)[0]
+            physical.append(20 - .5 * ((mc - 1.62) / .01) ** 2 - .5 * ((lt - 300) / 250) ** 2 if tide_sensitive else 0.)
+        np.testing.assert_allclose(exported, physical, atol=2e-4)
     # A separate N=1 call uses the identical EOS selection convention as a chunk.
     one = list(cmd)
     one[one.index("--using-eos-index") + 1] = "1"
