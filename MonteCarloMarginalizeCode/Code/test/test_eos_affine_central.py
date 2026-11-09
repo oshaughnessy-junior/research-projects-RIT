@@ -602,6 +602,39 @@ def test_driver_end_to_end_central_fake_twin(tmp_path):
         assert abs(lnz[sampler] - lnz["adaptive_cartesian"]) < 0.3, lnz
 
 
+def _prior_branch_ratio_quadrature(n=600):
+    """ln[int pi n1 n2 / int pi] for the CIP mc, delta_mc prior on the fake twin (mass mode: n = 1 below mMax).
+
+    CIP's default prior is p(mc) ~ mc on --mc-range and p(delta_mc) ~ eta^(-6/5) on [0, 0.9].
+    """
+    eos = FakeTwinEOS()
+    mc = np.linspace(1.55, 1.70, n + 1)
+    d = np.linspace(0., 0.9, n + 1)
+    MC, D = np.meshgrid((mc[1:] + mc[:-1]) / 2, (d[1:] + d[:-1]) / 2, indexing="ij")
+    eta = 0.25 * (1 - D ** 2)
+    w = MC * eta ** -1.2
+    M = MC / eta ** 0.6
+    m1, m2 = M * (1 + D) / 2, M * (1 - D) / 2
+    nb = lambda m: sum(((lo <= m) & (m <= hi)).astype(float) for lo, hi in eos.bounds)
+    mass = (m1 < eos.mMaxMsun) & (m2 < eos.mMaxMsun) & (m1 >= eos.mMinMsun) & (m2 >= eos.mMinMsun)
+    central = nb(m1) * nb(m2) * (m1 < eos.mMaxMsun_all) * (m2 < eos.mMaxMsun_all)
+    return np.log((w * central).sum() / (w * mass).sum())
+
+
+def test_driver_integrate_prior_central_weight_is_branch_count(tmp_path):
+    """rift_O4d --integrate-prior: L = 1, so ln Zc - ln Zm is the prior mean of n1 n2 (quadrature 2.069)."""
+    _ile_file(tmp_path / "ile.dat")
+    res = {}
+    for mode in ("mass", "central"):
+        _check_ok(_run_fake_driver(tmp_path, "prior_" + mode, "--integrate-prior", "--eos-affine-parameter", mode))
+        ann = np.loadtxt(tmp_path / ("res_prior_%s+annotation.dat" % mode), usecols=(0, 1))
+        res[mode] = (float(np.loadtxt(tmp_path / ("res_prior_%s.dat" % mode))), float(ann[1]))
+    expect = _prior_branch_ratio_quadrature()
+    diff = res["central"][0] - res["mass"][0]
+    # sigma columns are relative errors of Z, i.e. errors of ln Z.
+    assert abs(diff - expect) < 4 * np.hypot(res["central"][1], res["mass"][1]) + 0.01, (diff, expect, res)
+
+
 def test_driver_branch_labels_follow_posterior_after_lnL_offset_cut(tmp_path):
     """Data favour branch 1 for both stars; --lnL-offset must not misalign the branch variates."""
     _ile_file(tmp_path / "ile_b1.dat", lt_peak=45., lt_sigma=25.)
