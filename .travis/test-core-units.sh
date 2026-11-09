@@ -628,9 +628,10 @@ done
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 in test_waveform_transform_pseudo_build.py
 # (26 passed locally, no skips) -> PROVISIONAL 1569/1543.
 # PR #518 at rift_O4d 93305ba0 plus both review rounds (2026-11-08): MEASURED whole-manifest
-# locally (venv python 3.13, lalsuite 8, no cupy/jax): 1775 collected / 1743 passed / 32 skipped.
-# Re-measure on CIT before merging.
-EXPECTED_TESTS=1775
+# locally (venv python 3.13, lalsuite 8, no cupy/jax): 1775 JUnit outcomes / 1743 passed / 32 skipped.
+# CIT joint collection has 1772 items; JUnit can report three extra backend subtests.
+# Re-measure the passed/skipped floors on CIT before merging.
+EXPECTED_TESTS=1772
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -803,11 +804,11 @@ PY
 )
 rm -f "${junit}"
 PASSED=$(( TOT - FAIL - ERR - SKIP ))
-echo "== outcomes: ${TOT} collected, ${PASSED} passed, ${SKIP} skipped, ${FAIL} failed, ${ERR} errored =="
+echo "== outcomes: ${TOT} total, ${PASSED} passed, ${SKIP} skipped, ${FAIL} failed, ${ERR} errored =="
 
 out_rc=0
 if [ "${TOT}" -lt "${EXPECTED_TESTS}" ]; then
-  echo "test-core-units.sh: collected ${TOT} tests, expected at least ${EXPECTED_TESTS}." >&2
+  echo "test-core-units.sh: reported ${TOT} JUnit outcomes, expected at least ${EXPECTED_TESTS}." >&2
   echo "  A file was renamed, or a test_* entry point was dropped.  Restore it, or lower this" >&2
   echo "  floor DELIBERATELY in the same commit that removes the tests." >&2
   out_rc=1
