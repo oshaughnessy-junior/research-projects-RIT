@@ -764,6 +764,7 @@ elif opts.using_eos!=None and not(opts.using_eos_for_prior):
                 opts.using_eos_branch is not None
                 or opts.using_eos_dirty_phase_transitions
                 or opts.using_eos_extended_family
+                or (eos_affine_central and eos_affine.wants_multipart_file_reader(lalsim))
             ),
         )
     elif 'lal_' in eos_name:
