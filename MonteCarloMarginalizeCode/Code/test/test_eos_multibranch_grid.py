@@ -33,6 +33,17 @@ def test_conditional_branch_prior_is_normalized_at_fixed_mass():
         _central(eos, mass, u, branch_prior="unknown")
 
 
+
+def test_fixed_redshift_changes_fit_masses_but_not_eos_tides():
+    eos = FakeTwinEOS()
+    fit, logw, branches = _central(eos, [[1.8, 1.7]], [[.9, .1]],
+                                   coord_names=("m1", "m2", "lambda1", "lambda2"),
+                                   source_redshift=.3)
+    np.testing.assert_allclose(fit[0, :2], [2.34, 2.21])
+    np.testing.assert_allclose(fit[0, 2:], [eos.branch_lambda(1.8, 1), eos.branch_lambda(1.7, 0)])
+    np.testing.assert_array_equal(branches, [[1, 0]])
+    np.testing.assert_allclose(logw, np.log(4))
+
 def test_sequence_grid_selects_unsorted_native_indices_and_reuses_sequence(tmp_path):
     seq = _nmb_fixture(tmp_path)
     grid = tmp_path / "grid.dat"

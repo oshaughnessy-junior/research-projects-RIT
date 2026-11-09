@@ -52,7 +52,8 @@ util_ConstructIntrinsicPosterior_GenericCoordinates.py \
 ```
 
 These commands assume shared storage, including the HDF5 file. For file-transfer
-workers, add that file to the transfer list and use its worker-side path.
+workers, add its submit-host path to `general.transfer-files` and set
+`--eos-sequence-file` to the transferred basename visible on the worker.
 The local acceptance test does not establish OSG operation.
 
 `sequence_index` is categorical. A finite ensemble can be evaluated and
