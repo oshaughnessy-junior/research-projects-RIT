@@ -1,3 +1,5 @@
+import numpy as np
+
 from RIFT.calmarg import rift_source
 
 
@@ -33,7 +35,6 @@ def _calmarg_modes(monkeypatch, extra_waveform_kwargs):
 
     Stops right after hlmoft, so bilby (needed later, for utils.nfft) is not required.
     """
-    import numpy as np
     real = rift_source.lalsimutils.hlmoft
     seen = {}
 
@@ -60,7 +61,6 @@ def _calmarg_modes(monkeypatch, extra_waveform_kwargs):
 
 def test_calmarg_waveform_honors_typed_kwargs_like_ile(monkeypatch):
     """XPHM fd_centering_factor changes the calmarg modes, and they equal ILE's call form."""
-    import numpy as np
     kw = {"fd_L_frame": True, "fd_alignment_postevent_time": None, "fd_centering_factor": 0.75}
     seen = _calmarg_modes(monkeypatch, kw)
     seen_def = _calmarg_modes(monkeypatch, {"fd_L_frame": True})
