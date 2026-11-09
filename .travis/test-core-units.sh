@@ -596,7 +596,11 @@ EXPECTED_PASSED=1397
 # The six td-gs startup checks in test_td_upstream_guards.py (non-native template generators,
 # five cases, and the native-generator case) import td_gs_precompute, so they also skip here;
 # ci.yml's time-domain likelihood step runs them with tdanalysis installed.
-MAX_SKIPPED=32 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent
+# test_eos_affine_central.py: +5.  Two nmbseq cases skip until the NMB sequence branch API
+# (companion PR #536) is on this branch, and three strict xfails record pre-existing rift_O4d
+# mass-mode export behaviour with --using-eos-branch --no-matter2.  This counter counts xfails
+# as skips.
+MAX_SKIPPED=37 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent; test_eos_affine_central.py's two nmbseq skips and three strict xfails
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
