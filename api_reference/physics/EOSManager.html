@@ -453,6 +453,29 @@ load_eos takes a 2D array with pressure, energy_density and rest_mass_density (n
 
 </dd></dl>
 
+<dl class="py class">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceBranchView">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">RIFT.physics.EOSManager.</span></span><span class="sig-name descname"><span class="pre">EOSSequenceBranchView</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceBranchView" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference internal" href="#RIFT.physics.EOSManager.EOSBranchView" title="RIFT.physics.EOSManager.EOSBranchView"><code class="xref py py-class docutils literal notranslate"><span class="pre">EOSBranchView</span></code></a></p>
+<p><a class="reference internal" href="#RIFT.physics.EOSManager.EOSBranchView" title="RIFT.physics.EOSManager.EOSBranchView"><code class="xref py py-class docutils literal notranslate"><span class="pre">EOSBranchView</span></code></a> for one stable branch of an NMB sequence EOS.</p>
+<p>Mass-radius-tidal queries are pinned to <code class="docutils literal notranslate"><span class="pre">branch_id</span></code>; <code class="docutils literal notranslate"><span class="pre">mMinMsun</span></code> and
+<code class="docutils literal notranslate"><span class="pre">mMaxMsun</span></code> (and <code class="docutils literal notranslate"><span class="pre">mMaxMsun_all</span></code>) are that branch’s mass bounds and
+<code class="docutils literal notranslate"><span class="pre">number_of_branches</span></code> is 1.  <code class="docutils literal notranslate"><span class="pre">branches_for_m</span></code> still reports the
+source’s branch id.
+<code class="docutils literal notranslate"><span class="pre">lambda_from_m</span></code> interpolates inside the branch, returns 1e-8 above it,
+and raises ValueError below it.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceBranchView.R_from_m">
+<span class="sig-name descname"><span class="pre">R_from_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m_Msun</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceBranchView.R_from_m" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceBranchView.lambda_from_m">
+<span class="sig-name descname"><span class="pre">lambda_from_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceBranchView.lambda_from_m" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
 <dl class="py function">
 <dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceFromFile">
 <span class="sig-prename descclassname"><span class="pre">RIFT.physics.EOSManager.</span></span><span class="sig-name descname"><span class="pre">EOSSequenceFromFile</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fname</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceFromFile" title="Link to this definition"></a></dt>
@@ -576,6 +599,51 @@ that EOSSequenceLandry uses – so all inherited accessors
 <code class="docutils literal notranslate"><span class="pre">oned_order_values</span></code>) work unchanged and are branch-safe by construction.</p>
 <p>Only <code class="docutils literal notranslate"><span class="pre">load_ns</span></code> is honoured (TOV sequence); the optional microphysical EOS
 tables are not read here (use the legacy emitter / EOSSequenceLandry for those).</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceNMB.R_of_m_indx">
+<span class="sig-name descname"><span class="pre">R_of_m_indx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m_Msun</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceNMB.R_of_m_indx" title="Link to this definition"></a></dt>
+<dd><p>R(m) in the file’s units (km) for EOS <code class="docutils literal notranslate"><span class="pre">indx</span></code>.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceNMB.branches_at_m_indx">
+<span class="sig-name descname"><span class="pre">branches_at_m_indx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m_Msun</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceNMB.branches_at_m_indx" title="Link to this definition"></a></dt>
+<dd><p>Ids of the stable branches whose closed [Mmin, Mmax] contains m_Msun.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceNMB.branches_of_indx">
+<span class="sig-name descname"><span class="pre">branches_of_indx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">indx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceNMB.branches_of_indx" title="Link to this definition"></a></dt>
+<dd><p>List of <code class="docutils literal notranslate"><span class="pre">{M,</span> <span class="pre">R,</span> <span class="pre">Lambda}</span></code> records, one per stable branch.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceNMB.lambda_of_m_indx">
+<span class="sig-name descname"><span class="pre">lambda_of_m_indx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m_Msun</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceNMB.lambda_of_m_indx" title="Link to this definition"></a></dt>
+<dd><p>Lambda(m) for EOS <code class="docutils literal notranslate"><span class="pre">indx</span></code>; see the branch-aware accessor notes.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceNMB.m_max_of_indx">
+<span class="sig-name descname"><span class="pre">m_max_of_indx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">indx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'primary'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceNMB.m_max_of_indx" title="Link to this definition"></a></dt>
+<dd><p>Maximum stable mass of EOS <code class="docutils literal notranslate"><span class="pre">indx</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">branch</span></code> is <code class="docutils literal notranslate"><span class="pre">&quot;primary&quot;</span></code> (v1 default), <code class="docutils literal notranslate"><span class="pre">&quot;all&quot;</span></code> (largest mass on
+any stable branch), or an integer branch id; <code class="docutils literal notranslate"><span class="pre">branch_id</span></code> is an
+alias for <code class="docutils literal notranslate"><span class="pre">branch</span></code>.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceNMB.m_min_of_indx">
+<span class="sig-name descname"><span class="pre">m_min_of_indx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">indx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'primary'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceNMB.m_min_of_indx" title="Link to this definition"></a></dt>
+<dd><p>Minimum stored stable mass of EOS <code class="docutils literal notranslate"><span class="pre">indx</span></code> (<code class="docutils literal notranslate"><span class="pre">branch</span></code> as in m_max_of_indx).</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceNMB.n_branches_of_indx">
+<span class="sig-name descname"><span class="pre">n_branches_of_indx</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">indx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceNMB.n_branches_of_indx" title="Link to this definition"></a></dt>
+<dd><p>Number of stable branches of EOS <code class="docutils literal notranslate"><span class="pre">indx</span></code>.</p>
+</dd></dl>
+
 </dd></dl>
 
 <dl class="py class">
@@ -588,6 +656,13 @@ curves (mean + basis <code class="docutils literal notranslate"><span class="pre
 EOS’s curves, take the stable rising branch, and populate the same in-memory
 <code class="docutils literal notranslate"><span class="pre">eos_ns_tov</span></code> dict EOSSequenceLandry/EOSSequenceNMB use – so every inherited
 accessor works unchanged.  Self-contained (numpy only); no nmbackend dependency.</p>
+<p>Branch ids are representation-specific.  The file carries no stability
+flag, so a point counts as stable when M rises (<code class="docutils literal notranslate"><span class="pre">diff(M)</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>).
+Reconstruction wiggles therefore split curves into extra short branches
+(17 branches of at most 6 points in the paper-1 prior archive), so the
+branch count and ids of an EOS can differ from its <code class="docutils literal notranslate"><span class="pre">nss</span></code> original.  A
+wiggle can also end the primary branch early (0.81 vs 1.59 Msun for some
+EOS); this primary-branch behaviour is the v1 reader’s and is unchanged.</p>
 </dd></dl>
 
 <dl class="py class">
@@ -600,20 +675,62 @@ fixed-EOS (<code class="docutils literal notranslate"><span class="pre">--using-
 realization, MARG-style) for tabular/compressed sequence files – the
 reference computation against which the ordering-statistic (tabular
 hyperpipeline) approximation is validated.</p>
+<p>Branch surface (NMB sequences only), mirroring <a class="reference internal" href="#RIFT.physics.EOSManager.EOSConcrete" title="RIFT.physics.EOSManager.EOSConcrete"><code class="xref py py-class docutils literal notranslate"><span class="pre">EOSConcrete</span></code></a>:
+<code class="docutils literal notranslate"><span class="pre">branches_for_m</span></code>, <code class="docutils literal notranslate"><span class="pre">for_branch</span></code>, and a <code class="docutils literal notranslate"><span class="pre">branch_id</span></code> keyword on
+<code class="docutils literal notranslate"><span class="pre">lambda_from_m</span></code>, <code class="docutils literal notranslate"><span class="pre">lambda_from_m_vector</span></code>, <code class="docutils literal notranslate"><span class="pre">radius_from_m</span></code> and
+<code class="docutils literal notranslate"><span class="pre">R_from_m</span></code>.  <code class="docutils literal notranslate"><span class="pre">branch_id=None</span></code> keeps the v1 primary-branch projection
+(it never raises for twin-star masses); <code class="docutils literal notranslate"><span class="pre">mMaxMsun</span></code> is the primary-branch
+maximum and <code class="docutils literal notranslate"><span class="pre">mMaxMsun_all</span></code> the maximum over every stable branch.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.R_from_m">
-<span class="sig-name descname"><span class="pre">R_from_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m_Msun</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.R_from_m" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">R_from_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m_Msun</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.R_from_m" title="Link to this definition"></a></dt>
+<dd><p>Radius in the file’s units (km); NaN outside an explicit branch.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.branch_maximum_mass_msun">
+<span class="sig-name descname"><span class="pre">branch_maximum_mass_msun</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">branch_id</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.branch_maximum_mass_msun" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.branch_minimum_mass_msun">
+<span class="sig-name descname"><span class="pre">branch_minimum_mass_msun</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">branch_id</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.branch_minimum_mass_msun" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.branches_for_m">
+<span class="sig-name descname"><span class="pre">branches_for_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.branches_for_m" title="Link to this definition"></a></dt>
+<dd><p>Return stable branch ids whose closed mass interval contains <code class="docutils literal notranslate"><span class="pre">m</span></code>.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.for_branch">
+<span class="sig-name descname"><span class="pre">for_branch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">branch_id</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.for_branch" title="Link to this definition"></a></dt>
+<dd><p>Return a legacy-scalar view restricted to one stable branch.</p>
+<p><code class="docutils literal notranslate"><span class="pre">&quot;primary&quot;</span></code> selects branch 0.</p>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.lambda_from_m">
-<span class="sig-name descname"><span class="pre">lambda_from_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.lambda_from_m" title="Link to this definition"></a></dt>
-<dd></dd></dl>
+<span class="sig-name descname"><span class="pre">lambda_from_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.lambda_from_m" title="Link to this definition"></a></dt>
+<dd><p>Dimensionless Lambda(m); m in Msun or SI kg.</p>
+<p><code class="docutils literal notranslate"><span class="pre">branch_id=None</span></code> (or <code class="docutils literal notranslate"><span class="pre">&quot;primary&quot;</span></code>): v1 primary branch, 1e-8 above
+<code class="docutils literal notranslate"><span class="pre">0.999</span> <span class="pre">*</span> <span class="pre">mMaxMsun</span></code>.  Integer <code class="docutils literal notranslate"><span class="pre">branch_id</span></code>: interpolate inside that
+branch, 1e-8 above <code class="docutils literal notranslate"><span class="pre">0.999</span> <span class="pre">*</span> <span class="pre">mMaxMsun_all</span></code>, ValueError otherwise.</p>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.lambda_from_m_vector">
-<span class="sig-name descname"><span class="pre">lambda_from_m_vector</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.lambda_from_m_vector" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">lambda_from_m_vector</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.lambda_from_m_vector" title="Link to this definition"></a></dt>
 <dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="RIFT.physics.EOSManager.EOSSequenceSingleIndex.radius_from_m">
+<span class="sig-name descname"><span class="pre">radius_from_m</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">branch_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.physics.EOSManager.EOSSequenceSingleIndex.radius_from_m" title="Link to this definition"></a></dt>
+<dd><p>Return radius in metres.</p>
+<p><code class="docutils literal notranslate"><span class="pre">branch_id=None</span></code> uses the primary-branch projection (as R_from_m);
+an explicit branch raises ValueError outside that branch.</p>
+</dd></dl>
 
 </dd></dl>
 
