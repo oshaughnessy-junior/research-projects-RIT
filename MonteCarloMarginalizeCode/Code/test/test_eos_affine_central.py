@@ -733,6 +733,19 @@ def test_driver_grid_rows_probe_branch_surface_per_row(tmp_path_factory, chunk, 
     assert not (work / "MARG-1_eos_branch.dat").exists()
 
 
+def test_driver_rejects_central_fixed_tidal_override_before_integration(tmp_path):
+    _ile_file(tmp_path / "ile.dat")
+    result = _run_fake_driver(tmp_path, "fixed", "--eos-affine-parameter", "central",
+                              "--fixed-parameter", "lambda2", "--fixed-parameter-value", "0")
+    assert result.returncode != 0
+    assert "--fixed-parameter overrides to EOS coordinates: lambda2" in result.stderr
+    assert not (tmp_path / "res_fixed.dat").exists()
+
+
+def test_central_allows_fixed_non_eos_parameter():
+    eos_affine.validate_eos_affine_request("central", using_eos="lal_SLy", fixed_parameters=["s1z", "s2z"])
+
+
 def test_driver_rejects_branch_api_that_fails_at_startup(tmp_path):
     _ile_file(tmp_path / "ile.dat")
     result = _run_fake_driver(tmp_path, "landry", "--eos-affine-parameter", "central", eos="lal_FAKELANDRY")
@@ -752,6 +765,8 @@ def test_driver_rejects_branch_api_that_fails_at_startup(tmp_path):
     (dict(oracle_reference_sample_file="ref.xml.gz"), "oracle"),
     (dict(sampler_oracle=["RS"]), "oracle"),
     (dict(using_eos_for_prior=True), "--using-eos-for-prior"),   # rift_O4d only
+    (dict(fixed_parameters=["lambda2"]), "--fixed-parameter overrides to EOS coordinates: lambda2"),
+    (dict(fixed_parameters=["s1z", "mc"]), "EOS coordinates: mc"),
 ])
 def test_central_option_guards(kwargs, match):
     args = dict(using_eos="lal_SLy")
