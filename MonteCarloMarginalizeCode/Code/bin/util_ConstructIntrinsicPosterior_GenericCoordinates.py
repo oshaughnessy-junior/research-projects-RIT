@@ -577,7 +577,8 @@ if eos_affine_central:
         sampler_oracle=opts.sampler_oracle,
         eccentric_phase_coordinates=opts.eccentric_phase_coordinates,
         eccentric_phase_sampling=opts.eccentric_phase_sampling,
-        using_eos_for_prior=opts.using_eos_for_prior)
+        using_eos_for_prior=opts.using_eos_for_prior,
+        fixed_parameters=opts.fixed_parameter)
     # A BH primary has no EOS: Lambda1 = 0 and branch weight 1, in the integrand and the export.
     eos_affine_no_matter1 = opts.no_matter1 or opts.assume_eos_but_primary_bh
 if (opts.using_eos_dirty_phase_transitions or opts.using_eos_extended_family) and (
