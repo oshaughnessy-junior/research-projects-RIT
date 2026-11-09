@@ -11,10 +11,11 @@ Groups:
 
   (b) GAP EXCISION -- a controlled signal plus a loud disturbance placed INSIDE a gap.
       Checks (i) the inpainting gap implementation equals the dense marginal
-      retained-sample precision K_RR - K_RG K_GG^+ K_GR to ~1e-10; (ii) the gapped likelihood on
+      retained-sample precision K_RR - K_RG K_GG^-1 K_GR of K_fill to ~1e-10; (ii) the gapped likelihood on
       glitchy data equals the gapped likelihood on glitch-free data (the disturbance is
       excised); (iii) WITHOUT the gap the glitch measurably contaminates the inner product;
-      (iv) the gapped likelihood equals a dense (C_RR)^-1 reference on a PSD with a line.
+      (iv) the gapped likelihood equals a dense (C_RR)^-1 reference on a PSD with a line,
+      C walled outside [fLow, fMax) as td-gs does, for one gap and two coupled gaps.
 
   (c) FULL-SEGMENT REGRESSION -- the segment machinery reduces to the full-segment path when
       no segment is configured (segment_dot_td == dot_td), and the default factory stays
@@ -32,6 +33,7 @@ PYTHONPATH=<worktree>/MonteCarloMarginalizeCode/Code.  Runnable as
 """
 
 import numpy as np
+import pytest
 import scipy.linalg
 
 import lal
@@ -184,49 +186,178 @@ def _line_psd(f):
     return out if out.size > 1 else float(out[0])
 
 
-def test_gap_matches_marginal_likelihood():
-    """A gap must marginalize over the deleted samples: precision (C_RR)^-1, not (C^-1)_RR.
+_TDGS_KAPPA = 1e8      # tdanalysis PSDToAutocorrConfig.target_condition_number default
 
-    Reference: the segment-model covariance C = (K + eps I)^-1, inverted densely on the
-    retained samples.  The error of <h|d> is measured in units of its noise spread, with
-    noise drawn from the colored PSD.  The cropped kernel (C^-1)_RR misses by ~2 sigma here.
-    fMax = fNyq keeps the reference well posed: with a band wall below Nyquist, K_GG has
-    near-null modes and the marginal depends on how they are regularized.
+
+def _walled_covariance(psd, fs, n, fLow, fMax):
+    """Dense circulant covariance of the gap noise model, built from the PSD directly.
+
+    In band [fLow, fMax) the one-sided weight is 1/S; every other bin carries the td-gs
+    wall weight min(max w / (kappa/2), min w).  C = K_fill^-1 is circulant with symbol 1/w.
     """
-    fs, n = 512.0, 1024                       # small full-length (circulant) segment
-    fnyq, df = fs / 2.0, fs / n
-    gap = (0.80, 0.95)                        # seconds into the segment
-    ctx = ToeplitzInnerProductContext(
-        _line_psd, df, fnyq, fLow=20.0, fMax=fnyq, analyticPSD_Q=True,
-        solver="dense", gaps=[gap])
-    K = scipy.linalg.toeplitz(ctx.kappa[:n])
+    df = fs / n
+    k = np.arange(n // 2 + 1)
+    band = (k >= int(round(fLow / df))) & (k < int(round(fMax / df)))
+    w = np.zeros(k.size)
+    w[band] = 1.0 / psd(k[band] * df)
+    w[~band] = min(w[band].max() / (0.5 * _TDGS_KAPPA), w[band].min())
+    return scipy.linalg.toeplitz(np.fft.irfft(1.0 / w, n=n))
+
+
+def _gap_errors(ctx, psd, fs, n, h, fMax):
+    """Code, cropped and band-pinv kernels against the dense (C_RR)^-1, in noise sigma."""
     R = np.nonzero(ctx.retain_mask)[0]
-    eps = 1e-9 * np.abs(K).max()
-    C = np.linalg.inv(K + eps * np.eye(n))
+    C = _walled_covariance(psd, fs, n, 20.0, fMax)
     K_marg = np.zeros((n, n))
     K_marg[np.ix_(R, R)] = np.linalg.inv(C[np.ix_(R, R)])
+    K = scipy.linalg.toeplitz(ctx.kappa[:n])     # band-limited K_seg
     K_crop = np.zeros((n, n))
     K_crop[np.ix_(R, R)] = K[np.ix_(R, R)]
+    G = ~ctx.retain_mask
+    K_pinv = np.zeros((n, n))                    # the earlier pseudo-inverse marginal
+    K_pinv[np.ix_(R, R)] = K[np.ix_(R, R)] - K[np.ix_(R, G)] @ np.linalg.pinv(
+        K[np.ix_(G, G)], rcond=1e-12, hermitian=True) @ K[np.ix_(G, R)]
 
     # noise covariance of the data: circulant with the PSD as its symbol
-    freqs = np.fft.fftfreq(n, 1.0 / fs)
-    Sym = _line_psd(freqs)
+    Sym = psd(np.fft.fftfreq(n, 1.0 / fs))
 
     def noise_sd(a):
         return np.sqrt(np.sum(np.abs(np.fft.fft(a)) ** 2 * Sym))
 
+    ref = K_marg @ h
+    sd = noise_sd(ref)
+    Kh_code = np.where(ctx.retain_mask, ctx._apply_seg(ctx._segment_window(h)).real, 0.0)
+    U_rel = abs(ctx.segment_dot_td(h, h).real - h @ ref) / (h @ ref)
+    return (noise_sd(Kh_code - ref) / sd, noise_sd(K_crop @ h - ref) / sd,
+            noise_sd(K_pinv @ h - ref) / sd, U_rel)
+
+
+def test_gap_matches_marginal_likelihood():
+    """A gap must marginalize over the deleted samples: precision (C_RR)^-1, not (C^-1)_RR.
+
+    Reference: C from the PSD with the td-gs wall outside [fLow, fMax), inverted densely
+    on the retained samples.  The error of <h|d> is measured in units of its noise spread,
+    with noise drawn from the colored PSD.  With fMax < fNyq the band-limited K_GG has
+    near-null modes, so the cropped kernel and the band pseudo-inverse both miss.
+    """
+    fs, n = 512.0, 1024                       # small full-length (circulant) segment
+    fnyq, df = fs / 2.0, fs / n
+    fMax = 200.0
+    gap = (0.80, 0.95)                        # seconds into the segment
+    ctx = ToeplitzInnerProductContext(
+        _line_psd, df, fnyq, fLow=20.0, fMax=fMax, analyticPSD_Q=True,
+        solver="dense", gaps=[gap])
     t = np.arange(n) / fs
     h = np.exp(-0.5 * ((t - 0.85) / 0.15) ** 2) * np.cos(2 * np.pi * (40.0 * t + 30.0 * t ** 2))
-    Kh_code = np.where(ctx.retain_mask, ctx._apply_seg(ctx._segment_window(h)).real, 0.0)
-    sd = noise_sd(K_marg @ h)
-    err_code = noise_sd(Kh_code - K_marg @ h) / sd
-    err_crop = noise_sd(K_crop @ h - K_marg @ h) / sd
-    U_rel = abs(ctx.segment_dot_td(h, h).real - h @ K_marg @ h) / (h @ K_marg @ h)
-    print("[T5-b'] err(code)=%.3e sigma  err(cropped)=%.3e sigma  U_rel=%.3e"
-          % (err_code, err_crop, U_rel))
-    assert err_crop > 1.0             # the fixture discriminates the two kernels
-    assert err_code < 1e-2
-    assert U_rel < 1e-3
+    err_code, err_crop, err_pinv, U_rel = _gap_errors(ctx, _line_psd, fs, n, h, fMax)
+    print("[T5-b'] err(code)=%.3e  err(cropped)=%.3e  err(band pinv)=%.3e sigma  U_rel=%.3e"
+          % (err_code, err_crop, err_pinv, U_rel))
+    assert err_crop > 1.0             # the fixture discriminates the cropped kernel
+    assert err_pinv > 1e-2            # ... and the unregularized pseudo-inverse
+    assert err_code < 1e-6
+    assert U_rel < 1e-8
+
+
+def test_two_gaps_match_marginal_likelihood():
+    """Two gaps couple through K_fill; the preconditioned CG solve must keep that coupling."""
+    fs, n = 512.0, 1024
+    fnyq, df = fs / 2.0, fs / n
+    fMax = 200.0
+    ctx = ToeplitzInnerProductContext(
+        _line_psd, df, fnyq, fLow=20.0, fMax=fMax, analyticPSD_Q=True,
+        solver="dense", gaps=[(0.80, 0.95), (1.00, 1.10)])
+    assert len(ctx._gap_runs) == 2
+    t = np.arange(n) / fs
+    h = np.exp(-0.5 * ((t - 0.9) / 0.2) ** 2) * np.cos(2 * np.pi * (40.0 * t + 30.0 * t ** 2))
+    err_code, err_crop, _, U_rel = _gap_errors(ctx, _line_psd, fs, n, h, fMax)
+    print("[T5-b''] two gaps: err(code)=%.3e sigma  U_rel=%.3e" % (err_code, U_rel))
+    assert err_crop > 1.0
+    assert err_code < 1e-6
+    assert U_rel < 1e-8
+
+
+def _strong_lines_psd(f):
+    """Colored PSD with narrow lines 1e8-1e10 above it: in-band range ~1e10 > _GAP_KAPPA/2."""
+    f = np.atleast_1d(np.asarray(f, dtype=float))
+    fsafe = np.maximum(np.abs(f), 1.0)
+    out = 1e-46 * (1.0 + (20.0 / fsafe) ** 4 + (fsafe / 250.0) ** 2
+                   + sum(a * np.exp(-((fsafe - f0) / 0.6) ** 2)
+                         for f0, a in ((35.0, 1e8), (60.0, 1e9), (150.0, 1e10))))
+    return out if out.size > 1 else float(out[0])
+
+
+@pytest.mark.parametrize("gaps", [[(0.80, 0.95)], [(0.30, 0.60), (0.61, 0.95)]])
+def test_gap_with_wide_dynamic_range_psd(gaps):
+    """In-band range above kappa/2: the wall is min(w_band) and the solves stay accurate."""
+    fs, n = 512.0, 1024
+    ctx = ToeplitzInnerProductContext(
+        _strong_lines_psd, fs / n, fs / 2.0, fLow=20.0, fMax=200.0, analyticPSD_Q=True,
+        solver="dense", gaps=gaps)
+    assert len(ctx._gap_runs) == len(gaps)
+    t = np.arange(n) / fs
+    h = np.exp(-0.5 * ((t - 0.85) / 0.15) ** 2) * np.cos(2 * np.pi * (40.0 * t + 30.0 * t ** 2))
+    err_code, err_crop, _, U_rel = _gap_errors(ctx, _strong_lines_psd, fs, n, h, 200.0)
+    print("[T5-wide] %d gap(s): err(code)=%.3e sigma  U_rel=%.3e" % (len(gaps), err_code, U_rel))
+    assert err_crop > 1.0
+    assert err_code < 1e-4
+    assert U_rel < 1e-5
+
+
+def test_gapped_overlap_high_passes_out_of_band_data():
+    """A gap couples out-of-band data into the band; the data high-pass removes it.
+
+    The gap and template sit mid-stream, 8 s from the ends, clear of the filter transients."""
+    fs, n = 512.0, 8192
+    t = np.arange(n) / fs
+    f = np.fft.rfftfreq(n, 1.0 / fs)
+    band = (f >= 20.0) & (f < 200.0)
+    rms_band = np.sqrt(np.sum(_line_psd(f[band])) * fs / n)
+    s = 1e4 * rms_band * np.cos(2 * np.pi * 2.0 * t + 0.3)      # 2 Hz, far above the wall
+    h = np.exp(-0.5 * ((t - 8.0) / 0.3) ** 2) * np.cos(2 * np.pi * (40.0 * t + 15.0 * (t - 8) ** 2))
+    ctx = ToeplitzInnerProductContext(
+        _line_psd, fs / n, fs / 2.0, fLow=20.0, fMax=200.0, analyticPSD_Q=True,
+        gaps=[(7.9, 8.0)], data_highpass=10.0)
+    ipn = ctx.ip_normalization
+    sig = np.sqrt(ipn * ctx.segment_dot_td(h, h).real)
+    raw = abs(ipn * ctx.segment_dot_td(h, s).real) / sig
+    filtered = abs(ipn * ctx.segment_dot_td(h, ctx.highpass_gapped_data(s)).real) / sig
+    print("[T5-hp] 2 Hz line in <h|d>: unfiltered %.3e sigma, high-passed %.3e sigma"
+          % (raw, filtered))
+    assert raw > 1e-2
+    assert filtered < 1e-6
+    # gapped data that cannot be high-passed is refused
+    ctx_nohp = ToeplitzInnerProductContext(
+        _line_psd, fs / n, fs / 2.0, fLow=20.0, fMax=200.0, analyticPSD_Q=True,
+        gaps=[(7.9, 8.0)])
+    with pytest.raises(ValueError, match="data_highpass"):
+        ctx_nohp.highpass_gapped_data(s)
+
+
+def test_data_highpass_corner_must_spare_flow():
+    """Templates are not filtered, so the corner must leave fLow essentially untouched."""
+    kw = dict(analyticPSD_Q=True, gaps=[(0.5, 0.6)])
+    ToeplitzInnerProductContext(_line_psd, 0.5, 256.0, 20.0, fMax=200.0, data_highpass=10.0, **kw)
+    with pytest.raises(ValueError, match="power response at fLow"):
+        ToeplitzInnerProductContext(_line_psd, 0.5, 256.0, 20.0, fMax=200.0,
+                                    data_highpass=15.0, **kw)
+
+
+def test_long_gap_avoids_dense_factorization(monkeypatch):
+    """A 2 s gap at 4096 Hz (8192 samples) is solved without an O(G^3) factorization."""
+    def refuse(*args, **kwargs):
+        raise AssertionError("dense O(G^3) factorization in the gap solve")
+    for name in ("eigh", "eig", "pinv", "inv", "solve", "cholesky", "svd"):
+        monkeypatch.setattr(np.linalg, name, refuse)
+    for name in ("eigh", "inv", "solve", "cho_factor", "lu_factor", "svd", "pinvh"):
+        monkeypatch.setattr(scipy.linalg, name, refuse)
+    fs, n = 4096.0, 8 * 4096
+    ctx = ToeplitzInnerProductContext(
+        _line_psd, fs / n, fs / 2.0, fLow=20.0, fMax=1700.0, analyticPSD_Q=True,
+        solver="auto", gaps=[(3.0, 5.0)])
+    h = np.random.default_rng(3).standard_normal(n)
+    Kh = ctx._apply_seg(ctx._segment_window(h))
+    assert np.all(Kh[~ctx.retain_mask] == 0.0)
+    assert np.isfinite(Kh).all()
 
 
 # --------------------------------------------------------------------------- (c) regression
