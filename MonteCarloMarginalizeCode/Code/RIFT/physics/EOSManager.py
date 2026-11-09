@@ -2384,9 +2384,10 @@ class EOSSequenceSingleIndex:
 class EOSSequenceBranchView(EOSBranchView):
     """:class:`EOSBranchView` for one stable branch of an NMB sequence EOS.
 
-    Mass-radius-tidal queries are pinned to ``branch_id``; ``mMaxMsun`` (and
-    ``mMaxMsun_all``) is that branch's maximum mass and ``number_of_branches``
-    is 1.  ``branches_for_m`` still reports the source's branch id.
+    Mass-radius-tidal queries are pinned to ``branch_id``; ``mMinMsun`` and
+    ``mMaxMsun`` (and ``mMaxMsun_all``) are that branch's mass bounds and
+    ``number_of_branches`` is 1.  ``branches_for_m`` still reports the
+    source's branch id.
     ``lambda_from_m`` interpolates inside the branch, returns 1e-8 above it,
     and raises ValueError below it.
     """
@@ -2397,6 +2398,10 @@ class EOSSequenceBranchView(EOSBranchView):
         self.name = "{}[branch={}]".format(source.name, self.branch_id)
         self.eos = None
         self.eos_fam = None
+        # A branch is bounded at BOTH ends, so publish mMinMsun next to
+        # mMaxMsun: mass_in_eos_support reads a missing bound as unbounded and
+        # would admit a sub-branch draw that lambda_from_m then rejects.
+        self.mMinMsun = source.branch_minimum_mass_msun(self.branch_id)
         self.mMaxMsun = source.branch_maximum_mass_msun(self.branch_id)
         self.mMaxMsun_all = self.mMaxMsun
         self.number_of_branches = 1
