@@ -208,6 +208,9 @@ FILES=(
   # Its companion test_lalsim_eos_reviewed_integration.py needs a private reviewed LALSuite
   # and is rostered EXPENSIVE.
   "$C/test/test_lalsim_eos_compat.py"
+  # -- EOS: NuclearMatter-Backend sequence branches (twin stars).  Synthetic h5py files only;
+  # the default primary-branch accessors must stay bitwise identical to the v1 contract.
+  "$C/test/test_nmb_sequence_branches.py"
   "$C/test/test_waveform_sample_rejection.py"
   # -- packaging / config contracts / waveform conventions
   "$C/test/test_advanced_parameter_ports.py"
@@ -645,6 +648,7 @@ for f in "${FILES[@]}"; do
   collected_total=$(( collected_total + n ))
   file_floor=1
   if [ "$f" = "$C/test/test_lalsim_eos_compat.py" ]; then file_floor=49; fi
+  if [ "$f" = "$C/test/test_nmb_sequence_branches.py" ]; then file_floor=16; fi
   if [ "$f" = "$C/test/test_waveform_sample_rejection.py" ]; then file_floor=19; fi
   if [ "$f" = "$C/test/test_posterior_compression.py" ]; then file_floor=41; fi
   if [ "$f" = "$C/test/test_raw_distance_contract.py" ]; then file_floor=44; fi
