@@ -579,11 +579,16 @@ def _exported(tmp_path, tag):
 
 
 def test_driver_end_to_end_central_fake_twin(tmp_path):
-    """AC and GMM agree on lnZ (GMM needs a mixture group per branch variate)."""
+    """AC, GMM, AV and portfolio agree on lnZ (GMM needs a mixture group per branch variate)."""
     _ile_file(tmp_path / "ile.dat")
     lnz = {}
-    for sampler in ("adaptive_cartesian", "GMM"):
-        _check_ok(_run_fake_driver(tmp_path, sampler, "--eos-affine-parameter", "central", "--sampler-method", sampler))
+    samplers = {"adaptive_cartesian": [], "GMM": [],
+                # rift_O4d: AV and an AV+GMM portfolio also see the branch variates and GMM groups.
+                "AV": ["--internal-use-lnL"],
+                "portfolio": ["--sampler-portfolio", "AV", "--sampler-portfolio", "GMM", "--internal-use-lnL"]}
+    for sampler, extra in samplers.items():
+        _check_ok(_run_fake_driver(tmp_path, sampler, "--eos-affine-parameter", "central", "--sampler-method", sampler,
+                                   *extra))
         lnz[sampler] = float(np.loadtxt(tmp_path / ("res_%s.dat" % sampler)))
         P, B = _exported(tmp_path, sampler)
         eos = FakeTwinEOS()
@@ -593,7 +598,8 @@ def test_driver_end_to_end_central_fake_twin(tmp_path):
                 assert lam == pytest.approx(eos.branch_lambda(m, b), rel=1e-5)   # XML stores float32
         assert (B[:, :2] == 1).any() and (B[:, :2] == 0).any()
     # Seeded runs: lnZ 19.40 (AC) and 19.40 (GMM); without the GMM groups GMM gives ~18.6.
-    assert abs(lnz["GMM"] - lnz["adaptive_cartesian"]) < 0.3, lnz
+    for sampler in ("GMM", "AV", "portfolio"):
+        assert abs(lnz[sampler] - lnz["adaptive_cartesian"]) < 0.3, lnz
 
 
 def test_driver_branch_labels_follow_posterior_after_lnL_offset_cut(tmp_path):
@@ -627,47 +633,80 @@ if not hasattr(np, "float128"):
     np.float128 = np.longdouble
 np.random.seed(3)
 sys.path.insert(0, os.environ["CIP_FAKE_TWIN"])
-from test_eos_affine_central import FakeTwinEOS
+from test_eos_affine_central import FakeTwinEOS, FakeSingleEOS
 import RIFT.physics.EOSManager as manager
 class NoStarTwin(FakeTwinEOS):
     def branches_for_m(self, m):
         return []
-manager.EOSLindblomSpectral = lambda name=None, spec_params=None, **kw: (
-    NoStarTwin() if spec_params["gamma1"] == 2. else FakeTwinEOS())
+# Row gamma1: 1 -> one branch up to 2.0 Msun; 2 -> probe fails; 3 -> twin up to 2.4 Msun.
+manager.EOSLindblomSpectral = lambda name=None, spec_params=None, **kw: {
+    1.: FakeSingleEOS, 2.: NoStarTwin, 3.: FakeTwinEOS}[spec_params["gamma1"]]()
 """
+GRID_SAMPLERS = {"AC": ["--sampler-method", "adaptive_cartesian"],
+                 "GMM": ["--sampler-method", "GMM", "--internal-use-lnL"]}
+_GRID_REFERENCE = {}
 
 
-@pytest.mark.parametrize("chunk", [False, True])
-def test_driver_grid_rows_probe_branch_surface_per_row(tmp_path, chunk):
-    """rift_O4d --n-events-to-analyze: each grid row is probed; a failing row alone is rejected."""
-    _ile_file(tmp_path / "ile.dat")
-    np.savetxt(tmp_path / "grid.dat", [[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 3, 0]], header="lnL sigma_lnL gamma1 gamma2")
-    (tmp_path / "sitecustomize.py").write_text(GRID_SITE)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([CODE, str(tmp_path)]), CIP_FAKE_TWIN=str(Path(__file__).parent),
+def _run_grid(workdir, first, n_rows, sampler, *extra):
+    """CIP on grid rows [first, first+n_rows) of a three-row spectral file: grid."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    _ile_file(workdir / "ile.dat")
+    np.savetxt(workdir / "grid.dat", [[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 3, 0]], header="lnL sigma_lnL gamma1 gamma2")
+    (workdir / "sitecustomize.py").write_text(GRID_SITE)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([CODE, str(workdir)]), CIP_FAKE_TWIN=str(Path(__file__).parent),
                OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", MPLBACKEND="Agg",
-               MPLCONFIGDIR=str(tmp_path / "mpl"))
-    args = [sys.executable, DRIVER, "--fname", str(tmp_path / "ile.dat"), "--input-tides",
-            "--using-eos", "file:" + str(tmp_path / "grid.dat"), "--eos-param", "spectral", "--using-eos-index", "0",
-            "--n-events-to-analyze", "3", "--eos-affine-parameter", "central", "--parameter", "mc",
-            "--parameter", "delta_mc", "--parameter-implied", "LambdaTilde", "--mc-range", "[1.55,1.70]",
-            "--fit-method", "quadratic", "--n-max", "40000", "--n-eff", "300", "--n-chunk", "4000",
-            "--n-output-samples", "100", "--fname-output-integral", "MARG-0", "--fname-output-samples", "MARG-0"]
-    if chunk:
-        args.append("--chunk-save")
-    result = subprocess.run(args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600)
+               MPLCONFIGDIR=str(workdir / "mpl"))
+    args = [sys.executable, DRIVER, "--fname", str(workdir / "ile.dat"), "--input-tides",
+            "--using-eos", "file:" + str(workdir / "grid.dat"), "--eos-param", "spectral",
+            "--using-eos-index", str(first), "--n-events-to-analyze", str(n_rows), "--eos-affine-parameter", "central",
+            "--parameter", "mc", "--parameter", "delta_mc", "--parameter-implied", "LambdaTilde",
+            "--mc-range", "[1.55,1.70]", "--fit-method", "quadratic", "--n-max", "40000", "--n-eff", "300",
+            "--n-chunk", "4000", "--n-output-samples", "100", "--fname-output-integral", "MARG-%d" % first,
+            "--fname-output-samples", "MARG-%d" % first] + GRID_SAMPLERS[sampler] + list(extra)
+    result = subprocess.run(args, cwd=workdir, env=env, capture_output=True, text=True, timeout=600)
     _check_ok(result)
+    return result
+
+
+def _check_sidecar_matches_eos(workdir, row, eos):
+    """Every sidecar line describes its own XML sample under this row's EOS."""
+    P = lalsimutils.xml_to_ChooseWaveformParams_array(str(workdir / ("MARG-%d.xml.gz" % row)))
+    B = np.atleast_2d(np.loadtxt(workdir / ("MARG-%d_eos_branch.dat" % row), dtype=int))
+    assert len(B) == len(P) > 0
+    for p, (b1, b2, n1, n2) in zip(P, B):
+        for m, lam, b, n in ((p.m1 / lal.MSUN_SI, p.lambda1, b1, n1), (p.m2 / lal.MSUN_SI, p.lambda2, b2, n2)):
+            assert b in eos.branches_for_m(m) and n == len(eos.branches_for_m(m))
+            assert lam == pytest.approx(eos.branch_lambda(m, b), rel=1e-5)
+    return B
+
+
+@pytest.mark.parametrize("chunk,sampler", [(False, "AC"), (True, "AC"), (False, "GMM")])
+def test_driver_grid_rows_probe_branch_surface_per_row(tmp_path_factory, chunk, sampler):
+    """rift_O4d --n-events-to-analyze 3: every row is probed, weighted and exported on its own.
+
+    Row 1 fails the probe and alone is rejected (GMM crashes if the probe is skipped).
+    Row 2 must match a separate N=1 run of that row: a stale all-branch maximum mass
+    from row 0 (2.0 Msun, not 2.4) or a dropped n1 n2 weight moves its lnZ by > 1.
+    """
+    if sampler not in _GRID_REFERENCE:
+        ref = tmp_path_factory.mktemp("grid_ref_" + sampler)
+        _run_grid(ref, 2, 1, sampler)
+        _GRID_REFERENCE[sampler] = float(np.loadtxt(ref / "MARG-2+annotation.dat")[0])
+    work = tmp_path_factory.mktemp("grid_rows")
+    result = _run_grid(work, 0, 3, sampler, *(["--chunk-save"] if chunk else []))
     assert "BranchProbeFailure" not in result.stderr and "Rejecting proposed EOS row 1" in result.stdout
     if chunk:
-        rows = np.loadtxt(tmp_path / "MARG-0+annotation.dat")
+        rows = np.loadtxt(work / "MARG-0+annotation.dat")
     else:
-        rows = np.array([np.loadtxt(tmp_path / ("MARG-%d+annotation.dat" % r)) for r in range(3)])
+        rows = np.array([np.loadtxt(work / ("MARG-%d+annotation.dat" % r)) for r in range(3)])
     np.testing.assert_array_equal(rows[:, 2:], [[1, 0], [2, 0], [3, 0]])
     assert np.isneginf(rows[1, 0]) and np.isfinite(rows[[0, 2], 0]).all()
-    # Same EOS in rows 0 and 2; the sampler RNG state differs between rows.
-    assert abs(rows[0, 0] - rows[2, 0]) < 5 * np.hypot(rows[0, 1], rows[2, 1]) + 0.1
-    for r in (0, 2):
-        assert len(np.atleast_2d(np.loadtxt(tmp_path / ("MARG-%d_eos_branch.dat" % r)))) > 0
-    assert not (tmp_path / "MARG-1_eos_branch.dat").exists()
+    # Rows differ only in RNG state from the reference job.
+    assert abs(rows[2, 0] - _GRID_REFERENCE[sampler]) < 0.3, (rows[2, 0], _GRID_REFERENCE[sampler])
+    _check_sidecar_matches_eos(work, 0, FakeSingleEOS())
+    B2 = _check_sidecar_matches_eos(work, 2, FakeTwinEOS())   # fails if row 0's labels leak into row 2
+    assert (B2[:, :2] == 1).any()
+    assert not (work / "MARG-1_eos_branch.dat").exists()
 
 
 def test_driver_rejects_branch_api_that_fails_at_startup(tmp_path):
@@ -749,6 +788,7 @@ def test_startup_probe_rejects_unusable_branch_surface(override, error):
 @pytest.mark.parametrize("extra,match", [
     (["--using-eos-branch", "0"], "--using-eos-branch"),
     (["--tabular-eos-file", "seq.h5", "--input-eos-index"], "ordering coordinate"),
+    (["--using-eos-for-prior"], "--using-eos-for-prior"),   # rift_O4d: the driver forwards the flag
 ])
 def test_driver_rejects_incompatible_central_runs(tmp_path, extra, match):
     result = subprocess.run([sys.executable, DRIVER, "--fname", "unused.dat", "--using-eos", "lal_SLy",
