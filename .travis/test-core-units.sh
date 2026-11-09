@@ -194,6 +194,10 @@ FILES=(
   # under a misspelt keyword and silently dropped -- delivering it correctly makes a
   # malformed entry fatal, so the non-dict guard is part of that fix.  4 tests, ~22 s.
   "$C/test/test_cip_portfolio_members.py"
+  # -- CIP --eos-affine-parameter central: dM-per-branch prior over twin-star branches, with
+  # fake EOS objects and CIP driver subprocesses (each timeout <= 600 s, below this job cap).
+  # Mass mode must stay unchanged; three strict xfails record pre-existing O4d export behaviour.
+  "$C/test/test_eos_affine_central.py"
   # -- the lnL fill for query rows the coordinate conversion cannot map.  fit_rf and fit_xg
   # fill nonfinite / |x|>1e37 rows with lnL_default_large_negative, and a sign error made that
   # fill +500 instead of -500, so any unmappable row the sampler gave prior weight to took the
@@ -651,6 +655,7 @@ for f in "${FILES[@]}"; do
   # Transfer matrix, container guards, and newline requirements must remain covered.
   if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=18; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
+  if [ "$f" = "$C/test/test_eos_affine_central.py" ]; then file_floor=49; fi
   if [ "$n" -lt "$file_floor" ]; then
     echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2
     echo "  Restore the required test cases; reduced collection can hide a missing gate." >&2
