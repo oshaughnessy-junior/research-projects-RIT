@@ -337,24 +337,15 @@ def test_central_export_swaps_labels_and_honours_no_matter():
         np.testing.assert_array_equal(nb["eos_branch_list"], [[eos_affine.NO_BRANCH, 1, 1, 2]])
 
 
-O4D_NO_MATTER2_REASON = (
-    "pre-existing rift_O4d mass-mode behaviour, kept on purpose (the O4c export fix in 947e91419 "
-    "is not ported): with --using-eos-branch --no-matter2 the export still asks the EOS for Lambda2. "
-    "The real EOSBranchView returns -inf below its branch, so the sample is silently dropped; "
-    "a view that raises, like FakeBranchView, crashes the export.")
-
-
-@pytest.mark.xfail(strict=True, raises=ValueError, reason=O4D_NO_MATTER2_REASON)
 def test_mass_export_keeps_no_matter_sample_outside_branch():
     """--using-eos-branch with --no-matter2: a light secondary off the branch keeps Lambda2 = 0."""
     view = FakeTwinEOS().for_branch(1)
     ns = _driver_export_loop(view, np.array([[2.2, 1.3], [2.2, 1.7]]), no_matter2=True)
     assert ns["kept_indx_list"] == [0, 1]
     assert ns["P_list"][0].lambda2 == 0
-    assert ns["P_list"][1].lambda2 == pytest.approx(view.lambda_from_m(1.7))
+    assert ns["P_list"][1].lambda2 == 0
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=O4D_NO_MATTER2_REASON)
 def test_mass_export_real_branch_view_no_matter2_drops_sample(monkeypatch):
     """Real EOSBranchView, branch [1.3, 3.0] Msun: m2 = 1.1 is below it; O4c keeps the sample."""
     view = _lal_twin(monkeypatch).for_branch(1)
@@ -648,15 +639,14 @@ def test_driver_branch_labels_follow_posterior_after_lnL_offset_cut(tmp_path):
     assert (B[:, :2][twin] == 1).mean() > 0.98
 
 
-@pytest.mark.xfail(strict=True, reason=O4D_NO_MATTER2_REASON)
 def test_driver_using_eos_branch_no_matter_secondary_exports(tmp_path):
     """Without the export guard this run crashes: m2 below branch 1 reaches the export loop."""
     _ile_file(tmp_path / "ile_flat.dat", lt_sigma=1e4)   # flat in LambdaTilde: wide mass ratio
     _check_ok(_run_fake_driver(tmp_path, "nm2", "--using-eos-branch", "1", "--no-matter2", ile="ile_flat.dat"))
-    # Lambda2 = 0 then fails the existing lambda2 >= --lambda-min export downselect, as a
-    # no-matter Lambda of 1e-8 always has; the point is that the export completes.
     P = lalsimutils.xml_to_ChooseWaveformParams_array(str(tmp_path / "samp_nm2.xml.gz"))
-    assert len(P) > 0 and all(p.m2 / lal.MSUN_SI >= 1.6 for p in P)
+    assert len(P) > 0 and all(p.lambda2 == 0 for p in P)
+    assert any(p.m2 / lal.MSUN_SI < 1.6 for p in P)
+    assert all(1.6 <= p.m1 / lal.MSUN_SI <= 2.4 for p in P)
 
 
 GRID_SITE = """
@@ -669,6 +659,7 @@ sys.path.insert(0, os.environ["CIP_FAKE_TWIN"])
 from test_eos_affine_central import FakeTwinEOS, FakeSingleEOS
 import RIFT.physics.EOSManager as manager
 class NoStarTwin(FakeTwinEOS):
+    number_of_branches = 0
     def branches_for_m(self, m):
         return []
 # Row gamma1: 1 -> one branch up to 2.0 Msun; 2 -> probe fails; 3 -> twin up to 2.4 Msun.
@@ -807,7 +798,7 @@ class LandryLike(FakeTwinEOS):
     (dict(lambda_from_m=lambda self, m, branch_id=None: (_ for _ in ()).throw(TypeError("no branch"))),
      eos_affine.BranchSurfaceError),
     (dict(branches_for_m=lambda self, m: (_ for _ in ()).throw(RuntimeError("native"))), eos_affine.BranchProbeFailure),
-    (dict(branches_for_m=lambda self, m: []), eos_affine.BranchProbeFailure),
+    (dict(branches_for_m=lambda self, m: [], number_of_branches=0), eos_affine.BranchProbeFailure),
 ])
 def test_startup_probe_rejects_unusable_branch_surface(override, error):
     eos = type("ProbeEOS", (FakeTwinEOS,), override)()

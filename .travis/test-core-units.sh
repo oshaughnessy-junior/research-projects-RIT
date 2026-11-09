@@ -196,8 +196,9 @@ FILES=(
   "$C/test/test_cip_portfolio_members.py"
   # -- CIP --eos-affine-parameter central: dM-per-branch prior over twin-star branches, with
   # fake EOS objects and CIP driver subprocesses (each timeout <= 600 s, below this job cap).
-  # Mass mode must stay unchanged; three strict xfails record pre-existing O4d export behaviour.
   "$C/test/test_eos_affine_central.py"
+  "$C/test/test_eos_multibranch_grid.py"
+  "$C/test/test_eos_branch_surface_rejection.py"
   # -- the lnL fill for query rows the coordinate conversion cannot map.  fit_rf and fit_xg
   # fill nonfinite / |x|>1e37 rows with lnL_default_large_negative, and a sign error made that
   # fill +500 instead of -500, so any unmappable row the sampler gave prior weight to took the

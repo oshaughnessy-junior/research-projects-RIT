@@ -127,9 +127,9 @@ test. Full-table causality uses
 symbol is unavailable.
 
 For pseudo-pipe workflows, forward the flag with
-`--manual-extra-cip-args`.  On O4d, Hydra hyperpipe configurations can put it
-in the post driver's `extra-args` when that driver is the fixed-EOS CIP
-executable.
+`--manual-extra-cip-args`. In Hyperpipe, EOS options belong in each event's
+`marg-list[].args` when its marginalization executable is CIP. They belong
+in the post driver's `extra-args` only if that stage uses fixed-EOS CIP.
 
 ## NuclearMatter-Backend sequences
 
@@ -170,10 +170,13 @@ a central-coordinate affine parameter with a dM-per-branch prior.  It is
 implemented as mass plus a branch label, so every stable branch contributes.
 Each component may be a star on any stable branch.
 
-The prior is dM per stable branch.  A mass with n(m) stable branches counts
-n(m) times, so the joint mass prior gains a factor n(m1) n(m2).  For a
-single-branch EOS, n = 1 and the prior is the usual mass prior.  Twin regions
-are overcounted by design.
+The default `--eos-branch-prior mass-per-branch` assigns dM to every stable
+branch. A mass with n(m) stable branches counts n(m) times, so the joint
+mass measure gains a factor n(m1) n(m2). For a single-branch EOS this is
+the usual mass measure. `--eos-branch-prior uniform-at-mass` instead gives
+each available branch conditional probability 1/n(m), removing that factor.
+Neither choice renormalizes the source-mass prior over EOS-dependent stable
+support. A uniform central-coordinate prior is a different model.
 
 CIP keeps its sampling coordinates and the trained likelihood fit.  It adds two
 sampled variates, `eos_branch_u1` and `eos_branch_u2`, uniform on [0, 1).  They
@@ -244,6 +247,23 @@ unchanged.  Exceptions or nonfinite values from `branches_for_m` or
 `--input-tides --using-eos <spec>` to CIP, and `--assume-matter-but-primary-bh`
 adds `--assume-eos-but-primary-bh`.  Add the new option with
 `--manual-extra-cip-args "--eos-affine-parameter central"`.
+
+## Finite NMB EOS grids in Hyperpipe
+
+CIP accepts `--using-eos file:<grid> --eos-param nmbseq
+--eos-sequence-file <sequence.h5>`. Each grid row must name a finite
+nonnegative integer `sequence_index` after its leading likelihood columns.
+The index selects the native, unsorted NMB producer row. Other grid columns
+are retained in the evidence annotation. `--n-events-to-analyze` and
+`--chunk-save` use the same per-row EOS selection as separate jobs.
+The sequence is loaded once per worker.
+
+This evaluates a finite collection of EOS hypotheses through Hyperpipe's
+marginalization stage. The categorical index must not be fitted or puffed
+as a continuous EOS parameter. Continuous EOS proposals need a physical
+constructor or coordinate plugin. See the
+[shared-storage recipe](../MonteCarloMarginalizeCode/Code/demo/eos_multibranch/README.md)
+and [measure contract](../MonteCarloMarginalizeCode/Code/RIFT/physics/DESIGN_eos_sequence_grid.md).
 
 ## Downstream compatibility
 
