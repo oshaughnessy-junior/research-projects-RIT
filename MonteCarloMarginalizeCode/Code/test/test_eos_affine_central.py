@@ -171,7 +171,8 @@ def test_single_branch_eos_central_equals_mass_inside_the_branch():
         x, coord_names=names, low_level_coord_names=["m1", "m2"], eos_class=eos)
     central, log_w, branches = _central(eos, x, u, coord_names=names)
     assert np.isneginf(mass).any() and np.isfinite(mass).any()
-    np.testing.assert_array_equal(central, mass)
+    # 1-ulp differences between the two paths occur on Linux; -inf positions must match.
+    np.testing.assert_allclose(central, mass, rtol=1e-14, atol=0)
     np.testing.assert_array_equal(log_w, 0.)
     ok = np.all(np.isfinite(mass), axis=1)
     np.testing.assert_array_equal(branches[ok], 0)
@@ -180,8 +181,8 @@ def test_single_branch_eos_central_equals_mass_inside_the_branch():
     conv = lambda xx, uu: _central(eos, xx, uu, coord_names=names)[:2]
     lnL_c, _ = eos_affine.make_central_log_likelihood(fit, conv, lambda xx: np.zeros(len(xx)), 2)
     lnL_m = fit(mass)
-    np.testing.assert_array_equal(lnL_c(m1, m2, u[:, 0], u[:, 1]), lnL_m)
-    assert lnL_c(*map(float, (m1[0], m2[0], u[0, 0], u[0, 1]))) == lnL_m[0]
+    np.testing.assert_allclose(lnL_c(m1, m2, u[:, 0], u[:, 1]), lnL_m, rtol=1e-14, atol=0)
+    assert lnL_c(*map(float, (m1[0], m2[0], u[0, 0], u[0, 1]))) == pytest.approx(lnL_m[0], rel=1e-14, abs=0)
 
 
 def test_single_branch_edges_documented_differences():
@@ -191,7 +192,8 @@ def test_single_branch_edges_documented_differences():
         x, coord_names=["lambda1", "lambda2"], low_level_coord_names=["m1", "m2"], eos_class=eos)
     central = _central(eos, x, np.full((3, 2), .5), coord_names=("lambda1", "lambda2"))[0]
     assert mass[0, 0] == 1e-8 and central[0, 0] == pytest.approx(eos.branch_lambda(1.9985, 0))
-    assert np.isfinite(mass[1]).all() and np.isneginf(central[1]).all()   # below mMin
+    # O4d: the mass path also rejects below a published mMinMsun (mass_in_eos_support).
+    assert np.isneginf(mass[1]).all() and np.isneginf(central[1]).all()   # below mMin
     assert np.isneginf(mass[2]).all() and np.isneginf(central[2]).all()   # m == mMax
 
 
@@ -275,11 +277,14 @@ def _driver_export_loop(eos, m, u=None, central=False, no_matter1=False, no_matt
     tree = ast.parse(open(DRIVER).read())
     loop = next(n for n in tree.body if isinstance(n, ast.For) and isinstance(n.target, ast.Name)
                 and n.target.id == "indx_here")
+    from RIFT.physics.lalsim_eos_compat import mass_in_eos_support
     samples = {"m1": m[:, 0], "m2": m[:, 1], "integrand": np.zeros(len(m))}
     if central:
         samples.update(zip(eos_affine.CENTRAL_AUX_NAMES, u.T))
     P = lalsimutils.ChooseWaveformParams()
+    # O4d export: mass_in_eos_support gate and lnL from the masked dat_logL.
     ns = dict(np=np, lal=lal, samples=samples, indx_list=np.arange(len(m)), low_level_coord_names=["m1", "m2"],
+              mass_in_eos_support=mass_in_eos_support, dat_logL=np.zeros(len(m)),
               P=P, my_eos=eos, downselect_dict={}, P_list=[], kept_indx_list=[], lnL_list=[], eos_branch_list=[],
               eos_affine=eos_affine, eos_affine_central=central, source_redshift=0.,
               eos_affine_no_matter1=no_matter1 or assume_eos_but_primary_bh,
@@ -287,7 +292,8 @@ def _driver_export_loop(eos, m, u=None, central=False, no_matter1=False, no_matt
               opts=types.SimpleNamespace(fref=20., assume_eos_but_primary_bh=assume_eos_but_primary_bh,
                                          tabular_eos_file=None, no_matter1=no_matter1, no_matter2=no_matter2,
                                          verbose=False, amplitude_order=-1,
-                                         phase_order=7, fixed_parameter=None, internal_use_lnL=True))
+                                         phase_order=7, fixed_parameter=None, internal_use_lnL=True,
+                                         force_scatter=False, force_plunge=False, force_zoomwhirl=False))
     exec(compile(ast.Module(body=[loop], type_ignores=[]), DRIVER, "exec"), ns)
     return ns
 
@@ -297,8 +303,8 @@ def test_using_eos_branch_mass_below_branch_is_rejected_not_fatal(monkeypatch):
     eos = _lal_twin(monkeypatch)
     view = eos.for_branch(1)   # [1.3, 3.0] Msun
     m = np.array([[2.0, 1.5], [2.0, 1.1], [1.8, 1.4], [1.2, 1.0]])
-    with pytest.raises(ValueError):
-        view.lambda_from_m(1.1)
+    # O4d EOSBranchView flags a mass below its branch with -inf instead of raising.
+    assert view.lambda_from_m(1.1) == -np.inf
     x_out = lalsimutils.convert_waveform_coordinates_with_eos(
         m, coord_names=["lambda1", "lambda2"], low_level_coord_names=["m1", "m2"], eos_class=view)
     np.testing.assert_array_equal(np.all(np.isfinite(x_out), axis=1), [True, False, True, False])
@@ -331,6 +337,14 @@ def test_central_export_swaps_labels_and_honours_no_matter():
         np.testing.assert_array_equal(nb["eos_branch_list"], [[eos_affine.NO_BRANCH, 1, 1, 2]])
 
 
+O4D_NO_MATTER2_REASON = (
+    "pre-existing rift_O4d mass-mode behaviour, kept on purpose (the O4c export fix in 947e91419 "
+    "is not ported): with --using-eos-branch --no-matter2 the export still asks the EOS for Lambda2. "
+    "The real EOSBranchView returns -inf below its branch, so the sample is silently dropped; "
+    "a view that raises, like FakeBranchView, crashes the export.")
+
+
+@pytest.mark.xfail(strict=True, raises=ValueError, reason=O4D_NO_MATTER2_REASON)
 def test_mass_export_keeps_no_matter_sample_outside_branch():
     """--using-eos-branch with --no-matter2: a light secondary off the branch keeps Lambda2 = 0."""
     view = FakeTwinEOS().for_branch(1)
@@ -338,6 +352,14 @@ def test_mass_export_keeps_no_matter_sample_outside_branch():
     assert ns["kept_indx_list"] == [0, 1]
     assert ns["P_list"][0].lambda2 == 0
     assert ns["P_list"][1].lambda2 == pytest.approx(view.lambda_from_m(1.7))
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=O4D_NO_MATTER2_REASON)
+def test_mass_export_real_branch_view_no_matter2_drops_sample(monkeypatch):
+    """Real EOSBranchView, branch [1.3, 3.0] Msun: m2 = 1.1 is below it; O4c keeps the sample."""
+    view = _lal_twin(monkeypatch).for_branch(1)
+    ns = _driver_export_loop(view, np.array([[2.2, 1.1], [2.2, 1.7]]), no_matter2=True)
+    assert ns["kept_indx_list"] == [0, 1]   # O4d gives [1]
 
 
 def test_central_supplementary_likelihood_sees_native_coordinates_only():
@@ -457,11 +479,11 @@ def test_peaked_lambda_likelihood_evidence_matches_branch_sum(kind, use_lnL, flo
 
 # ------------------------------------------------- mass-mode regression
 
-# Values from the driver at base commit 259baea8d (before this option existed),
+# Values from the driver at rift_O4d base commit 591b753e4 (before this option existed),
 # for the inputs below; the mass path must reproduce them bit for bit.
 NEGINF = -np.inf
-MASS_MODE_CONVERTED_259baea8d = [[0.9999999999999999, 0.25, 740.5206580011862, -0.0], [1.0937499999999996, 0.24984375, 697.4042385086856, -13.745305341594364], [1.1874999999999998, 0.24937500000000007, 653.5067756367829, -24.078053110026023], [1.2812500000000002, 0.24859375, 607.75483662792, -30.84848760934423], [1.3749999999999998, 0.2475, 559.0440841738501, -33.918381956221126], [1.4687499999999998, 0.24609375000000003, 506.238199054308, -33.16345723309518], [NEGINF, NEGINF, NEGINF, NEGINF], [NEGINF, NEGINF, NEGINF, NEGINF], [NEGINF, NEGINF, NEGINF, NEGINF]]
-MASS_MODE_LNL_259baea8d = [-6.025730626572479, -4.548262540149953, -3.282728558373963, -2.2232771059578154, -1.368966351274582, -0.7246065165976505, NEGINF, NEGINF, NEGINF]
+MASS_MODE_CONVERTED_591b753e4 = [[1.0, 0.25, 740.520658001186, -0.0], [1.09375, 0.24984375, 697.4042385086852, -13.745305341590965], [1.1875, 0.249375, 653.5067756367828, -24.07805311002754], [1.28125, 0.24859375, 607.75483662792, -30.84848760934423], [1.375, 0.2475, 559.0440841738503, -33.91838195622141], [1.46875, 0.24609375, 506.23819905430776, -33.16345723309497], [NEGINF, NEGINF, NEGINF, NEGINF], [NEGINF, NEGINF, NEGINF, NEGINF], [NEGINF, NEGINF, NEGINF, NEGINF]]
+MASS_MODE_LNL_591b753e4 = [-6.025730626572475, -4.548262540149942, -3.282728558373962, -2.2232771059578162, -1.368966351274582, -0.7246065165976487, NEGINF, NEGINF, NEGINF]
 
 
 def _mass_mode_driver_namespace():
@@ -472,6 +494,7 @@ def _mass_mode_driver_namespace():
                and any(isinstance(i, ast.FunctionDef) and i.name == "log_likelihood_function" for i in n.body))
     guard = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "protect_fit_against_out_of_support"]
     ns = dict(np=np, lalsimutils=lalsimutils, my_eos=FakeTwinEOS(), source_redshift=0.,
+              fake_eos=False, mass_in_eos_support=__import__("RIFT.physics.lalsim_eos_compat", fromlist=["x"]).mass_in_eos_support,
               opts=types.SimpleNamespace(using_eos="lal_X", no_matter1=False, no_matter2=False,
                                          downselect_enforce_kerr=False, fref=20., eccentric_phase_coordinates=False),
               coord_names=["mc", "eta", "LambdaTilde", "DeltaLambdaTilde"], low_level_coord_names=["mc", "delta_mc"],
@@ -484,8 +507,10 @@ def _mass_mode_driver_namespace():
 def test_mass_mode_integrand_unchanged_from_base_commit():
     ns = _mass_mode_driver_namespace()
     x = np.column_stack([np.linspace(1.0, 1.75, 9), np.linspace(0., 0.2, 9)])
-    np.testing.assert_array_equal(ns["convert_coords"](x), MASS_MODE_CONVERTED_259baea8d)
-    np.testing.assert_array_equal(ns["log_likelihood_function"](x[:, 0], x[:, 1]), MASS_MODE_LNL_259baea8d)
+    # Platform libm differs by an ulp (CIT Linux); seeded driver runs check byte identity.
+    np.testing.assert_allclose(ns["convert_coords"](x), MASS_MODE_CONVERTED_591b753e4, rtol=1e-14, atol=0)
+    np.testing.assert_allclose(ns["log_likelihood_function"](x[:, 0], x[:, 1]), MASS_MODE_LNL_591b753e4,
+                               rtol=1e-14, atol=0)
     source = open(DRIVER).read()
     assert 'parser.add_argument("--eos-affine-parameter", default="mass"' in source
     # Every central-only statement sits under a top-level eos_affine_central test.
@@ -584,6 +609,7 @@ def test_driver_branch_labels_follow_posterior_after_lnL_offset_cut(tmp_path):
     assert (B[:, :2][twin] == 1).mean() > 0.98
 
 
+@pytest.mark.xfail(strict=True, reason=O4D_NO_MATTER2_REASON)
 def test_driver_using_eos_branch_no_matter_secondary_exports(tmp_path):
     """Without the export guard this run crashes: m2 below branch 1 reaches the export loop."""
     _ile_file(tmp_path / "ile_flat.dat", lt_sigma=1e4)   # flat in LambdaTilde: wide mass ratio
@@ -592,6 +618,56 @@ def test_driver_using_eos_branch_no_matter_secondary_exports(tmp_path):
     # no-matter Lambda of 1e-8 always has; the point is that the export completes.
     P = lalsimutils.xml_to_ChooseWaveformParams_array(str(tmp_path / "samp_nm2.xml.gz"))
     assert len(P) > 0 and all(p.m2 / lal.MSUN_SI >= 1.6 for p in P)
+
+
+GRID_SITE = """
+import os, sys
+import numpy as np
+if not hasattr(np, "float128"):
+    np.float128 = np.longdouble
+np.random.seed(3)
+sys.path.insert(0, os.environ["CIP_FAKE_TWIN"])
+from test_eos_affine_central import FakeTwinEOS
+import RIFT.physics.EOSManager as manager
+class NoStarTwin(FakeTwinEOS):
+    def branches_for_m(self, m):
+        return []
+manager.EOSLindblomSpectral = lambda name=None, spec_params=None, **kw: (
+    NoStarTwin() if spec_params["gamma1"] == 2. else FakeTwinEOS())
+"""
+
+
+@pytest.mark.parametrize("chunk", [False, True])
+def test_driver_grid_rows_probe_branch_surface_per_row(tmp_path, chunk):
+    """rift_O4d --n-events-to-analyze: each grid row is probed; a failing row alone is rejected."""
+    _ile_file(tmp_path / "ile.dat")
+    np.savetxt(tmp_path / "grid.dat", [[0, 0, 1, 0], [0, 0, 2, 0], [0, 0, 3, 0]], header="lnL sigma_lnL gamma1 gamma2")
+    (tmp_path / "sitecustomize.py").write_text(GRID_SITE)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([CODE, str(tmp_path)]), CIP_FAKE_TWIN=str(Path(__file__).parent),
+               OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", MPLBACKEND="Agg",
+               MPLCONFIGDIR=str(tmp_path / "mpl"))
+    args = [sys.executable, DRIVER, "--fname", str(tmp_path / "ile.dat"), "--input-tides",
+            "--using-eos", "file:" + str(tmp_path / "grid.dat"), "--eos-param", "spectral", "--using-eos-index", "0",
+            "--n-events-to-analyze", "3", "--eos-affine-parameter", "central", "--parameter", "mc",
+            "--parameter", "delta_mc", "--parameter-implied", "LambdaTilde", "--mc-range", "[1.55,1.70]",
+            "--fit-method", "quadratic", "--n-max", "40000", "--n-eff", "300", "--n-chunk", "4000",
+            "--n-output-samples", "100", "--fname-output-integral", "MARG-0", "--fname-output-samples", "MARG-0"]
+    if chunk:
+        args.append("--chunk-save")
+    result = subprocess.run(args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600)
+    _check_ok(result)
+    assert "BranchProbeFailure" not in result.stderr and "Rejecting proposed EOS row 1" in result.stdout
+    if chunk:
+        rows = np.loadtxt(tmp_path / "MARG-0+annotation.dat")
+    else:
+        rows = np.array([np.loadtxt(tmp_path / ("MARG-%d+annotation.dat" % r)) for r in range(3)])
+    np.testing.assert_array_equal(rows[:, 2:], [[1, 0], [2, 0], [3, 0]])
+    assert np.isneginf(rows[1, 0]) and np.isfinite(rows[[0, 2], 0]).all()
+    # Same EOS in rows 0 and 2; the sampler RNG state differs between rows.
+    assert abs(rows[0, 0] - rows[2, 0]) < 5 * np.hypot(rows[0, 1], rows[2, 1]) + 0.1
+    for r in (0, 2):
+        assert len(np.atleast_2d(np.loadtxt(tmp_path / ("MARG-%d_eos_branch.dat" % r)))) > 0
+    assert not (tmp_path / "MARG-1_eos_branch.dat").exists()
 
 
 def test_driver_rejects_branch_api_that_fails_at_startup(tmp_path):
