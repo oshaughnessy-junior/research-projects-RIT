@@ -110,7 +110,8 @@ def _run_batchmode(flags, tmp_path, keep_pythonpath=False):
 
 @pytest.mark.parametrize("inner_product", [[], ["--internal-ile-inner-product", "td-toeplitz"]])
 @pytest.mark.parametrize("flags", [
-    ["--td-mref", "60"], ["--td-acf-file", "H1:acf.npy"], ["--td-u-method", "batched"],
+    ["--td-mref", "60"], ["--td-piece-ifo", "L1:-10,0"], ["--td-acf-file", "H1:acf.npy"],
+    ["--td-u-method", "batched"],
     ["--td-whiteness-check"], ["--td-subsample", "4"],
     ["--td-calibration-correction-type", "bilby"],
 ])
@@ -344,9 +345,8 @@ def test_td_gap_with_highpass_passes_the_option_checks(tmp_path):
     assert "--td-highpass applies to" not in proc.stdout, proc.stdout[-3000:]
 
 
-@pytest.mark.parametrize("highpass", [None, 10.0])
-def test_pseudo_pipe_td_gap_requires_highpass(highpass):
-    """Run pseudo_pipe's TD forwarding block for an --internal-ile-td-gap request."""
+def _run_pseudo_pipe_td_block(**overrides):
+    """Run pseudo_pipe's TD forwarding block; return the ILE argument string it builds."""
     import ast
     from types import SimpleNamespace
     code = Path(__file__).resolve().parents[1]
@@ -354,27 +354,44 @@ def test_pseudo_pipe_td_gap_requires_highpass(highpass):
     helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_as_list")
     block = next(n for n in tree.body if isinstance(n, ast.If)
                  and isinstance(n.test, ast.Attribute) and n.test.attr == "internal_ile_inner_product")
-    opts = SimpleNamespace(internal_ile_inner_product="td-toeplitz",
+    fields = dict(internal_ile_inner_product="td-toeplitz",
         internal_ile_td_solver=None, internal_ile_td_acf_duration=None,
         internal_ile_td_analysis_start=None, internal_ile_td_analysis_end=None,
-        internal_ile_td_gap="-.1,.1", internal_ile_glitch_basis=None,
+        internal_ile_td_gap=None, internal_ile_glitch_basis=None,
         internal_ile_glitch_sigma=None, use_osg=False,
-        internal_ile_td_mref=None, internal_ile_td_piece=None,
+        internal_ile_td_mref=None, internal_ile_td_piece=None, internal_ile_td_piece_ifo=None,
         internal_ile_td_ifo_time_offset=None, internal_ile_td_acf_file=None,
         internal_ile_td_dense_max_n=None, internal_ile_td_u_stride=None,
         internal_ile_td_u_method=None, internal_ile_td_u_svd_tol=None,
-        internal_ile_td_highpass=highpass, internal_ile_td_subsample=None,
+        internal_ile_td_highpass=None, internal_ile_td_subsample=None,
         internal_ile_td_acf_cond=None, internal_ile_td_calibration_correction_type=None,
         internal_ile_td_calibration_fir_half_length=None,
         internal_ile_td_whiteness_check=False,
         ile_additional_files_to_transfer=None, internal_ile_glitch_basis_file=None)
-    namespace = dict(opts=opts, os=os, sys=sys, line="")
+    fields.update(overrides)
+    namespace = dict(opts=SimpleNamespace(**fields), os=os, sys=sys, line="")
     module = ast.fix_missing_locations(ast.Module(body=[helper, block], type_ignores=[]))
+    exec(compile(module, "pipeline_td_forwarding", "exec"), namespace)
+    return namespace["line"]
+
+
+@pytest.mark.parametrize("highpass", [None, 10.0])
+def test_pseudo_pipe_td_gap_requires_highpass(highpass):
+    """An --internal-ile-td-gap request needs --internal-ile-td-highpass."""
     if highpass is None:
         with pytest.raises(SystemExit) as exc:
-            exec(compile(module, "pipeline_td_forwarding", "exec"), namespace)
+            _run_pseudo_pipe_td_block(internal_ile_td_gap="-.1,.1")
         assert exc.value.code == 1
     else:
-        exec(compile(module, "pipeline_td_forwarding", "exec"), namespace)
-        assert " --td-gap -.1,.1 " in namespace["line"]
-        assert " --td-highpass 10.0 " in namespace["line"]
+        line = _run_pseudo_pipe_td_block(internal_ile_td_gap="-.1,.1",
+                                         internal_ile_td_highpass=highpass)
+        assert " --td-gap -.1,.1 " in line
+        assert " --td-highpass 10.0 " in line
+
+
+def test_pseudo_pipe_forwards_td_piece_ifo():
+    line = _run_pseudo_pipe_td_block(internal_ile_inner_product="td-gs", internal_ile_td_mref=60.,
+                                     internal_ile_td_piece=["-50,0"],
+                                     internal_ile_td_piece_ifo=["L1:-50,-20", "L1:-10,0"])
+    assert " --td-piece -50,0 " in line
+    assert " --td-piece-ifo L1:-50,-20 " in line and " --td-piece-ifo L1:-10,0 " in line
