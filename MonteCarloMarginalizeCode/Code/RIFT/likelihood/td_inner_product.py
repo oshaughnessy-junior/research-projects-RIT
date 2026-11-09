@@ -102,6 +102,7 @@ _GAP_HIGHPASS_ORDER = 8
 _GAP_HIGHPASS_MIN_RESPONSE = 0.999
 # Several coupled gaps are Cholesky-factored densely: at most this many gap samples in total.
 _GAP_MAX_DENSE = 1 << 13
+_HP_FILL_EPS = 1e-10    # ridge on the gap-fill high-pass energy (power response <= 1)
 
 # Frequency tolerance for deltaF comparisons, matching lalsimutils.TOL_DF spirit.
 _TOL_DF = 1e-6
@@ -349,6 +350,7 @@ class ToeplitzInnerProductContext(object):
         self._gap_runs = list(zip(np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0]))
         self._kappa_fill = None
         self._gap_cho = None
+        self._hp_fill_cho = None
 
         # Is a non-trivial (truncated or gapped) segment active?
         self.segment_active = (
@@ -496,15 +498,53 @@ class ToeplitzInnerProductContext(object):
         itself, it treats the stream as periodic, so a gapped run sees no more out-of-band
         data at the stream ends than the ungapped operator does; ``sosfiltfilt`` transients
         add more on Tukey-windowed data.
+
+        The filter would spread the excised samples into retained ones, so the gap is first
+        overwritten by the values that minimize the filtered stream's energy (``_hp_fill``).
+        The result never reads a gap sample, and NaNs there are harmless.
         """
         if self.data_highpass is None:
             raise ValueError("a gapped td-toeplitz overlap needs data_highpass (ILE --td-highpass): "
                              "out-of-band data power above the gap model's wall biases the "
                              "gap marginal")
-        x = np.asarray(x_td)
+        x = np.array(x_td, copy=True)
         f = np.fft.fftfreq(x.shape[-1], d=self.deltaT)
-        y = np.fft.ifft(np.fft.fft(x) * _highpass_response(f, self.data_highpass))
+        resp = _highpass_response(f, self.data_highpass)
+        if self._gap_idx is not None:
+            self._hp_fill(x, resp)
+        y = np.fft.ifft(np.fft.fft(x) * resp)
         return y if np.iscomplexobj(x) else y.real
+
+    def _hp_fill(self, x, resp):
+        """Set x on the gap, in place, to argmin ||HP x||^2 + eps ||x||^2 (eps = _HP_FILL_EPS).
+
+        The fill depends only on the retained samples.  The minimizer's filtered stream has the
+        least power the gap can add, so out-of-band data next to the gap is no more exposed than
+        when the filter reads the true gap values.  One gap is a Toeplitz solve (Levinson);
+        several gaps are Cholesky-factored once per stream length.
+        """
+        n = x.shape[-1]
+        G = self._gap_idx + self.segment_start_index
+        x[G] = 0.0
+        w = resp + _HP_FILL_EPS
+        col = np.fft.ifft(w).real
+        b = np.fft.ifft(np.fft.fft(x) * w)[G]
+        b = b if np.iscomplexobj(x) else b.real
+        rhs = np.column_stack([b.real, b.imag]) if np.iscomplexobj(b) else b
+        if len(self._gap_runs) == 1:
+            sol = scipy.linalg.solve_toeplitz(col[:G.size], rhs)
+        else:
+            if self._hp_fill_cho is None or self._hp_fill_cho[0] != n:
+                if G.size > _GAP_MAX_DENSE:
+                    raise NotImplementedError(
+                        "{0} gaps totalling {1} samples: the coupled gap fill is dense and "
+                        "limited to {2} samples".format(len(self._gap_runs), G.size,
+                                                        _GAP_MAX_DENSE))
+                Gi = G.astype(np.int32)
+                self._hp_fill_cho = (n, scipy.linalg.cho_factor(
+                    col[np.abs(Gi[:, None] - Gi[None, :])], overwrite_a=True))
+            sol = scipy.linalg.cho_solve(self._hp_fill_cho[1], rhs)
+        x[G] = -(sol[:, 0] + 1j * sol[:, 1]) if np.iscomplexobj(b) else -sol
 
     def _apply_seg(self, v):
         """Apply the segment precision operator, with the gap samples marginalized.
