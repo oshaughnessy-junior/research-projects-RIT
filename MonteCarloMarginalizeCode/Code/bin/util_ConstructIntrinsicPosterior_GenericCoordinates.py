@@ -314,6 +314,7 @@ parser.add_argument("--tabular-eos-order-statistic",type=str,default=None,help="
 parser.add_argument("--using-eos", type=str, default=None, help="Name of EOS.  Fit parameter list should physically use lambda1, lambda2 information (but need not). If starts with 'file:', uses a filename with EOS parameters ")
 parser.add_argument("--using-eos-branch", type=int, default=None, help="Select one stable branch (LALSimulation family, or nmbseq with the branch API) while preserving the fixed-EOS lambda_from_m(m) interface. Required for an explicitly chosen twin-star branch. To include every branch instead, use --eos-affine-parameter central.")
 parser.add_argument("--eos-affine-parameter", default="mass", choices=["mass", "central"], help="Affine parameter along the fixed EOS's stellar sequence. 'mass' (default) is the historical one-branch M -> Lambda map. 'central' includes every stable branch (twin stars, third families) with a dM-per-branch prior: a mass on n stable branches counts n times. Adds two auxiliary sampled variates eos_branch_u1, eos_branch_u2 ~ U[0,1) that pick the branch; branch ids are written to <fname-output-samples>_eos_branch.dat. Requires an EOS providing branches_for_m and lambda_from_m(m, branch_id=...).")
+parser.add_argument("--eos-branch-prior", default="mass-per-branch", choices=["mass-per-branch", "uniform-at-mass"], help="With --eos-affine-parameter central: mass-per-branch sums dM over stable branches (default); uniform-at-mass assigns each available branch probability 1/n(m). Neither option renormalizes the mass prior over EOS-dependent stable support.")
 parser.add_argument("--using-eos-dirty-phase-transitions", action='store_true', help="With --using-eos lalsim_file:<path>, require the reviewed LALSimulation phase-transition reader (retained compatibility spelling; the reviewed API has no separate dirty-table boolean).")
 parser.add_argument("--using-eos-extended-family", action='store_true', help="With --using-eos lalsim_file:<path>, build the reviewed extended family instead of the PE-oriented minimal M/R/k2 family.")
 parser.add_argument("--using-eos-for-prior", action='store_true', default=None, help="Alternate (hacky) implementation, which overrides using-eos and using-eos-index, to handle loading in a hyperprior")
@@ -324,6 +325,7 @@ parser.add_argument("--no-matter2", action='store_true', help="Set the lambda pa
 parser.add_argument("--protect-coordinate-conversions", action='store_true', help="Adds an extra layer to coordinate conversions with range tests. Slows code down, but adds layer of safety for out-of-range EOS parameters for example")
 parser.add_argument("--source-redshift",default=0,type=float,help="Source redshift (used to convert from source-frame mass [integration limits] to arguments of fitting function.  Note that if nonzero, integration done in SOURCE FRAME MASSES, but the fit is calculated using DETECTOR FRAME")
 parser.add_argument("--eos-param", type=str, default=None, help="parameterization of equation of state")
+parser.add_argument("--eos-sequence-file", help="With --using-eos file:<grid> --eos-param nmbseq: NMB sequence HDF5 file. Each grid row selects an integer sequence_index; other columns are retained in evidence annotations.")
 parser.add_argument("--eos-param-values", default=None, help="Specific parameter list for EOS")
 parser.add_argument("--sampler-method",default="adaptive_cartesian",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu|portfolio")
 parser.add_argument("--sampler-av-dilate-layers",type=int,default=0,help="AV only (--sampler-method AV): after each contraction, add this many layers of axis-neighbour bins to the occupied bins before the next draw.  The occupied bins come from the retained points, so on a thin or curved live region they miss parts that hold no point yet, and those parts are never drawn again; lnZ then comes out low.  Each layer keeps that rim drawable.  Costs several times more likelihood calls, so at a fixed --n-max a run may end with a lower n_eff.  A cycle draws at least one point per bin, so the per-cycle batch (and GPU memory) can grow to several times --n-chunk.  Default 0 (off).")
@@ -554,6 +556,18 @@ validate_fixed_eos_branch_request(
     opts.using_eos_branch, opts.using_eos, opts.using_eos_for_prior
 )
 eos_affine_central = (opts.eos_affine_parameter == 'central')
+if opts.eos_branch_prior != "mass-per-branch" and not eos_affine_central:
+    parser.error("--eos-branch-prior uniform-at-mass requires --eos-affine-parameter central")
+if opts.eos_sequence_file and not (opts.using_eos and opts.using_eos.startswith("file:") and opts.eos_param == "nmbseq"):
+    parser.error("--eos-sequence-file requires --using-eos file:<grid> --eos-param nmbseq")
+_eos_sequence_grid = None
+if opts.eos_param == "nmbseq":
+    if opts.using_eos_for_prior:
+        parser.error("--eos-param nmbseq cannot be combined with --using-eos-for-prior")
+    from RIFT.physics.eos_sequence_grid import SequenceGrid
+    if not (opts.eos_sequence_file and opts.using_eos and opts.using_eos.startswith("file:") and opts.using_eos_index is not None):
+        parser.error("--eos-param nmbseq requires --eos-sequence-file and --using-eos file:<grid> --using-eos-index")
+    _eos_sequence_grid = SequenceGrid(opts.using_eos[5:], opts.eos_sequence_file)
 if eos_affine_central:
     from RIFT.physics import eos_affine
     eos_affine.validate_eos_affine_request(
@@ -598,7 +612,7 @@ def _write_rejected_eos_proposal(error):
     fname = opts.using_eos.replace('file:', '', 1)
     params = np.atleast_2d(np.loadtxt(fname))[opts.using_eos_index][2:]
     with open(fname) as stream:
-        header = stream.readline()[2:].rstrip('\n')
+        header = stream.readline().lstrip("#").strip()
     row = [-np.inf, 0.] + list(params)
     print(" Rejecting proposed EOS row {}: {}".format(opts.using_eos_index, error))
     if opts.chunk_save and '_chunk_rows' in globals():
@@ -625,6 +639,8 @@ def _exhausted_rejected_eos_proposal(error):
 
 def _eos_from_grid_row(eos_name, dat):
     """EOS for one row of a --using-eos file:<grid> (columns: lnL, sigma_lnL, EOS parameters)."""
+    if opts.eos_param == "nmbseq":
+        return _construct_eos_proposal(_eos_sequence_grid.eos_for_row, dat)
     spec_param_array = dat[2:]  # drop first two as lnL, sigma_lnL
     if opts.eos_param not in ('spectral', 'cs_spectral', 'PP'):
         raise ValueError("Unknown parametric EOS method: {}".format(opts.eos_param))
@@ -941,9 +957,9 @@ if not('chi2' in downselect_dict):
 if opts.input_tides:
     # only insert these cuts if we are using a composite file with tides!
     # do not downselect if lambda1 is not in ! allows NSBH
-    if not('lambda1' in downselect_dict) and ('lambda1' in opts.parameter):
+    if not('lambda1' in downselect_dict) and ('lambda1' in opts.parameter) and not (opts.no_matter1 or opts.assume_eos_but_primary_bh):
         downselect_dict['lambda1'] = [lambda_min,lambda_max]
-    if not('lambda2' in downselect_dict):
+    if not('lambda2' in downselect_dict) and not opts.no_matter2:
         downselect_dict['lambda2'] = [lambda_min,lambda_small_max]
 for param in ['s1z', 's2z', 's1x','s2x', 's1y', 's2y']:
     downselect_dict[param] = [-chi_max,chi_max]
@@ -3434,7 +3450,7 @@ else:
 
 if eos_affine_central:
  def convert_coords_central(x_in, u_in):
-    x_out, log_weight, _ = eos_affine.convert_waveform_coordinates_with_eos_central(x_in, u_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,m_max_all=eos_affine_m_max_all,no_matter1=eos_affine_no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr,fref=opts.fref)
+    x_out, log_weight, _ = eos_affine.convert_waveform_coordinates_with_eos_central(x_in, u_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,m_max_all=eos_affine_m_max_all,no_matter1=eos_affine_no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr,fref=opts.fref,branch_prior=opts.eos_branch_prior)
     if _eos_sampling_status is not None:
         rows = np.atleast_2d(x_out)
         _eos_sampling_status['seen'] += len(rows)
@@ -4177,7 +4193,7 @@ elif opts.using_eos and opts.using_eos.startswith('file:'):
     linefirst =''
     with open(fname) as f:
         linefirst = f.readline()
-    linefirst = linefirst[2:]
+    linefirst = linefirst.lstrip("#").strip() + "\n"
     annotation_header = linefirst # this will/must be lnL sigma_lnL and then parameter names, which we want to preserve
 if opts.chunk_save:
   # --chunk-save requires --using-eos file:, so this is the per-row line of the branch below
@@ -4692,11 +4708,11 @@ for indx_here in indx_list:
                 include_item = False
             else:
                 # only define lambda1, lambda2 as parameters if they are used in sampling! Otherwise may cause problems (e.g.,we are assuming it is zero for a BH)
-                if not(opts.assume_eos_but_primary_bh):
-                    Pgrid.lambda1 = my_eos.lambda_from_m(Pgrid.m1/lal.MSUN_SI)
-                else:
-                    Pgrid.lambda1 = 0 # BH
-                Pgrid.lambda2 = my_eos.lambda_from_m(Pgrid.m2/lal.MSUN_SI)
+                from RIFT.physics.lalsim_eos_compat import evaluate_eos_lambda
+                Pgrid.lambda1 = (0. if (opts.assume_eos_but_primary_bh or opts.no_matter1) else
+                                evaluate_eos_lambda(my_eos, Pgrid.m1, use_vector=False))
+                Pgrid.lambda2 = (0. if opts.no_matter2 else
+                                evaluate_eos_lambda(my_eos, Pgrid.m2, use_vector=False))
                 # Backstop: an EOS may still flag an interior failure this way.
                 if not (np.isfinite(Pgrid.lambda1) and np.isfinite(Pgrid.lambda2)):
                     include_item = False
@@ -4809,6 +4825,9 @@ np.savetxt(opts.fname_output_samples+"+annotation_export.dat", [[opts.n_output_s
 # are all read as absolute lnL by the next stage, so a plugin's internal centring must not reach
 # them.  Adds 0.0 unless a supplementary-likelihood plugin reported an offset.
 lnL_list = np.array(lnL_list,dtype=internal_dtype) + supplemental_ln_likelihood_offset
+if eos_affine_central and opts.eos_branch_prior == "mass-per-branch":
+    # Branch multiplicity is a prior measure; exported lnL is the physical event likelihood.
+    lnL_list -= np.log(np.prod(np.asarray(eos_branch_list, dtype=float)[:, 2:], axis=1))
 # Hyperpipeline ASCII grid writer (opt-in via env var).  See note above the
 # earlier identical writer site -- same rationale.
 if _hpio.is_active():

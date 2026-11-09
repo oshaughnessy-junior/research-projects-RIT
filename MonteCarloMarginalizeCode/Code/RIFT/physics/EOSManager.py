@@ -2252,11 +2252,12 @@ class EOSSequenceSingleIndex:
     maximum and ``mMaxMsun_all`` the maximum over every stable branch.
     """
 
-    def __init__(self, fname=None, index=0, name=None):
+    def __init__(self, fname=None, index=0, name=None, sequence=None):
         self.name = name or "nmbseq_{}_{}".format(fname, index)
         self.fname = fname
         self.index = int(index)
-        self._seq = EOSSequenceFromFile(fname=fname, load_ns=True, no_sort=True)
+        self._seq = (sequence if sequence is not None else
+                     EOSSequenceFromFile(fname=fname, load_ns=True, no_sort=True))
         if not (0 <= self.index < len(self._seq.eos_names)):
             raise ValueError("EOS index {} out of range (n={})".format(
                 self.index, len(self._seq.eos_names)))

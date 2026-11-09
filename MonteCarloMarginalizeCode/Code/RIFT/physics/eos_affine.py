@@ -4,7 +4,7 @@
 maps to one tidal deformability through ``eos.lambda_from_m(m)``.  Nothing in
 this module is used in that mode.
 
-``central`` admits every stable branch.  The prior is dM per stable branch:
+``central`` admits every stable branch.  The default prior is dM per stable branch:
 a mass with n(m) stable branches counts n(m) times.  The integrand is
 Monte-Carlo summed over branch labels with one auxiliary uniform variate per
 component, u_i in [0, 1):
@@ -14,6 +14,10 @@ component, u_i in [0, 1):
     integrand *= n_1 n_2
 
 so that  int du_i  n_i f(B_i[floor(u_i n_i)]) = sum_{b in B_i} f(b).
+
+``branch_prior="uniform-at-mass"`` instead assigns conditional probability
+1/n(m) to each available branch and omits the multiplicity weight. Neither
+choice renormalizes the mass prior over EOS-dependent stable support.
 
 A mass on no stable branch, or at or above the all-branch maximum mass, is
 rejected exactly as the mass path rejects m >= eos.mMaxMsun.
@@ -25,6 +29,7 @@ import math
 import numpy as np
 
 AFFINE_CHOICES = ("mass", "central")
+BRANCH_PRIOR_CHOICES = ("mass-per-branch", "uniform-at-mass")
 CENTRAL_AUX_NAMES = ("eos_branch_u1", "eos_branch_u2")
 NO_BRANCH = -1   # branch label recorded for a component without matter
 
@@ -103,6 +108,15 @@ def all_branch_max_mass_msun(eos):
 PROBE_FRACTIONS = (0.2, 0.4, 0.6, 0.8, 0.95)
 
 
+def _validated_branch_ids(values):
+    branches = list(values)
+    if (not all(isinstance(b, (int, np.integer)) and not isinstance(b, (bool, np.bool_))
+                and b >= 0 for b in branches)
+            or len(set(branches)) != len(branches)):
+        raise ValueError("branches_for_m must return unique nonnegative integer branch ids")
+    return branches
+
+
 def wants_multipart_file_reader(lalsim_module):
     """Central mode with ``lalsim_file:`` must load the table with the reviewed
     phase-transition reader when the build has one: on such builds the legacy
@@ -116,8 +130,8 @@ def require_branch_surface(eos):
 
     Raises BranchSurfaceError when the interface is missing or unusable (for
     example an nmbseq Landry-format file, whose branches_for_m raises
-    TypeError) and BranchProbeFailure when the calls work but this EOS has
-    no stable star at the probe masses or fails natively.  Returns the
+    TypeError) and BranchProbeFailure when the EOS declares no branches
+    or fails natively. Empty point probes do not establish empty support. Returns the
     all-branch maximum mass in Msun.
     """
     if eos is None:
@@ -130,6 +144,7 @@ def require_branch_surface(eos):
         raise TypeError(
             "--eos-affine-parameter central requires lambda_from_m(m, branch_id=...); "
             "{} does not accept branch_id".format(type(eos).__name__))
+    adapter = None
     adapter_getter = getattr(eos, "_get_lalsim_family_adapter", None)
     if callable(adapter_getter):
         try:
@@ -148,9 +163,24 @@ def require_branch_surface(eos):
         m_max_all = all_branch_max_mass_msun(eos)
     except TypeError as exc:
         raise BranchSurfaceError(str(exc)) from exc
-    found = False
-    for frac in PROBE_FRACTIONS:
-        m_probe = frac * m_max_all
+    probe_masses = [frac * m_max_all for frac in PROBE_FRACTIONS]
+    count = getattr(eos, "number_of_branches", None)
+    if count == 0:
+        raise BranchProbeFailure("EOS declares no stable branches")
+    # Published bounds provide a probe even for a branch narrower than the
+    # generic mass grid. Absence of such metadata cannot prove empty support.
+    minimum = getattr(eos, "branch_minimum_mass_msun", None)
+    maximum = getattr(eos, "branch_maximum_mass_msun", None)
+    if count is not None and callable(minimum) and callable(maximum):
+        for b in range(int(count)):
+            probe_masses.append(0.5 * (minimum(b) + maximum(b)))
+    elif adapter is not None and hasattr(adapter, "number_of_branches"):
+        import lal
+        for b in range(adapter.number_of_branches):
+            probe_masses.append(0.5 * (adapter.minimum_mass(b) + adapter.maximum_mass(b)) / lal.MSUN_SI)
+    elif getattr(eos, "mMinMsun", None) is not None:
+        probe_masses.append(0.5 * (float(eos.mMinMsun) + m_max_all))
+    for m_probe in probe_masses:
         try:
             branches = list(eos.branches_for_m(m_probe))
         except (TypeError, AttributeError, NotImplementedError) as exc:
@@ -160,12 +190,12 @@ def require_branch_surface(eos):
         except Exception as exc:
             raise BranchProbeFailure(
                 "branches_for_m({:.3g}) failed: {}".format(m_probe, exc)) from exc
-        if not all(isinstance(b, (int, np.integer)) and not isinstance(b, bool) for b in branches):
+        try:
+            branches = _validated_branch_ids(branches)
+        except ValueError as exc:
             raise BranchSurfaceError(
-                "--eos-affine-parameter central: branches_for_m must return integer branch ids, "
-                "got {!r}".format(branches))
+                "--eos-affine-parameter central: {} (got {!r})".format(exc, branches)) from exc
         if branches:
-            found = True
             try:
                 eos.lambda_from_m(m_probe, branch_id=int(branches[0]))
             except (TypeError, AttributeError, NotImplementedError) as exc:
@@ -174,10 +204,6 @@ def require_branch_surface(eos):
                         type(eos).__name__, branches[0], type(exc).__name__, exc)) from exc
             except Exception:
                 pass   # a per-mass failure here is a sample rejection, not a configuration error
-    if not found:
-        raise BranchProbeFailure(
-            "no stable branch at probe masses {} Msun".format(
-                [round(f * m_max_all, 3) for f in PROBE_FRACTIONS]))
     return m_max_all
 
 
@@ -192,7 +218,7 @@ def select_branch(eos, m_msun, u, m_max_all):
     if not (math.isfinite(m_msun) and m_msun > 0 and m_msun < m_max_all):
         return -np.inf, NO_BRANCH, 0
     try:
-        branches = list(eos.branches_for_m(m_msun))
+        branches = _validated_branch_ids(eos.branches_for_m(m_msun))
     except Exception:
         return -np.inf, NO_BRANCH, 0
     n = len(branches)
@@ -208,16 +234,19 @@ def select_branch(eos, m_msun, u, m_max_all):
 def convert_waveform_coordinates_with_eos_central(
         x_in, u_in, coord_names=('mc', 'eta'), low_level_coord_names=('m1', 'm2'),
         enforce_kerr=False, eos_class=None, m_max_all=None, no_matter1=False,
-        no_matter2=False, source_redshift=0, fref=None):
+        no_matter2=False, source_redshift=0, fref=None, branch_prior="mass-per-branch"):
     """Central-mode twin of ``lalsimutils.convert_waveform_coordinates_with_eos``.
 
     Returns ``(x_out, log_weight, branch_ids)``.  ``x_out`` rows are -inf when
     rejected (same convention as the mass path); ``log_weight`` is
-    ln n_1 + ln n_2 (0 on rejected rows and for components without matter);
+    ln n_1 + ln n_2 by default (0 for ``uniform-at-mass``, rejected rows,
+    and components without matter);
     ``branch_ids`` has shape (N, 2), ``NO_BRANCH`` where none applies.
     """
     from RIFT import lalsimutils
     assert eos_class is not None
+    if branch_prior not in BRANCH_PRIOR_CHOICES:
+        raise ValueError("Unknown EOS branch prior: {}".format(branch_prior))
     if m_max_all is None:
         m_max_all = all_branch_max_mass_msun(eos_class)
     x_in = np.atleast_2d(np.asarray(x_in, dtype=float))
@@ -249,7 +278,8 @@ def convert_waveform_coordinates_with_eos_central(
                 if not np.isfinite(lam):
                     ok = False
                 else:
-                    log_w += math.log(n)
+                    if branch_prior == "mass-per-branch":
+                        log_w += math.log(n)
             if comp == 0:
                 P.lambda1 = lam
             else:

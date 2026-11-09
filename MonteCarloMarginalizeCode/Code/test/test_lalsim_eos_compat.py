@@ -802,39 +802,59 @@ def test_cip_support_stamp_respects_no_matter_flags(monkeypatch):
     assert np.all(np.isneginf(x_out[0]))
 
 
+def _check_cip_export_support_contract(tree):
+    export_loops = [node for node in tree.body if isinstance(node, ast.For)
+                    and isinstance(node.target, ast.Name) and node.target.id == "indx_here"]
+    assert len(export_loops) == 1
+    blocks = [node for node in ast.walk(export_loops[0]) if isinstance(node, ast.If)
+              and isinstance(node.test, ast.Name) and node.test.id == "my_eos"]
+    assert len(blocks) == 1
+    code = compile(ast.Module(body=[blocks[0]], type_ignores=[]), CIP_SCRIPT, "exec")
+
+    class RecordingEOS:
+        mMinMsun = 1.3
+        mMaxMsun = 3.0
+
+        def __init__(self):
+            self.calls = []
+
+        def lambda_from_m(self, mass):
+            mass = mass / lal.MSUN_SI if mass > 1e15 else mass
+            self.calls.append(mass)
+            return 100. * mass
+
+    # Valid neighbors, both support boundaries, and each BH exemption. The
+    # evaluator must never receive an out-of-support mass or a BH component.
+    cases = [
+        ((1.5, 1.4), {}, True, [1.5, 1.4], (150., 140.)),
+        ((1.5, 1.1), {}, False, [], None),
+        ((3.4, 1.4), {}, False, [], None),
+        ((1.5, 1.1), {"no_matter2": True}, True, [1.5], (150., 0.)),
+        ((3.4, 1.4), {"no_matter1": True}, True, [1.4], (0., 140.)),
+        ((3.4, 1.4), {"assume_eos_but_primary_bh": True}, True, [1.4], (0., 140.)),
+        ((3.4, 1.1), {"no_matter1": True, "no_matter2": True}, True, [], (0., 0.)),
+    ]
+    for masses, flags, kept, expected_calls, expected_tides in cases:
+        eos = RecordingEOS()
+        opts = types.SimpleNamespace(no_matter1=False, no_matter2=False,
+                                     assume_eos_but_primary_bh=False)
+        for key, value in flags.items():
+            setattr(opts, key, value)
+        point = types.SimpleNamespace(m1=masses[0] * lal.MSUN_SI,
+                                      m2=masses[1] * lal.MSUN_SI)
+        namespace = dict(my_eos=eos, Pgrid=point, opts=opts, lal=lal, np=np,
+                         mass_in_eos_support=mass_in_eos_support, include_item=True)
+        exec(code, namespace)
+        assert namespace["include_item"] is kept, (masses, flags)
+        assert eos.calls == pytest.approx(expected_calls), (masses, flags, eos.calls)
+        if kept:
+            assert (point.lambda1, point.lambda2) == pytest.approx(expected_tides)
+
+
 def test_cip_export_applies_the_same_support_test_before_asking_for_lambda():
-    # The fit and the export must not disagree about support: a draw the fit
-    # gave zero weight cannot come back as an exported sample with a tidal
-    # parameter.  Guard the wiring, since the two sites are 1000 lines apart.
-    tree = _cip_source_tree()
-
-    export_blocks = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Name) and node.test.id == "my_eos"
-        and "lambda_from_m" in ast.dump(node)
-    ]
-    assert len(export_blocks) == 1
-    block = export_blocks[0]
-
-    guards = [
-        node for node in ast.walk(block)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "id", None) == "mass_in_eos_support"
-    ]
-    assert len(guards) == 1
-
-    # The support test must gate the EOS call, not merely accompany it.
-    gated = [
-        node for node in block.body
-        if isinstance(node, ast.If)
-        and any(child is guards[0] for child in ast.walk(node.test))
-    ]
-    assert len(gated) == 1
-    assert "lambda_from_m" not in ast.dump(ast.Module(
-        body=list(gated[0].body), type_ignores=[]))
-    assert "lambda_from_m" in ast.dump(ast.Module(
-        body=list(gated[0].orelse), type_ignores=[]))
+    # Execute the shipped export block. Calling the guarded evaluator still
+    # consults the EOS, so recorded calls detect a missing or misplaced guard.
+    _check_cip_export_support_contract(_cip_source_tree())
 
 
 def test_released_lalsimulation_family_publishes_both_mass_bounds(monkeypatch):
