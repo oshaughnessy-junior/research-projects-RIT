@@ -622,14 +622,14 @@ if marg_job_specs is not None:
                     dag_utils.which('util_CleanILE_hyperpipeline.py')
                     or 'util_CleanILE_hyperpipeline.py'
                 )
-                stream.write("{} {} --output {}\n".format(
+                stream.write("{} --preserve-intrinsic-values {} --output {}\n".format(
                     relevant_path, input_glob, output_path))
             else:
                 relevant_path = (
                     dag_utils.which('util_HyperCombine.py')
                     or 'util_HyperCombine.py'
                 )
-                stream.write("{} {} > {}\n".format(
+                stream.write("{} --preserve-intrinsic-values {} > {}\n".format(
                     relevant_path, input_glob, output_path))
         os.chmod(script_path, 0o755)
         job, _ = dag_utils.write_convert_sub(
@@ -657,7 +657,17 @@ with open("con_prod.sh",'w') as f:
     relevant_path = dag_utils.which('util_HyperCombine.py')
     if opts.condor_local_nonworker_igwn_prefix:
         relevant_path = 'util_HyperCombine.py'  # we are in igwn environment
-    f.write("""#! /bin/bash
+    if marg_job_specs is not None:
+        inputs = " ".join(
+            "{}/iteration_$1_marg/consolidated_$1_{}.net_marg".format(
+                opts.working_directory, index)
+            for index in range(n_events))
+        f.write("#! /bin/bash\nset -e\n{}\n".format(extra_text))
+        f.write("{} --combination product --preserve-intrinsic-values "
+                "--expected-inputs {} {} > {}/consolidated_$1.net_marg\n".format(
+                    relevant_path, n_events, inputs, opts.working_directory))
+    else:
+        f.write("""#! /bin/bash
  {}
 {} --combination product {}/iteration_$1_marg/consolidated_*_*.net_marg  > {}/consolidated_$1.net_marg
 """.format(extra_text,relevant_path,opts.working_directory,opts.working_directory) )
