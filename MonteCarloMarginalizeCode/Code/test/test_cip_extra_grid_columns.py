@@ -130,7 +130,10 @@ def test_extra_column_posterior_recovers_lambda(recovery_run):
      "conflicting treatments"),
     (_FIT + ["--extra-column-pin", "lens_other:0.25", "--integration-parameter-range", "mc:[1,2]"],
      "not an extra column"),
-], ids=["unhandled", "no_range", "implied_only", "pin_and_ignore", "range_for_standard"])
+    *[(_FIT + ["--extra-column-pin", "lens_other:" + value], "VALUE must be finite")
+      for value in ("nan", "inf", "-inf", "1e309")],
+], ids=["unhandled", "no_range", "implied_only", "pin_and_ignore", "range_for_standard",
+        "pin_nan", "pin_inf", "pin_negative_inf", "pin_overflow"])
 def test_extra_column_refusals(tmp_path, args, needle):
     grid = _write_lambda_grid(str(tmp_path / "grid.dat"))
     proc = _run(str(tmp_path / "run"), grid, args + ["--n-max", "2000", "--n-eff", "10"])
