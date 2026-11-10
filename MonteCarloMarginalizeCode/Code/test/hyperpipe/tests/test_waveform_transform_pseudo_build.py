@@ -349,6 +349,11 @@ def test_posterior_stage_guard_units():
     treat, bad = wtp.check_posterior_stage([ok, "Z" + ok[1:]], "X --parameter a "
                                            "--integration-parameter-range=a:[0,1]", names)
     assert bad == [] and treat == {"a": ("fit", (0.0, 1.0)), "b": ("pin", 2.0)}
+    for value in ("nan", "inf", "-inf", "1e309"):
+        with pytest.raises(ValueError, match="finite"):
+            wtp.parse_pin("b:" + value, "--extra-column-pin")
+        _, bad = wtp.check_posterior_stage([ok.replace("b:2", "b:" + value)], None, names)
+        assert any("finite" in error for error in bad), value
     _, bad = wtp.check_posterior_stage([ok, ok.replace("[0,1]", "[0,2]")], None, names)
     assert any("on an earlier line" in b for b in bad)
     _, bad = wtp.check_posterior_stage([ok.replace("--parameter=a", "--parameter-implied a")], None, names)

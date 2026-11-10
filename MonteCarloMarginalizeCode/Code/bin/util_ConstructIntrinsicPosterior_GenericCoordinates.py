@@ -2606,6 +2606,8 @@ if _use_hpip:
             _extra_pin[_name] = float(_val)
         except ValueError:
             parser.error("--extra-column-pin {}: expected NAME:VALUE".format(_spec))
+        if not np.isfinite(_extra_pin[_name]):
+            parser.error("--extra-column-pin {}: VALUE must be finite".format(_spec))
     _extra_ranges = {}
     for _spec in (opts.integration_parameter_range or []):
         _name, _, _rng = _spec.partition(':')
