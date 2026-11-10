@@ -303,3 +303,66 @@ def test_driver_seeded_growth_replaces_saved_prior(tmp_path):
                 - adaptive._mvn_logpdf(nodes, old["proposal_mean"], old["proposal_cov"]))
     np.testing.assert_allclose(ns["calibration_log_weights"][1:], expected)
     assert not np.allclose(expected, 0)
+
+
+def _resolved_calibration_policy(**overrides):
+    """Execute pseudo-pipe calibration policy without building a workflow."""
+    import argparse
+    import ast
+    import shlex
+    from pathlib import Path
+    from types import SimpleNamespace
+    from RIFT.misc import dag_utils_generic
+    source = Path(__file__).resolve().parents[1] / "bin/util_RIFT_pseudo_pipe.py"
+    tree = ast.parse(source.read_text())
+    block = next(node for node in tree.body if isinstance(node, ast.If)
+                 and isinstance(node.test, ast.Attribute)
+                 and node.test.attr == "calibration_reweighting"
+                 and any(isinstance(child, ast.Assign)
+                         and any(isinstance(target, ast.Name)
+                                 and target.id == "my_extra_string"
+                                 for target in child.targets)
+                         for child in node.body))
+    options = dict(calibration_reweighting=True, use_gwsignal=False,
+                   assume_eccentric=False, manual_extra_ile_args=None,
+                   use_ini=None, internal_mitigate_fd_J_frame="L_frame",
+                   calibration_reweighting_initial_extra_args=None)
+    options.update(overrides)
+    namespace = dict(opts=SimpleNamespace(**options), cmd="builder", shlex=shlex,
+                     argparse=argparse, dag_utils_generic=dag_utils_generic,
+                     config=object(), unsafe_config_get=lambda *_: "27")
+    exec(compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec"),
+         namespace)
+    return dag_utils_generic.WorkflowBackend.condor_args_to_argv(
+        namespace["calibration_effective_extra_args"])
+
+
+def test_resolved_calibration_policy_keeps_defaults():
+    assert _resolved_calibration_policy() == ["--internal-waveform-fd-L-frame"]
+
+
+def test_resolved_calibration_policy_keeps_derived_and_override_order():
+    import ast
+    import shlex
+    nested = {"label": "nested {0}quote{0} and {1}double{1}".format(chr(39), chr(34)),
+              "settings": {"value": 2}}
+    manual = ("--use-gwsignal --gwsignal-mode-conditioning native "
+              "--use-gwsignal-lmax-nyquist 5 --internal-waveform-extra-kwargs "
+              + shlex.quote(repr(nested)))
+    tokens = _resolved_calibration_policy(
+        assume_eccentric=True, use_ini="event.ini", manual_extra_ile_args=manual,
+        calibration_reweighting_initial_extra_args="--fref 35 --h_method hoft")
+    assert tokens.count("--use-gwsignal") == 1
+    assert "--use-eccentricity" in tokens
+    assert tokens[tokens.index("--use-gwsignal-lmax-nyquist") + 1] == "5"
+    extra = ast.literal_eval(tokens[tokens.index("--extra-waveform-kwargs") + 1])
+    assert extra == dict(gwsignal_mode_conditioning="native", gwsignal_extra_kwargs=nested)
+    assert [tokens[i + 1] for i, token in enumerate(tokens) if token == "--fref"] == ["27", "35"]
+    assert tokens.count("--h_method") == 1
+    assert tokens[-2:] == ["--h_method", "hoft"]
+
+
+def test_resolved_calibration_policy_refuses_native_without_gwsignal():
+    with pytest.raises(SystemExit):
+        _resolved_calibration_policy(
+            manual_extra_ile_args="--gwsignal-mode-conditioning native")
