@@ -692,7 +692,7 @@ EXPECTED_PASSED=1739
 # The six td-gs startup checks in test_td_upstream_guards.py (non-native template generators,
 # five cases, and the native-generator case) import td_gs_precompute, so they also skip here;
 # ci.yml's time-domain likelihood step runs them with tdanalysis installed.
-MAX_SKIPPED=33 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent
+MAX_SKIPPED=32 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
@@ -798,15 +798,29 @@ if [ "$rc" -ne 0 ]; then
   exit 1
 fi
 
-read -r TOT FAIL ERR SKIP < <("${PYTHON_BIN}" - "${junit}" <<'PY'
+read -r TOT FAIL ERR SKIP CUPY_SEED_SKIP < <("${PYTHON_BIN}" - "${junit}" <<'PY'
 import sys, xml.etree.ElementTree as ET
 r = ET.parse(sys.argv[1]).getroot()
 s = r if r.tag == 'testsuite' else r.find('testsuite')
 g = lambda k: int(s.get(k, 0))
-print(g('tests'), g('failures'), g('errors'), g('skipped'))
+# Grant only the named NumPy-seeding skip, based on the actual JUnit record.
+seed_skips = [case.find('skipped') for case in s.findall('testcase')
+              if case.get('classname', '').rsplit('.', 1)[-1] == 'test_eos_posterior_tempering_kwarg'
+              and case.get('name') == 'test_the_argparse_spelling_is_inert_at_the_sampler']
+known_seed_skip = sum(skip is not None and skip.get('type') == 'pytest.skip'
+                      and skip.get('message') ==
+                      'cupy importable: run is not bit-reproducible under numpy seeding'
+                      for skip in seed_skips)
+if known_seed_skip > 1:
+    raise ValueError('duplicate CuPy-dependent seeding skip')
+print(g('tests'), g('failures'), g('errors'), g('skipped'), known_seed_skip)
 PY
 )
 rm -f "${junit}"
+# CuPy can be importable without a GPU; do not probe hardware to infer this skip.
+if [ "${CUPY_SEED_SKIP}" -eq 1 ]; then
+  MAX_SKIPPED=$(( MAX_SKIPPED + 1 ))
+fi
 PASSED=$(( TOT - FAIL - ERR - SKIP ))
 echo "== outcomes: ${TOT} total, ${PASSED} passed, ${SKIP} skipped, ${FAIL} failed, ${ERR} errored =="
 
