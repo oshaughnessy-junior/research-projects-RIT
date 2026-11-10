@@ -628,9 +628,14 @@ done
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 in test_waveform_transform_pseudo_build.py
 # (26 passed locally, no skips) -> PROVISIONAL 1569/1543.
 # PR #518 at rift_O4d 93305ba0 plus both review rounds (2026-11-08): MEASURED whole-manifest
-# locally (venv python 3.13, lalsuite 8, no cupy/jax): 1775 collected / 1743 passed / 32 skipped.
-# Re-measure on CIT before merging.
-EXPECTED_TESTS=1775
+# locally (venv python 3.13, lalsuite 8, no cupy/jax): 1775 JUnit outcomes / 1743 passed / 32 skipped.
+# CIT whole-manifest remeasurement (2026-11-09), igwn-py311-20261013,
+# PYTHONNOUSERSITE=1, two workers, no GPU: 1772 items, 1739 passed, 32 skipped,
+# one xfailed; JUnit reports 33 skipped outcomes and no failures or errors.
+# Three backend subtest passes inflate the prior JUnit totals. CIT also skips
+# test_eos_posterior_tempering_kwarg::test_the_argparse_spelling_is_inert_at_the_sampler
+# when CuPy imports: that leg is not reproducible under NumPy seeding.
+EXPECTED_TESTS=1772
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -679,7 +684,7 @@ EXPECTED_TESTS=1775
 # CIP/PUFF named extra grid columns: +15 passes (provisional, see EXPECTED_TESTS).
 # Hyperpipe lambda loop closed in pseudo_pipe: +15 passes (provisional).
 # PR #518 at rift_O4d 93305ba0 plus both review rounds: measured locally, see EXPECTED_TESTS.
-EXPECTED_PASSED=1743
+EXPECTED_PASSED=1739
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
@@ -793,21 +798,35 @@ if [ "$rc" -ne 0 ]; then
   exit 1
 fi
 
-read -r TOT FAIL ERR SKIP < <("${PYTHON_BIN}" - "${junit}" <<'PY'
+read -r TOT FAIL ERR SKIP CUPY_SEED_SKIP < <("${PYTHON_BIN}" - "${junit}" <<'PY'
 import sys, xml.etree.ElementTree as ET
 r = ET.parse(sys.argv[1]).getroot()
 s = r if r.tag == 'testsuite' else r.find('testsuite')
 g = lambda k: int(s.get(k, 0))
-print(g('tests'), g('failures'), g('errors'), g('skipped'))
+# Grant only the named NumPy-seeding skip, based on the actual JUnit record.
+seed_skips = [case.find('skipped') for case in s.findall('testcase')
+              if case.get('classname', '').rsplit('.', 1)[-1] == 'test_eos_posterior_tempering_kwarg'
+              and case.get('name') == 'test_the_argparse_spelling_is_inert_at_the_sampler']
+known_seed_skip = sum(skip is not None and skip.get('type') == 'pytest.skip'
+                      and skip.get('message') ==
+                      'cupy importable: run is not bit-reproducible under numpy seeding'
+                      for skip in seed_skips)
+if known_seed_skip > 1:
+    raise ValueError('duplicate CuPy-dependent seeding skip')
+print(g('tests'), g('failures'), g('errors'), g('skipped'), known_seed_skip)
 PY
 )
 rm -f "${junit}"
+# CuPy can be importable without a GPU; do not probe hardware to infer this skip.
+if [ "${CUPY_SEED_SKIP}" -eq 1 ]; then
+  MAX_SKIPPED=$(( MAX_SKIPPED + 1 ))
+fi
 PASSED=$(( TOT - FAIL - ERR - SKIP ))
-echo "== outcomes: ${TOT} collected, ${PASSED} passed, ${SKIP} skipped, ${FAIL} failed, ${ERR} errored =="
+echo "== outcomes: ${TOT} total, ${PASSED} passed, ${SKIP} skipped, ${FAIL} failed, ${ERR} errored =="
 
 out_rc=0
 if [ "${TOT}" -lt "${EXPECTED_TESTS}" ]; then
-  echo "test-core-units.sh: collected ${TOT} tests, expected at least ${EXPECTED_TESTS}." >&2
+  echo "test-core-units.sh: reported ${TOT} JUnit outcomes, expected at least ${EXPECTED_TESTS}." >&2
   echo "  A file was renamed, or a test_* entry point was dropped.  Restore it, or lower this" >&2
   echo "  floor DELIBERATELY in the same commit that removes the tests." >&2
   out_rc=1
