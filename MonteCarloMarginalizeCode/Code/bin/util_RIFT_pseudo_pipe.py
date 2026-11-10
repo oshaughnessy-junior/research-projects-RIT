@@ -3400,6 +3400,9 @@ if opts.calibration_reweighting:
         my_extra_string+= ' {} '.format(opts.calibration_reweighting_initial_extra_args) # make sure to add spaces/padding
     cmd += " --calibration-reweighting-initial-extra-args={} ".format(
         shlex.quote('  ' + my_extra_string))
+    # Match BasicIteration's shell-to-Condor conversion of the resolved policy.
+    calibration_effective_extra_args = dag_utils_generic.quote_arguments(
+        shlex.split(my_extra_string))
 #if opts.internal_mitigate_fd_J_frame =="L_frame" and opts.use_gwsignal and not(opts.manual_extra_ile_args):
 #    cmd +=" --calibration-reweighting-initial-extra-args='--internal-waveform-fd-L-frame --use-gwsignal' "
 if opts.condor_local_nonworker_igwn_prefix:
@@ -3816,10 +3819,8 @@ if opts.pipeline_builder == "Hyperpipe":
                     if values:
                         calibration_arg_list.extend([option, values[-1]])
                 calibration_args = " ".join(calibration_arg_list)
-            if opts.calibration_reweighting_initial_extra_args:
-                calibration_args += (
-                    " " +
-                    opts.calibration_reweighting_initial_extra_args.strip())
+            if calibration_effective_extra_args:
+                calibration_args += " " + calibration_effective_extra_args
             calibration_stage = dict(terminal_command_common)
             calibration_stage["execution"] = calibration_execution
             calibration_stage.update({

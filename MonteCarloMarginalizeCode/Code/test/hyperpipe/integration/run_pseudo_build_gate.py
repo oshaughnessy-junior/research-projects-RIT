@@ -1283,6 +1283,80 @@ def _assert_marg_worker_follows_ile_selection(hyper: Path, hyper_jax: Path):
         assert not any(name in sub for name in other), (rundir, other)
 
 
+def _calibration_waveform_policy(rundir, hyperpipe=False):
+    from RIFT.misc.dag_utils_generic import WorkflowBackend
+    filename = ("TERMINAL_calibration_reweight.sub" if hyperpipe
+                else "Calib_reweight.sub")
+    line = next(line for line in (rundir / filename).read_text().splitlines()
+                if line.lower().startswith("arguments"))
+    encoded = line.split("=", 1)[1].strip()
+    assert encoded.startswith(chr(34)) and encoded.endswith(chr(34)), encoded
+    argv = WorkflowBackend.condor_args_to_argv(encoded[1:-1])
+    values = {"--fref", "--extra-waveform-kwargs", "--use-gwsignal-lmax-nyquist",
+              "--h_method"}
+    flags = {"--use-gwsignal", "--use-eccentricity",
+             "--internal-waveform-fd-L-frame", "--internal-waveform-fd-no-condition"}
+    policy = []
+    for index, token in enumerate(argv):
+        name, equal, value = token.partition("=")
+        if name in flags:
+            policy.append((name, None))
+        elif name in values:
+            policy.append((name, value if equal else argv[index + 1]))
+    return policy
+
+
+def _assert_calibration_waveform_policy_parity(run_base, xml_grid, ascii_grid,
+                                              cache, pickle_file):
+    import ast
+    nested = {"label": "nested {0}quote{0} and {1}double{1}".format(chr(39), chr(34)),
+              "settings": {"value": 2}}
+    manual_kwargs = "--internal-waveform-extra-kwargs " + shlex.quote(repr(nested))
+    explicit = "--fref 35 --h_method hoft"
+    profiles = [
+        ("default", [], [False]),
+        ("conditioning", ["--manual-extra-ile-args="
+                          "--internal-waveform-fd-no-condition " + manual_kwargs,
+                          "--calibration-reweighting-initial-extra-args=" + explicit],
+         [False, True]),
+        ("gwsignal", ["--use-gwsignal", "--manual-extra-ile-args="
+                      "--gwsignal-mode-conditioning native "
+                      "--use-gwsignal-lmax-nyquist 5 " + manual_kwargs,
+                      "--calibration-reweighting-initial-extra-args=" + explicit],
+         [False, True]),
+        ("eccentric", ["--assume-eccentric"], [False]),
+    ]
+    for name, extra, modes in profiles:
+        for osg in modes:
+            label = "cal-policy-{}-{}".format(name, "osg" if osg else "local")
+            dirs = []
+            for builder, seed in [("BasicIteration", xml_grid), ("Hyperpipe", ascii_grid)]:
+                dirs.append(_build(
+                    builder, run_base, seed, cache, pickle_file,
+                    run_label=label + "-" + builder.lower(), osg_calibration=osg,
+                    extra_args=["--internal-mitigate-fd-J-frame", "L_frame"] + extra))
+            basic, hyper = (_calibration_waveform_policy(dirs[0]),
+                            _calibration_waveform_policy(dirs[1], hyperpipe=True))
+            assert basic == hyper, (label, basic, hyper)
+            assert ("--internal-waveform-fd-L-frame", None) in hyper, (label, hyper)
+            if name in ("conditioning", "gwsignal"):
+                assert hyper.count(("--fref", "35")) == 1
+                assert hyper.count(("--h_method", "hoft")) == 1
+                kwargs = [ast.literal_eval(value) for flag, value in hyper
+                          if flag == "--extra-waveform-kwargs"]
+                expected = (dict(gwsignal_mode_conditioning="native", gwsignal_extra_kwargs=nested)
+                            if name == "gwsignal" else nested)
+                assert kwargs == [expected], (label, kwargs)
+            if name == "conditioning":
+                assert ("--internal-waveform-fd-no-condition", None) in hyper
+            if name == "gwsignal":
+                assert hyper.count(("--use-gwsignal", None)) == 1
+                assert ("--use-gwsignal-lmax-nyquist", "5") in hyper
+            if name == "eccentric":
+                assert ("--use-eccentricity", None) in hyper
+            print("calibration waveform parity: PASS", label, hyper)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1326,6 +1400,8 @@ def main(argv=None):
         hyper_jax = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
             run_label="hyperpipe-jax-ile", extra_args=["--use-jax-ile"])
+        _assert_calibration_waveform_policy_parity(
+            run_base, xml_grid, ascii_grid, cache, pickle_file)
         _assert_default_basic_unchanged(basic, default)
         _assert_shared_semantics(basic, hyper)
         _assert_terminal_parity(basic, hyper)
