@@ -48,3 +48,25 @@ generation, convergence, prior integration, and evidence normalization must
 all complete. The gate verifies nine constant-likelihood MARG rows, a non-empty
 posterior, and that ILE never attempts detector-data access. Use
 `--keep-output` to retain the pipeline and per-node execution logs.
+`--backend local --with-puff` runs two iterations with puff and checks that
+iteration 1's MARG rows equal grid-1 plus grid_puff-1, and that consolidation
+keeps them all: MARG and MARG_PUFF share a directory and need distinct
+`$(cluster)` ids (RIFT #519).
+
+The extra-parameter (lambda) loop gate runs the same way:
+
+```sh
+python MonteCarloMarginalizeCode/Code/test/hyperpipe/integration/run_lambda_loop_gate.py
+```
+
+It builds a two-iteration Hyperpipe run with ILE's waveform-transform seam
+(`--internal-ile-supplementary-waveform-transform-*`), one lambda fit through
+`--internal-supplementary-waveform-transform-parameter-range` and one pinned,
+then executes the DAG with the real CIP, PUFF, consolidation and evidence
+stages. ILE's seam refuses `--zero-likelihood`, so the MARG worker is
+`lambda_marg_stub.py`: it checks it received the NoLoop seam line and returns
+an analytic lnL(lambda). The gate checks lambda survives ILE -> CIP -> PUFF ->
+ILE row by row, and that the final posterior concentrates at the stub's peak.
+It gives each node its own `$(cluster)`: MARG and MARG_PUFF of one iteration
+share an output directory, and a constant cluster id overwrites one with the
+other.

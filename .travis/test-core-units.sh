@@ -165,6 +165,10 @@ FILES=(
   "$C/test/hyperpipe/tests/test_osg_truncated_frames_helper.py"
   "$C/test/hyperpipe/tests/test_terminal_contract.py"
   "$C/test/hyperpipe/tests/test_worker_argument_staging.py"
+  # pseudo_pipe --internal-ile-supplementary-waveform-transform-* (PR #518): real Hyperpipe
+  # builds (empty cache, no network): flags, NoLoop, OSG staging, the lambda loop closed through
+  # CIP/PUFF (DAG args), posterior-stage and treatment refusals.  ~35 s.
+  "$C/test/hyperpipe/tests/test_waveform_transform_pseudo_build.py"
   "$C/test/test_hyperpipeline_io.py"
   # -- hyperpipe pseudo-pipe builder (PR 181).  Every file below was run individually under a
   # runner-like import environment on CIT (IGWN conda python with htcondor/asimov/pesummary
@@ -304,6 +308,20 @@ FILES=(
   "$C/test/test_multirate_precompute.py"
   "$C/test/test_multirate_xpy.py"
   "$C/test/test_multirate_ile_refusal.py"
+  # -- extra-parameter waveform-transform seam (--supplementary-waveform-transform-*): F=1 bitwise
+  #    U/V/Q, constant-A scaling, pure-delay Q shift vs the evaluate_fvals sign, numpy time-domain
+  #    reference, IMRPhenomX(P)HM banks vs a time-domain reference, loader, ILE refusals, and
+  #    zero-data ILE runs (four REDLINE flags): identity, lens_amp vs scaled distance prior,
+  #    non-finite lambda and plugin exceptions abort.
+  "$C/test/test_hlm_transform.py"
+  # Injected lensed signal (constant-amplitude and point-lens demos, H1+L1, zero noise) recovered
+  #    through the seam by ILE (four REDLINE flags): argmax, analytic lnL(A) shape, rho^2/2.  ~30 s.
+  "$C/test/test_hlm_transform_injection.py"
+  # -- named extra grid columns (lambda) through CIP and util_ParameterPuffball.py: lambda
+  #    recovery, pin/ignore, refusals, byte identity of ignore vs drop and Hyperpipe vs legacy,
+  #    quadpuff carry, puff range and row-coherent pass-through.  12 tests, ~14 driver
+  #    subprocesses, ~30 s locally.
+  "$C/test/test_cip_extra_grid_columns.py"
 )
 
 # A manifest entry that stops existing is a SILENT no-op: the gate keeps passing while
@@ -599,7 +617,25 @@ done
 # +214 collected / +214 passed and no new skips.  PROVISIONAL floors below are that delta
 # added to the base floors; RE-MEASURE whole-manifest on CIT before merging (never summed).
 # PR #181 merge with rift_O4d 93305ba0 (2026-11-08): base 1423 + 214 (provisional).
-EXPECTED_TESTS=1637
+# test_hlm_transform.py adds 23 tests and no skips (23 passed locally, venv python 3.13 /
+# lalsuite 8, no cupy) -> PROVISIONAL 1518/1492, same re-measure caveat.
+# PR #518 review fixes add 8 more (31 passed locally, same env) -> PROVISIONAL 1526/1500.
+# PR #518 pseudo_pipe passthrough: +11 (test_waveform_transform_pseudo_build.py, 11 passed
+# locally) -> PROVISIONAL 1537/1511.
+# test_hlm_transform_injection.py: +2 (2 passed locally) -> PROVISIONAL 1539/1513.
+# CIP/PUFF named extra grid columns: test_cip_extra_grid_columns.py (12) and 3 more in
+# test_hyperpipeline_io.py, no skips -> PROVISIONAL 1554/1528.
+# Hyperpipe lambda loop closed in pseudo_pipe: +15 in test_waveform_transform_pseudo_build.py
+# (26 passed locally, no skips) -> PROVISIONAL 1569/1543.
+# PR #518 at rift_O4d 93305ba0 plus both review rounds (2026-11-08): MEASURED whole-manifest
+# locally (venv python 3.13, lalsuite 8, no cupy/jax): 1775 JUnit outcomes / 1743 passed / 32 skipped.
+# CIT whole-manifest remeasurement (2026-11-09), igwn-py311-20261013,
+# PYTHONNOUSERSITE=1, two workers, no GPU: 1772 items, 1739 passed, 32 skipped,
+# one xfailed; JUnit reports 33 skipped outcomes and no failures or errors.
+# Three backend subtest passes inflate the prior JUnit totals. CIT also skips
+# test_eos_posterior_tempering_kwarg::test_the_argparse_spelling_is_inert_at_the_sampler
+# when CuPy imports: that leg is not reproducible under NumPy seeding.
+EXPECTED_TESTS=1772
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -642,7 +678,13 @@ EXPECTED_TESTS=1637
 # EOS and waveform rejection regressions add 32 required passes.
 # PR #181 catch-up merge: +214 passes (provisional, see EXPECTED_TESTS).
 # PR #181 merge with rift_O4d 93305ba0 (2026-11-08): base 1397 + 214 (provisional).
-EXPECTED_PASSED=1611
+# PR #518 review fixes: +8 passes in test_hlm_transform.py (provisional, see EXPECTED_TESTS).
+# PR #518 pseudo_pipe passthrough: +11 passes (provisional).
+# test_hlm_transform_injection.py: +2 passes (provisional).
+# CIP/PUFF named extra grid columns: +15 passes (provisional, see EXPECTED_TESTS).
+# Hyperpipe lambda loop closed in pseudo_pipe: +15 passes (provisional).
+# PR #518 at rift_O4d 93305ba0 plus both review rounds: measured locally, see EXPECTED_TESTS.
+EXPECTED_PASSED=1739
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
@@ -756,21 +798,35 @@ if [ "$rc" -ne 0 ]; then
   exit 1
 fi
 
-read -r TOT FAIL ERR SKIP < <("${PYTHON_BIN}" - "${junit}" <<'PY'
+read -r TOT FAIL ERR SKIP CUPY_SEED_SKIP < <("${PYTHON_BIN}" - "${junit}" <<'PY'
 import sys, xml.etree.ElementTree as ET
 r = ET.parse(sys.argv[1]).getroot()
 s = r if r.tag == 'testsuite' else r.find('testsuite')
 g = lambda k: int(s.get(k, 0))
-print(g('tests'), g('failures'), g('errors'), g('skipped'))
+# Grant only the named NumPy-seeding skip, based on the actual JUnit record.
+seed_skips = [case.find('skipped') for case in s.findall('testcase')
+              if case.get('classname', '').rsplit('.', 1)[-1] == 'test_eos_posterior_tempering_kwarg'
+              and case.get('name') == 'test_the_argparse_spelling_is_inert_at_the_sampler']
+known_seed_skip = sum(skip is not None and skip.get('type') == 'pytest.skip'
+                      and skip.get('message') ==
+                      'cupy importable: run is not bit-reproducible under numpy seeding'
+                      for skip in seed_skips)
+if known_seed_skip > 1:
+    raise ValueError('duplicate CuPy-dependent seeding skip')
+print(g('tests'), g('failures'), g('errors'), g('skipped'), known_seed_skip)
 PY
 )
 rm -f "${junit}"
+# CuPy can be importable without a GPU; do not probe hardware to infer this skip.
+if [ "${CUPY_SEED_SKIP}" -eq 1 ]; then
+  MAX_SKIPPED=$(( MAX_SKIPPED + 1 ))
+fi
 PASSED=$(( TOT - FAIL - ERR - SKIP ))
-echo "== outcomes: ${TOT} collected, ${PASSED} passed, ${SKIP} skipped, ${FAIL} failed, ${ERR} errored =="
+echo "== outcomes: ${TOT} total, ${PASSED} passed, ${SKIP} skipped, ${FAIL} failed, ${ERR} errored =="
 
 out_rc=0
 if [ "${TOT}" -lt "${EXPECTED_TESTS}" ]; then
-  echo "test-core-units.sh: collected ${TOT} tests, expected at least ${EXPECTED_TESTS}." >&2
+  echo "test-core-units.sh: reported ${TOT} JUnit outcomes, expected at least ${EXPECTED_TESTS}." >&2
   echo "  A file was renamed, or a test_* entry point was dropped.  Restore it, or lower this" >&2
   echo "  floor DELIBERATELY in the same commit that removes the tests." >&2
   out_rc=1

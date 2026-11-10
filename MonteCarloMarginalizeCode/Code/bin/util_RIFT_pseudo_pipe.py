@@ -829,6 +829,14 @@ parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="D
 parser.add_argument("--internal-ile-glitch-basis",action='append',default=None,help="Passthrough to ILE --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (analytic Slepian glitch marginalization, G3). Repeatable. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-basis-file",action='append',default=None,help="Data-informed glitch basis for one detector, 'IFO:path.npz' (G4, glitschen/BayesWave PCA/SVD). Repeatable. The .npz is ADDED TO THE ILE CONDOR TRANSFER LIST and the ILE flag is rewritten to reference the transferred basename, so it works on execute nodes / OSG. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-sigma",default=None,type=str,help="Passthrough to ILE --glitch-sigma (glitch amplitude hyperparameter mode; only 'profile' is wired).")
+# --- Extra-parameter waveform-transform seam (ILE --supplementary-waveform-transform-*) ---
+parser.add_argument("--internal-ile-supplementary-waveform-transform-code",default=None,type=str,help="EXPERTS ONLY. Passthrough to ILE --supplementary-waveform-transform-code (RIFT/likelihood/hlm_transform.py): a transfer-function plugin F(f; lambda) applied to every h_lm before the U/V/Q precompute, lambda being extra columns of the Hyperpipe grid.  REQUIRES --pipeline-builder Hyperpipe and a --manual-initial-grid carrying the declared columns; refused with --add-extrinsic and --use-jax-ile.  Give a FILE PATH: it is ADDED TO THE ILE TRANSFER LIST and rewritten to the transferred basename under --use-osg (a dotted module name is refused under --use-osg).  Every declared lambda must be fit or pinned by every CIP iteration and puffed or passed through by PUFF: use --internal-supplementary-waveform-transform-parameter-range / -pin (or hand-supplied --manual-extra-cip-args / --manual-extra-puff-args); the final CIP and PUFF lines are checked before the DAG is built.  See RIFT/misc/waveform_transform_pipeline.py.")
+parser.add_argument("--internal-ile-supplementary-waveform-transform-function",default=None,type=str,help="Passthrough to ILE --supplementary-waveform-transform-function.")
+parser.add_argument("--internal-ile-supplementary-waveform-transform-ini",default=None,type=str,help="Passthrough to ILE --supplementary-waveform-transform-ini; the file is staged like the plugin.")
+parser.add_argument("--internal-ile-supplementary-waveform-transform-parameter",action='append',default=None,help="Passthrough to ILE --supplementary-waveform-transform-parameter (repeatable): an extra grid column passed to the plugin, besides its EXTRA_PARAMETERS.")
+parser.add_argument("--internal-supplementary-waveform-transform-parameter-range",action='append',default=None,help="With --internal-ile-supplementary-waveform-transform-code: NAME:[a,b] (repeatable, one per extra parameter).  Fit and sample the declared extra parameter NAME on [a,b] (uniform prior) in EVERY CIP iteration (adds --parameter NAME --integration-parameter-range NAME:[a,b]) and puff it inside [a,b] (same arguments on the PUFF line).  Every --manual-initial-grid value of NAME must lie in [a,b].")
+parser.add_argument("--internal-supplementary-waveform-transform-parameter-pin",action='append',default=None,help="With --internal-ile-supplementary-waveform-transform-code: NAME:VALUE (repeatable).  Pin the declared extra parameter NAME in every CIP iteration (adds --extra-column-pin NAME:VALUE: CIP keeps only rows at VALUE and writes VALUE back to the grid); PUFF passes it through.  Some --manual-initial-grid row must have NAME = VALUE.")
+parser.add_argument("--internal-supplementary-waveform-transform-parameter-reflect",action='append',default=None,help="With --internal-supplementary-waveform-transform-parameter-range NAME:[a,b]: NAME (repeatable).  PUFF reflects NAME into [a,b] (--reflect-parameter NAME) instead of dropping puffed points outside it.")
 parser.add_argument("--puff-periodic-mode", choices=["off", "gap", "mean"], default="off", help="Unwrap every native periodic puff coordinate before covariance estimation. gap cuts at the largest empty arc; mean cuts opposite the circular mean. Opt-in pending campaign backtests; effective eccentric phase retains its own chart.")
 parser.add_argument("--internal-puff-transverse",action='store_true', help=" appends the following arguments: --parameter phi1 --parameter phi2 --parameter chi1_perp_u --parameter chi2_perp_u ")
 parser.add_argument("--internal-puff-mu-random-transverse", action='store_true',
@@ -1144,6 +1152,46 @@ elif opts.ile_zero_likelihood_data_free:
     raise SystemExit(
         "pseudo_pipe: --ile-zero-likelihood-data-free requires "
         "--pipeline-builder Hyperpipe")
+
+# Extra-parameter waveform-transform seam: refuse what it cannot serve BEFORE any helper
+# runs.  The checks live in RIFT.misc.waveform_transform_pipeline so tests can reach them.
+from RIFT.misc import waveform_transform_pipeline as _wt_pipeline
+_wt_requested = _wt_pipeline.requested(opts)
+_wt_names = []
+if _wt_requested:
+    _wt_bad = _wt_pipeline.build_time_refusals(opts)
+    if _wt_bad:
+        raise SystemExit("pseudo_pipe: {}-*: refusing: {}".format(
+            _wt_pipeline.PREFIX, "; ".join(_wt_bad)))
+    try:
+        _wt_names = _wt_pipeline.declared_parameters(opts)
+        _wt_bad = _wt_pipeline.check_grid(opts.manual_initial_grid, _wt_names, hyperpipeline_io)
+    except Exception as _wt_exc:
+        _wt_bad = ["{}: {}".format(type(_wt_exc).__name__, _wt_exc)]
+    if _wt_bad:
+        raise SystemExit("pseudo_pipe: {}-*: refusing: {}".format(
+            _wt_pipeline.PREFIX, "; ".join(_wt_bad)))
+    # CIP/PUFF treatment of each lambda from the convenience options; the final CIP/PUFF lines
+    # (which may also carry hand-supplied treatments) are checked again before the DAG.
+    _wt_ranges, _wt_pins, _wt_reflect, _wt_bad = _wt_pipeline.option_treatments(opts, _wt_names)
+    if not _wt_bad:
+        _wt_bad = _wt_pipeline.check_grid_treatments(
+            opts.manual_initial_grid,
+            dict([(n, ("fit", r)) for n, r in _wt_ranges.items()]
+                 + [(n, ("pin", v)) for n, v in _wt_pins.items()]),
+            hyperpipeline_io, label="--manual-initial-grid")
+    if _wt_bad:
+        raise SystemExit("pseudo_pipe: {}-*: refusing: {}".format(
+            _wt_pipeline.PREFIX, "; ".join(_wt_bad)))
+    # Resolve file paths now: the run directory becomes the cwd before the ILE line is built.
+    if _wt_pipeline.plugin_loader.spec_looks_like_path(opts.internal_ile_supplementary_waveform_transform_code):
+        opts.internal_ile_supplementary_waveform_transform_code = os.path.abspath(
+            os.path.expanduser(opts.internal_ile_supplementary_waveform_transform_code))
+    if opts.internal_ile_supplementary_waveform_transform_ini:
+        opts.internal_ile_supplementary_waveform_transform_ini = os.path.abspath(
+            os.path.expanduser(opts.internal_ile_supplementary_waveform_transform_ini))
+    print(" Extra-parameter waveform transform: {} with extra parameters {}".format(
+        opts.internal_ile_supplementary_waveform_transform_code, _wt_names))
 
 if (opts.terminal_stage_extra_file
         and opts.pipeline_builder != "Hyperpipe"):
@@ -2283,6 +2331,23 @@ if opts.use_jax_ile:
 # Same discipline, same reason, for the Q_lm pregrid factor -- including the forced-cubic-stencil
 # conflict, which can only be checked here: --interpolate-time is resolved and emitted by the
 # helper, so it is not visible to this script until `line` is fully assembled.
+# Extra-parameter waveform-transform seam (validated above).  The plugin/ini ride the ILE
+# transfer list as absolute paths and are referenced by basename on OSG, as the glitch-basis
+# files are.  The seam runs only on NoLoop, so --force-xpy is added (inert where cupy loads)
+# and the finished line is checked against ILE's own refusal list.
+if _wt_requested:
+    try:
+        _wt_text, opts.ile_additional_files_to_transfer = _wt_pipeline.ile_arguments(
+            opts, opts.ile_additional_files_to_transfer, bool(opts.use_osg))
+    except ValueError as _wt_exc:
+        raise SystemExit("pseudo_pipe: {}".format(_wt_exc))
+    line += _wt_text
+    if "--force-xpy" not in shlex.split(line):
+        line += " --force-xpy "
+    _wt_bad = _wt_pipeline.ile_argument_refusals(line)
+    if _wt_bad:
+        raise SystemExit("pseudo_pipe: {}-*: the ILE line would be refused: {}".format(
+            _wt_pipeline.PREFIX, "; ".join(_wt_bad)))
 refuse_unless_q_time_pregrid_emitted(
     opts.internal_ile_q_time_pregrid_factor, line, "args_ile.txt")
 
@@ -2641,6 +2706,11 @@ if eccentric_phase_pipeline.requested(opts):
     if not any(eccentric_phase_pipeline.FLAG in line for line in lines):
         raise ValueError('No CIP stage fits native eccentricity/anomaly for the requested effective coordinates')
 
+if _wt_requested:
+    # Every CIP iteration fits or pins each lambda (the guard before the DAG checks the result).
+    _wt_cip_text = _wt_pipeline.cip_injection(_wt_ranges, _wt_pins)
+    lines = [line.rstrip("\n") + _wt_cip_text + "\n" for line in lines]
+
 with open("args_cip_list.txt",'w') as f:
    if not(opts.internal_truncate_cip_arg_list is None):
        if opts.internal_truncate_cip_arg_list < 1:
@@ -2778,6 +2848,8 @@ with open("args_puff.txt",'w') as f:
                 puff_args+= " --enforce-duration-bound " +str(opts.data_LI_seglen)
         if opts.internal_use_force_away:
             puff_args = puff_args.replace(unsafe_parse_arg_string(puff_args,'force-away')," --force-away {} ".format(str(opts.internal_use_force_away)))
+        if _wt_requested:
+            puff_args += _wt_pipeline.puff_injection(_wt_ranges, _wt_reflect)
         if not(opts.manual_extra_puff_args is None):
             puff_args += " {} ".format(opts.manual_extra_puff_args)  # embed with space on each side, avoid collisions
         from RIFT.misc import periodic_puff_pipeline
@@ -3951,6 +4023,28 @@ if opts.pipeline_builder == "Hyperpipe":
         hyperpipe_cmd.append("--condor-local-nonworker-igwn-prefix")
     if opts.condor_nogrid_nonworker:
         hyperpipe_cmd.append("--condor-nogrid-nonworker")
+    if _wt_requested:
+        # The loop closes only if every CIP iteration hands each lambda back to ILE (fit in
+        # one range, or pinned) and PUFF puffs it in that range or passes it through.  Check
+        # the FINAL argument files the posterior writer reads, whatever produced them.
+        with open("args_cip_list.txt") as stream:
+            _wt_cip_lines = stream.readlines()
+        with open("args_puff.txt") as stream:
+            _wt_puff_line = stream.read()
+        _wt_treat, _wt_bad = _wt_pipeline.check_posterior_stage(
+            _wt_cip_lines, _wt_puff_line if puff_max_it > 0 else None, _wt_names)
+        if not (hyperpipeline_io.is_active() and hyperpipeline_io.sniff("proposed-grid.dat")):
+            # Every stage must exchange self-describing grids: lambda has no legacy column.
+            _wt_bad.append("the workflow would not run in the Hyperpipe grid format "
+                           "(RIFT_HYPERPIPELINE_FORMAT unset or proposed-grid.dat not a Hyperpipe table)")
+        if not _wt_bad:
+            _wt_bad = _wt_pipeline.check_grid_treatments(
+                "proposed-grid.dat", _wt_treat, hyperpipeline_io, label="--manual-initial-grid")
+        if _wt_bad:
+            raise SystemExit("pseudo_pipe: {}-*: refusing to build the DAG: the posterior/puff "
+                             "stages would not carry the extra parameters {}: {}".format(
+                                 _wt_pipeline.PREFIX, _wt_names, "; ".join(_wt_bad)))
+        print(" Extra parameters through CIP/PUFF: {}".format(_wt_treat))
     print(" ".join(shlex.quote(item) for item in hyperpipe_cmd))
     subprocess.run(hyperpipe_cmd, check=True, env=os.environ.copy())
 else:
