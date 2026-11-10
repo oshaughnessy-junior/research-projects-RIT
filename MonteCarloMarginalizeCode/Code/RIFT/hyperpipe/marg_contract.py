@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 
 from .execution_contract import normalize_execution
@@ -35,14 +36,43 @@ MARG_EXECUTION_KEYS = {
 }
 
 
-def _read_args_file(path):
-    """Read an args file and remove the conventional leading dummy token."""
+def _read_args_file(path, shell=True):
+    """Read shell (MARG) or Condor (COMMAND) argument text without losing argv."""
     with open(path) as stream:
-        text = " ".join(line.replace("\\", "").strip() for line in stream)
-    words = text.split()
-    if words and words[0] == "X":
-        words = words[1:]
-    return " ".join(words)
+        text = stream.read()
+    out, quote, i, separated = [], None, 0, False
+    while i < len(text):
+        char = text[i]
+        if shell and char == "\\" and quote != "'" and i + 1 < len(text):
+            # Shell continuations remove both characters, including in double
+            # quotes. Other escapes must survive for the submit writer to parse.
+            if text[i + 1] == "\n":
+                i += 2
+                continue
+            if separated:
+                out.append(" ")
+                separated = False
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if quote is None and char in " \t\r\n":
+            separated = bool(out)
+            i += 1
+            continue
+        if separated:
+            out.append(" ")
+            separated = False
+        if char == "'" or (shell and char == '"'):
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        out.append(char)
+        i += 1
+    text = "".join(out)
+    # Only the conventional bare dummy token is metadata. Preserve quoted X
+    # and every character following it, including quoted whitespace.
+    return re.sub(r"^X(?:[ \t\r\n]+|$)", "", text, count=1)
 
 
 def _expand_path(value, base_dir):
@@ -102,7 +132,7 @@ class MargJobSpec(object):
             self.args = _read_args_file(self.args_file)
         else:
             self.args_file = None
-            self.args = str(args or "").strip()
+            self.args = str(args or "").lstrip(" \t\r\n")
 
         self.event_file = _expand_path(raw.get("event_file"), base_dir)
         self.n_chunk = int(raw.get("n_chunk", 1))

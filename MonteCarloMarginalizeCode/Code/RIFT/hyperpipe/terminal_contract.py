@@ -15,7 +15,7 @@ import os
 import re
 import shutil
 
-from .marg_contract import INDEXED_GRID_V1, MargJobSpec
+from .marg_contract import INDEXED_GRID_V1, MargJobSpec, _read_args_file
 from .execution_contract import normalize_execution
 
 
@@ -74,12 +74,7 @@ def _read_args(raw, base_dir, name):
         raise ValueError(
             "terminal stage {!r} args_file does not exist: {}".format(
                 name, args_file))
-    with open(args_file) as stream:
-        text = " ".join(line.replace("\\", "").strip() for line in stream)
-    words = text.split()
-    if words and words[0] == "X":
-        words = words[1:]
-    return " ".join(words), args_file
+    return _read_args_file(args_file, shell=False), args_file
 
 
 class TerminalStageSpec(object):
@@ -204,7 +199,7 @@ class TerminalStageSpec(object):
                         "match group_sizes".format(self.name))
                 self.count = len(self.group_sizes)
                 self.group_size = self.group_sizes[0]
-            self.args_append = str(raw.get("args_append") or "").strip()
+            self.args_append = str(raw.get("args_append") or "").lstrip(" \t\r\n")
         else:
             if not raw.get("exe"):
                 raise ValueError(
