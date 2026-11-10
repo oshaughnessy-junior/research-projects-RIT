@@ -6129,7 +6129,11 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         sys.exit(0)
 
 
-    transfer_files_here = list(transfer_files or [])
+    if isinstance(transfer_files, str):
+        # Preserve Condor's raw list syntax, including quoted commas in names.
+        transfer_files_here = [transfer_files] if transfer_files else []
+    else:
+        transfer_files_here = list(transfer_files or [])
     singularity_image_used = singularity_image
     if singularity_image and 'osdf:' in singularity_image:
         singularity_image_used = "./{}".format(

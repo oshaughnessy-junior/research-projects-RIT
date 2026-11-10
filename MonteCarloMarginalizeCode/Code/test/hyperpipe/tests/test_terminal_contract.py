@@ -1,5 +1,6 @@
 import importlib
 import json
+import shlex
 from pathlib import Path
 import sys
 import types
@@ -297,3 +298,41 @@ def test_subworkflow_stage_rejects_job_fields(tmp_path, field, value):
     path = _write_manifest(tmp_path, [stage])
     with pytest.raises(ValueError, match="does not take"):
         load_terminal_stage_specs(str(path))
+
+
+@pytest.mark.parametrize("argv", [
+    ["--probe", "/data/a b.xml"],
+    ["--probe", "a  b"],
+    ["--probe", "abc\\"],
+    ["--probe", "a'b \"quoted\""],
+    ["--probe", ""],
+    [],
+])
+@pytest.mark.parametrize("mode", ["inline", "file"])
+def test_terminal_args_preserve_actual_command_argv(hp_modules, tmp_path, argv, mode):
+    import os
+    import subprocess
+    dag = hp_modules.dag_utils_generic
+    recorder = tmp_path / "record.py"
+    capture = tmp_path / "argv.json"
+    recorder.write_text("#!" + sys.executable + "\nimport json,sys\n"
+                        "from pathlib import Path\nPath(" + repr(str(capture))
+                        + ").write_text(json.dumps(sys.argv[1:]))\n")
+    recorder.chmod(0o755)
+    text = dag.quote_arguments(argv)
+    raw = {"name": "command", "kind": COMMAND_V1, "exe": str(recorder)}
+    if mode == "file":
+        args = tmp_path / "args.txt"
+        args.write_text("X " + text + "\n")
+        raw["args_file"] = str(args)
+    else:
+        raw["args"] = text
+    stage = _CONTRACT.TerminalStageSpec(raw, str(tmp_path))
+    job, _ = dag.write_command_sub(exe=stage.exe, arg_str=stage.args,
+                                  log_dir=str(tmp_path) + "/")
+    script = tmp_path / "command.sh"
+    dag.LocalBackend().emit_job(job, str(script))
+    completed = subprocess.run(["bash", str(script)], env=os.environ.copy(),
+                               capture_output=True, text=True, timeout=10)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(capture.read_text()) == argv
