@@ -336,3 +336,85 @@ def test_terminal_args_preserve_actual_command_argv(hp_modules, tmp_path, argv, 
                                capture_output=True, text=True, timeout=10)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert json.loads(capture.read_text()) == argv
+
+
+def test_command_transfer_uris_remain_verbatim_and_paths_manifest_relative(tmp_path):
+    uris = ["osdf:///ospool/test/pool.dat", "https://example.invalid/data",
+            "custom+stage://host/path"]
+    stage = _CONTRACT.TerminalStageSpec(
+        {"name": "collect", "kind": COMMAND_V1, "exe": "/bin/true",
+         "execution": {"transfer_files": uris + ["local.dat", "/absolute.dat"]}},
+        str(tmp_path))
+    assert stage.execution["transfer_files"] == uris + [
+        str(tmp_path / "local.dat"), "/absolute.dat"]
+    assert stage.execution["transfer_output_files"] == []
+
+
+@pytest.mark.parametrize("transfer_policy", ["omitted", [], [
+    "osdf:///ospool/test/pool.dat", "https://example.invalid/data",
+    "custom+stage://host/path", "local.dat"]])
+def test_generated_command_preserves_transfer_policy(
+        hp_modules, rift_bin, tmp_path, monkeypatch, transfer_policy):
+    import runpy
+    import shutil
+    import subprocess
+
+    run = tmp_path / "run"
+    run.mkdir()
+    seed = run / "seed.dat"
+    seed.write_text("# RIFT_HYPERPIPELINE_V1\n# lnL sigma_lnL m1 m2\n0 0 36 29\n")
+    (run / "local.dat").write_text("fixture\n")
+    worker = run / "candidate-command"
+    worker.write_text("#!/bin/sh\nexit 0\n")
+    worker.chmod(0o755)
+    (run / "jobs.json").write_text(json.dumps([{
+        "name": "build", "protocol": "indexed-grid-v1", "exe": "/bin/true",
+        "execution": {"requires_data_inputs": False}}]))
+    execution = {"use_osg": True}
+    if transfer_policy != "omitted":
+        execution["transfer_files"] = transfer_policy
+    terminal = _write_manifest(run, [{
+        "name": "collect", "kind": COMMAND_V1, "exe": str(worker),
+        "execution": execution}])
+    (run / "post.args").write_text("1 --parameter m1 --parameter m2\n")
+    monkeypatch.chdir(run)
+    monkeypatch.setenv("RIFT_DAG_BACKEND", "htcondor")
+    monkeypatch.setenv("RIFT_HYPERPIPELINE_FORMAT", "1")
+    monkeypatch.setenv("RIFT_REQUIRE_NONWORKER", "HAS_CVMFS_software_igwn_org")
+    monkeypatch.setattr(sys, "argv", [
+        str(rift_bin / "create_eos_posterior_pipeline"),
+        "--working-directory", str(run), "--input-grid", str(seed),
+        "--marg-job-spec-file", str(run / "jobs.json"),
+        "--terminal-stage-spec-file", str(terminal),
+        "--eos-post-args-list", str(run / "post.args"), "--eos-post-exe", "/bin/true",
+        "--n-iterations", "1", "--n-samples-per-job", "1",
+        "--eos-post-explode-jobs", "1", "--eos-post-explode-jobs-last", "1",
+        "--use-full-submit-paths"])
+    runpy.run_path(str(rift_bin / "create_eos_posterior_pipeline"), run_name="__main__")
+    submit = run / "TERMINAL_collect.sub"
+
+    def ads(path):
+        return dict((k.strip().lower(), v.strip()) for k, v in (
+            line.split("=", 1) for line in path.read_text().splitlines() if "=" in line))
+
+    expected = ([] if transfer_policy in ("omitted", []) else
+                transfer_policy[:-1] + [str(run / "local.dat")])
+    # OSG command staging also appends its executable, including for no inputs.
+    expected.append(str(worker))
+    if expected:
+        assert ads(submit)["transfer_input_files"] == ",".join(expected)
+    else:
+        assert "transfer_input_files" not in ads(submit)
+    assert ads(submit)["transfer_output_files"] == ""
+    condor_submit = shutil.which("condor_submit")
+    if condor_submit:
+        out = run / "command.classad"
+        result = subprocess.run(
+            [condor_submit, "-dry-run", str(out), str(submit)],
+            capture_output=True, text=True, timeout=20)
+        assert result.returncode == 0, result.stdout + result.stderr
+        parsed = ads(out)
+        if expected:
+            assert parsed["transferinput"].strip('"') == ",".join(expected)
+        else:
+            assert "transferinput" not in parsed

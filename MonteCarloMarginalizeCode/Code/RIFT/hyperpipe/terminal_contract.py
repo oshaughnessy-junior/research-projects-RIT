@@ -218,7 +218,7 @@ class TerminalStageSpec(object):
                     "command terminal stage {!r} execution "
                     "transfer_output_files must be a list".format(self.name))
             self.execution["transfer_files"] = [
-                _expand_path(item, base_dir)
+                item if "://" in str(item) else _expand_path(item, base_dir)
                 for item in transfer_files]
             self.execution["transfer_output_files"] = list(
                 transfer_output_files)
