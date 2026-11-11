@@ -108,9 +108,10 @@ def test_outcome_allowance_requires_named_actual_skip(
     source = script.read_text()
     value = lambda name: int(re.search(r"^"+name+r"=(\d+)", source, re.MULTILINE)[1])
     tests, base_skips = value("EXPECTED_TESTS"), value("MAX_SKIPPED")
+    total = max(tests, value("EXPECTED_PASSED") + base_skips + int(known_skip)) + 3
     xml = tmp_path/"synthetic-outcomes.xml"
     root = ET.Element("testsuites")
-    suite = ET.SubElement(root, "testsuite", tests=str(tests+3), failures="0", errors="0",
+    suite = ET.SubElement(root, "testsuite", tests=str(total), failures="0", errors="0",
                           skipped=str(base_skips+int(known_skip)+int(new_skip)))
     if known_skip:
         case = ET.SubElement(suite, "testcase",
@@ -133,7 +134,8 @@ if args[0].endswith('core_unit_collection.py'):
     files=args[2:]
     floors={'test_lalsim_eos_compat.py':49,'test_waveform_sample_rejection.py':19,
             'test_posterior_compression.py':41,'test_raw_distance_contract.py':44,
-            'test_auxiliary_grid_transfers.py':18,'test_gmm_sample_matches_score.py':17}
+            'test_auxiliary_grid_transfers.py':18,'test_gmm_sample_matches_score.py':17,
+            'test_eos_affine_central.py':49,'test_nmb_sequence_branches.py':16}
     counts=[floors.get(Path(name).name,1) for name in files]
     counts[-1]+=int(os.environ['SYNTHETIC_TEST_COUNT'])-sum(counts)
     Path(args[1]).write_text(''.join(name+'\t'+str(n)+'\n' for name,n in zip(files,counts)))

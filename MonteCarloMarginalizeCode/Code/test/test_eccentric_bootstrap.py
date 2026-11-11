@@ -203,6 +203,7 @@ def test_raw_bilby_bootstrap_survives_real_initial_grid_merge(tmp_path, monkeypa
     repo = CODE.parents[1]
     ref = repo / '.travis/ref_ini/GW150914.ini'
     text = ref.read_text().replace('[engine]', '[engine]\necc_min=0.001\necc_max=0.4')
+    text = re.sub(r'(?m)^force-initial-grid-size\s*=.*$', 'force-initial-grid-size=4', text)
     for flag in ('use_osg', 'use_osg_file_transfer', 'use_osg_cip'):
         text = text.replace(flag + '=True', flag + '=False')
     text = text.replace('internal-truncate-files-for-osg-file-transfer=True',
@@ -213,21 +214,31 @@ def test_raw_bilby_bootstrap_survives_real_initial_grid_merge(tmp_path, monkeypa
     text = text.replace('internal-propose-converge-last-stage=True',
                         'internal-propose-converge-last-stage=False')
     text = text.replace('add-extrinsic=True', 'add-extrinsic=False')
+    # This fixture checks grid conversion/merge, not the expensive distance
+    # likelihood lookup that the inherited event configuration enables.
+    text = text.replace('internal-marginalize-distance=True',
+                        'internal-marginalize-distance=False')
     text = re.sub(r'force-initial-grid-size=\d+', 'force-initial-grid-size=4', text)
     ini = tmp_path / 'eccentric.ini'
     ini.write_text(text)
     cache = tmp_path / 'fake.cache'
     cache.write_text('')
     run = tmp_path / 'run'
-    env.update(RIFT_LOWLATENCY='True', OMP_NUM_THREADS='1')
-    result = subprocess.run([
-        sys.executable, str(CODE / 'bin/util_RIFT_pseudo_pipe.py'),
-        '--use-ini', str(ini), '--use-coinc', str(ref.with_name('coinc.xml')),
-        '--use-rundir', str(run), '--fake-data-cache', str(cache),
-        '--manual-initial-grid', str(seed), '--manual-initial-grid-supplements',
-        '--assume-eccentric', '--use-meanPerAno', '--assume-nonprecessing',
-        '--ile-no-gpu', '--force-ecc-min', '0.001', '--force-ecc-max', '0.4',
-    ], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    env.update(RIFT_LOWLATENCY='True', OMP_NUM_THREADS='1', PYTHONUNBUFFERED='1')
+    try:
+        result = subprocess.run([
+            sys.executable, str(CODE / 'bin/util_RIFT_pseudo_pipe.py'),
+            '--use-ini', str(ini), '--use-coinc', str(ref.with_name('coinc.xml')),
+            '--use-rundir', str(run), '--fake-data-cache', str(cache),
+            '--manual-initial-grid', str(seed), '--manual-initial-grid-supplements',
+            '--assume-eccentric', '--use-meanPerAno', '--assume-nonprecessing',
+            '--ile-no-gpu', '--force-ecc-min', '0.001', '--force-ecc-max', '0.4',
+        ], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        output = ''.join(part.decode(errors='replace') if isinstance(part, bytes)
+                         else part or '' for part in (exc.stdout, exc.stderr))
+        (tmp_path / 'pipeline.log').write_text(output)
+        raise
     (tmp_path / 'pipeline.log').write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-6000:]
     params = lalsimutils.xml_to_ChooseWaveformParams_array(str(run / 'proposed-grid.xml.gz'))
@@ -239,6 +250,8 @@ def test_raw_bilby_bootstrap_survives_real_initial_grid_merge(tmp_path, monkeypa
     dag = run / 'marginalize_intrinsic_parameters_BasicIterationWorkflow.dag'
     assert dag.is_file(), result.stdout[-6000:] + result.stderr[-6000:]
     assert '--parameter meanPerAno' in (run / 'args_cip_list.txt').read_text()
+    assert '--distance-marginalization' not in (run / 'args_ile.txt').read_text()
+    assert not (run / 'distance_marginalization_lookup.npz').exists()
 
 
 
@@ -276,6 +289,8 @@ def test_actual_build_bootstrap_block_converts_bilby_and_attaches_grid(tmp_path,
         event=SimpleNamespace(repository=SimpleNamespace(directory=str(tmp_path / 'repo')))),
         logger=SimpleNamespace(info=lambda *_: None), bootstrap=False)
     stub._find_posterior = lambda: str(path)
+    stub._uses_hyperpipe = lambda: Rift._uses_hyperpipe(stub)
+    stub._manual_grid_arguments = lambda *args: Rift._manual_grid_arguments(stub, *args)
     stub._bootstrap_source_requested = lambda: Rift._bootstrap_source_requested(stub)
     stub._reuse_existing_bootstrap = lambda *_: False
     stub._convert_bootstrap_grid = lambda *args: Rift._convert_bootstrap_grid(stub, *args)

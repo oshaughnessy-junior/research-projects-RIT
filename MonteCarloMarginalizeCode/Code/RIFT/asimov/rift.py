@@ -402,8 +402,9 @@ class Rift(Pipeline):
 
     def _uses_hyperpipe(self):
         """Return whether this production selected the opt-in Hyperpipe builder."""
-        builder = self.production.meta.get('scheduler', {}).get(
-            'pipeline', {}).get('pipeline-builder', '')
+        scheduler = self.production.meta.get('scheduler') or {}
+        pipeline_options = scheduler.get('pipeline') or {}
+        builder = pipeline_options.get('pipeline-builder', '')
         return str(builder).strip().lower() == 'hyperpipe'
 
     def _dag_filename(self):
