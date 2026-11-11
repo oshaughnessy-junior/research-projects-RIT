@@ -670,6 +670,8 @@ def consolidate(arr, columns, sigma_cut=0.9, digits=5):
         <I> = sum_k wts_k * I_k
         sigma_<I> = sqrt(1 / sum_k 1/sigma_k^2) / <I>
 
+    With digits=None, grouping and output retain exact parsed intrinsic values.
+
     Returns ``(consolidated_array, columns)`` where the array is sorted by
     ``lnL`` in descending order.
     """
@@ -690,7 +692,8 @@ def consolidate(arr, columns, sigma_cut=0.9, digits=5):
     # Group by rounded intrinsic-parameter tuple.
     groups = {}
     for row in arr:
-        key = tuple(round(float(row[c]), digits) for c in intrinsic_cols)
+        key = tuple(float(row[c]) if digits is None else round(float(row[c]), digits)
+                    for c in intrinsic_cols)
         groups.setdefault(key, []).append(row)
 
     out = np.empty(len(groups), dtype=arr.dtype)

@@ -17,6 +17,7 @@ import fileinput
 #import StringIO
 
 data_at_intrinsic = {}
+input_coverage = {}
 
 my_digits=7  # safety for high-SNR BNS
 
@@ -25,7 +26,20 @@ import argparse
 parser = argparse.ArgumentParser(usage="util_HyperCombine.py fname1.dat fname2.dat ... ")
 parser.add_argument("fname",action='append',nargs='+')
 parser.add_argument("--combination",default='average',help='average|sum|product, depends on if we treat them as independent trials of the same quantity or independent')
+parser.add_argument("--preserve-intrinsic-values", action="store_true",
+                    help="Group by exact parsed intrinsic values, without decimal rounding.")
+parser.add_argument("--expected-inputs", type=int, default=None,
+                    help="Strict product: require this many distinct input files and exactly "
+                         "one row for every observed intrinsic point in every file.")
 opts = parser.parse_args()
+if opts.expected_inputs is not None:
+    if opts.combination != "product" or opts.expected_inputs <= 0:
+        parser.error("--expected-inputs requires --combination product and a positive count")
+    paths = [os.path.realpath(f) for f in opts.fname[0]]
+    if len(paths) != opts.expected_inputs or len(set(paths)) != opts.expected_inputs:
+        parser.error("strict product requires {} distinct input files".format(opts.expected_inputs))
+    if any(not os.path.isfile(f) or os.stat(f).st_size == 0 for f in paths):
+        parser.error("strict product requires every input file to exist and be nonempty")
 
 n_terms = 0
 enforce_length=False
@@ -71,12 +85,28 @@ for fname in opts.fname[0]: #sys.argv[1:]:
                 .format(fname, columns_here, hyperpipe_columns))
     sys.stderr.write(str(fname)+"\n")
 #    data = np.loadtxt(fname)  # this will FAIL if we have a heterogeneous data source!  BE CAREFUL
-    data = np.genfromtxt(fname,invalid_raise=False)  #  Protect against inhomogeneous data
+    data = np.genfromtxt(fname,invalid_raise=opts.expected_inputs is not None)  #  Protect against inhomogeneous data
+    if opts.expected_inputs is not None and data.size == 0:
+        raise ValueError("strict product: no data rows in {}".format(fname))
     if len(data.shape)==1:
         data = np.array([data])
     for line in data:
-      try:
+      if opts.expected_inputs is not None:
+        if hyperpipe_columns is not None and len(line) != len(hyperpipe_columns):
+            raise ValueError("strict product: row/header column mismatch in {}: {} != {}".format(
+                fname, len(line), len(hyperpipe_columns)))
+        if (len(line) < 3 or not np.all(np.isfinite(line[2:]))
+                or np.isnan(line[0]) or np.isposinf(line[0])
+                or not np.isfinite(line[1]) or line[1] < 0):
+            raise ValueError("strict product: invalid row in {}".format(fname))
+      if not opts.preserve_intrinsic_values:
         line = np.around(line, decimals=my_digits)
+      if opts.expected_inputs is not None:
+        sources = input_coverage.setdefault(tuple(line[2:]), set())
+        if str(fname) in sources:
+            raise ValueError("strict product: duplicate point {} in {}".format(tuple(line[2:]), fname))
+        sources.add(str(fname))
+      try:
         if tuple(line[2:]) in data_at_intrinsic:
 #            print " repeated occurrence ", line[1:9]
             data_at_intrinsic[tuple(line[2:])].append(line[:2])
@@ -86,6 +116,14 @@ for fname in opts.fname[0]: #sys.argv[1:]:
         n_terms = np.max([n_terms, len(data_at_intrinsic[tuple(line[2:])]) ])
       except:
           continue
+
+if opts.expected_inputs is not None:
+    incomplete = [key for key, sources in input_coverage.items()
+                  if len(sources) != opts.expected_inputs]
+    if incomplete:
+        raise ValueError("strict product: missing event factors at {} point(s), including {}; "
+                         "exact intrinsic values must match across every input file".format(
+            len(incomplete), incomplete[:3]))
 
 if hyperpipe_columns is not None:
     print("# " + hyperpipeline_io.MAGIC)

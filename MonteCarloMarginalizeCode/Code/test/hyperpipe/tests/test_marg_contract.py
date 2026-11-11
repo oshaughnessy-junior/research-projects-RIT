@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,8 @@ def test_indexed_grid_contract_loads_relative_inputs(hp_modules, tmp_path):
     spec = specs[0]
     assert spec.protocol == hp_modules.marg_contract.INDEXED_GRID_V1
     assert spec.exe == str(exe)
-    assert spec.args == "--cache local.cache --adapt-weight-exponent 0.1"
+    assert shlex.split(spec.args) == [
+        "--cache", "local.cache", "--adapt-weight-exponent", "0.1"]
     assert spec.n_chunk == 7
     assert spec.result_glob == "MARG*.dat"
     assert spec.consolidation_mode == "hyperpipeline"
@@ -314,3 +316,148 @@ def test_iteration_schedule_can_preserve_z_marker_for_capable_writer(
         ("2", "--sampler-method GMM"),
         ("Z", "--sampler-method AV"),
     ]
+
+
+@pytest.mark.parametrize("body, expected", [
+    ("--cache plain.xml", ["--cache", "plain.xml"]),
+    (r"--cache /data/a\ b.xml", ["--cache", "/data/a b.xml"]),
+    ("--psd-file 'H1:/data/PSD  v1.xml'", ["--psd-file", "H1:/data/PSD  v1.xml"]),
+    ('--label ' + shlex.quote(r'{"value": "a\\b"}'), ["--label", r'{"value": "a\\b"}']),
+    (r"--label 'literal\path'", ["--label", r"literal\path"]),
+    ("--empty ''", ["--empty", ""]),
+    ("--label 'X'", ["--label", "X"]),
+    ("--label a" + "\\\n" + "b", ["--label", "ab"]),
+    ('--label "a' + "\\\n" + 'b"', ["--label", "ab"]),
+    ("--cache a.xml\n --flag", ["--cache", "a.xml", "--flag"]),
+    ("", []),
+])
+@pytest.mark.parametrize("dummy", ["", "X "])
+def test_marg_args_file_preserves_shell_argv(hp_modules, tmp_path, body, expected, dummy):
+    path = tmp_path / "args.txt"
+    path.write_text(dummy + body + "\n")
+    loaded = hp_modules.marg_contract.MargJobSpec(
+        {"exe": "/bin/true", "args_file": str(path)}, str(tmp_path))
+    assert shlex.split(loaded.args) == expected
+    # Inline input has the same argv after shell continuation folding.
+    inline_body = body.replace("\\\n", "")
+    inline = hp_modules.marg_contract.MargJobSpec(
+        {"exe": "/bin/true", "args": inline_body}, str(tmp_path))
+    assert shlex.split(inline.args) == expected
+
+
+def test_marg_args_file_preserves_backslash_newline_in_single_quotes(hp_modules, tmp_path):
+    path = tmp_path / "args.txt"
+    body = "--label 'a" + "\\\n" + "b'"
+    path.write_text("X " + body)
+    loaded = hp_modules.marg_contract.MargJobSpec(
+        {"exe": "/bin/true", "args_file": str(path)}, str(tmp_path))
+    assert loaded.args == body
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("input.dat", ["input.dat"]),
+    ("a.dat,b.dat", ["a.dat", "b.dat"]),
+    (["a.dat", "b.dat"], ["a.dat", "b.dat"]),
+])
+@pytest.mark.parametrize("stage_candidate", [False, True])
+def test_hyperpost_preserves_transfer_input_entries(
+    hp_modules, tmp_path, value, expected, stage_candidate
+):
+    original = value[:] if isinstance(value, list) else value
+    image = "osdf://example.invalid/rift/test.sif"
+    worker = str(tmp_path / "candidate-post")
+    job, _ = hp_modules.dag_utils_generic.write_hyperpost_sub(
+        exe=worker, arg_str="--parameter x", out_dir=str(tmp_path),
+        use_singularity=True, singularity_image=image,
+        transfer_files=value, transfer_executable=stage_candidate)
+    commands = dict(job.condor_cmds)
+    wanted = expected + [image] + ([worker] if stage_candidate else [])
+    assert commands["transfer_input_files"].split(",") == wanted
+    assert commands["should_transfer_files"] == "YES"
+    assert value == original
+
+
+@pytest.mark.parametrize("value", [None, []])
+def test_hyperpost_unspecified_transfer_inputs_keep_default(hp_modules, tmp_path, value):
+    job, _ = hp_modules.dag_utils_generic.write_hyperpost_sub(
+        exe="/bin/true", arg_str="--parameter x", out_dir=str(tmp_path),
+        transfer_files=value)
+    assert "transfer_input_files" not in dict(job.condor_cmds)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("X", []),
+    ("--label a\u00a0b", ["--label", "a\u00a0b"]),
+    ("'X' --flag", ["X", "--flag"]),
+    (r"\X --flag", ["X", "--flag"]),
+    ("--label abc" + "\\\\\n" + " --flag", ["--label", "abc\\", "--flag"]),
+    ("--label abc\\ ", ["--label", "abc "]),
+])
+def test_marg_args_file_token_boundaries(hp_modules, tmp_path, text, expected):
+    path = tmp_path / "args.txt"
+    path.write_text(text)
+    loaded = hp_modules.marg_contract.MargJobSpec(
+        {"exe": "/bin/true", "args_file": str(path)}, str(tmp_path))
+    assert shlex.split(loaded.args) == expected
+
+
+def test_hyperpost_preserves_raw_condor_quoted_commas(hp_modules, tmp_path):
+    raw = '\"a,b.dat\",https://example.invalid/data.dat'
+    image = "osdf://example.invalid/rift/test.sif"
+    worker = str(tmp_path / "candidate-post")
+    job, _ = hp_modules.dag_utils_generic.write_hyperpost_sub(
+        exe=worker, arg_str="--parameter x", out_dir=str(tmp_path),
+        use_singularity=True, singularity_image=image,
+        transfer_files=raw, transfer_executable=True)
+    assert dict(job.condor_cmds)["transfer_input_files"] == ",".join([raw, image, worker])
+
+
+@pytest.mark.parametrize("body, expected", [
+    (r"--probe /data/a\ b.xml", ["--probe", "/data/a b.xml"]),
+    ("--probe 'a  b'", ["--probe", "a  b"]),
+    (r"--probe 'literal\path'", ["--probe", r"literal\path"]),
+    ("--probe abc\\ ", ["--probe", "abc "]),
+    ("--probe ''", ["--probe", ""]),
+])
+@pytest.mark.parametrize("mode", ["inline", "file", "append"])
+def test_indexed_args_preserve_actual_worker_argv(hp_modules, tmp_path, body, expected, mode):
+    import importlib
+    import os
+    import subprocess
+    import sys
+    dag = hp_modules.dag_utils_generic
+    recorder = tmp_path / "record.py"
+    capture = tmp_path / "argv.json"
+    recorder.write_text("#!" + sys.executable + "\nimport json,sys\n"
+                        "from pathlib import Path\nPath(" + repr(str(capture))
+                        + ").write_text(json.dumps(sys.argv[1:]))\n")
+    recorder.chmod(0o755)
+    raw = {"exe": str(recorder), "protocol": "indexed-grid-v1"}
+    if mode == "file":
+        args = tmp_path / "args.txt"
+        args.write_text("X " + body + "\n")
+        raw["args_file"] = str(args)
+    elif mode == "inline":
+        raw["args"] = body
+    else:
+        terminal = importlib.import_module("RIFT.hyperpipe.terminal_contract")
+        stage = terminal.TerminalStageSpec(
+            {"name": "samples", "kind": terminal.INDEXED_GRID_FANOUT_V1,
+             "job": raw, "grid": "grid.dat", "args_append": body}, str(tmp_path))
+        raw = None
+    if raw is not None:
+        spec = hp_modules.marg_contract.MargJobSpec(raw, str(tmp_path))
+        text = spec.args
+    else:
+        spec = stage.job
+        text = spec.args + " " + stage.args_append
+    job, _ = dag.write_ILE_sub_simple(
+        exe=spec.exe, arg_str=text, log_dir=str(tmp_path) + "/")
+    script = tmp_path / "worker.sh"
+    dag.LocalBackend().emit_job(job, str(script))
+    env = os.environ.copy()
+    env["RIFT_VAR_MACROEVENT"] = "0"
+    completed = subprocess.run(["bash", str(script)], env=env,
+                               capture_output=True, text=True, timeout=10)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(capture.read_text()) == expected + ["--event=0"]
