@@ -529,6 +529,7 @@ parser.add_argument("--skip-reproducibility",action='store_true')
 parser.add_argument("--use-production-defaults",action='store_true',help="Use production defaults. Intended for use with tools like asimov or by nonexperts who just want something to run on a real event.  Will require manual setting of other arguments!")
 parser.add_argument("--use-subdags",action='store_true',help="Use CEPP_Alternate instead of CEPP_BasicIteration. Note this writes an adaptively-sized DAG each iteration, but doesn't otherwise optimize yet.")
 parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration","BasicMultiApproxIteration","Hyperpipe"],help="Explicitly select the low-level iteration builder, as a drop-in hot-swap for side-by-side A/B testing. The create_event_parameter_pipeline_* names select those builders directly; Hyperpipe is opt-in and uses the generic .dat pipeline with ILE as its indexed-grid MARG evaluator. Overrides the implicit --use-subdags routing. If unset, the builder is chosen by --use-subdags (Alternate) vs. the default (Basic).")
+parser.add_argument("--hyperpipe-eos-post-condor-commands", default=None, help="JSON native runtime/resource policy for Hyperpipe posterior and prior workers; transport/placement keys are reserved")
 parser.add_argument("--terminal-stage-extra-file",default=None,type=str,help="Path to a user terminal-stage manifest (version 1, same schema as the generated terminal_stage_specs.json) whose stages are appended to the ones this pipeline generates. Its stages may name generated stages in depends_on; see RIFT.misc.terminal_stage_products for the stable stage names and the file each writes. Relative paths resolve against the run directory. Requires --pipeline-builder Hyperpipe.")
 parser.add_argument("--use-ile-subdags",action='store_true',help="Use ILE subdag system (new)")
 parser.add_argument("--bilby-ini-file",default=None,type=str,help="Pass ini file for parsing. Intended to use for calibration reweighting. Full path recommended")
@@ -1083,6 +1084,17 @@ if _use_hpip_pp and _alternate_builder_selected:
         "RIFT_HYPERPIPELINE_FORMAT; this legacy builder is XML-only. "
         "Unset RIFT_HYPERPIPELINE_FORMAT or select "
         "--pipeline-builder Hyperpipe.")
+
+if opts.hyperpipe_eos_post_condor_commands:
+    if opts.pipeline_builder != "Hyperpipe":
+        raise ValueError("--hyperpipe-eos-post-condor-commands requires --pipeline-builder Hyperpipe")
+    # The ini has resolved, and the caller's working directory is still active.
+    # Resolve before chdir into the new run so relative CLI paths stay meaningful.
+    opts.hyperpipe_eos_post_condor_commands = os.path.abspath(
+        os.path.expanduser(opts.hyperpipe_eos_post_condor_commands))
+    from RIFT.hyperpipe.execution_contract import normalize_posterior_commands
+    with open(opts.hyperpipe_eos_post_condor_commands) as stream:
+        normalize_posterior_commands(json.load(stream))
 
 if opts.pipeline_builder == "Hyperpipe":
     _unsupported_hyperpipe = []
@@ -3986,6 +3998,10 @@ if opts.pipeline_builder == "Hyperpipe":
         "--working-directory", os.getcwd(),
         "--use-full-submit-paths",
     ]
+    if opts.hyperpipe_eos_post_condor_commands:
+        hyperpipe_cmd += [
+            "--eos-post-condor-commands",
+            os.path.abspath(opts.hyperpipe_eos_post_condor_commands)]
     if opts.internal_cip_request_disk:
         # The posterior workers play CIP's role, so they take CIP's disk request.
         hyperpipe_cmd += [

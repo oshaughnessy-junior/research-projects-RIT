@@ -37,7 +37,8 @@ from RIFT.hyperpipe.terminal_contract import (
     load_terminal_stage_specs,
 )
 from RIFT.hyperpipe.execution_contract import (
-    apply_backend_commands, apply_portable_resources, commands_for_backend)
+    apply_backend_commands, apply_portable_resources, commands_for_backend,
+    normalize_posterior_commands)
 from RIFT.misc.cip_pipeline import expand_argument_schedule
 
 parser = argparse.ArgumentParser()
@@ -71,6 +72,8 @@ parser.add_argument(
 parser.add_argument(
     "--eos-post-transfer-file", action="append", default=[],
     help="Additional generic input required by a staged posterior executable; repeat as needed")
+parser.add_argument("--eos-post-condor-commands", default=None,
+                    help="JSON native runtime/resource policy shared by posterior and prior workers; structural transport commands are reserved")
 parser.add_argument("--eos-post-retries",default=0,type=int,help="Number of retry attempts for ILE jobs. (These can fail)")
 parser.add_argument(
     "--terminal-evidence", action="store_true",
@@ -113,6 +116,10 @@ parser.add_argument("--use-full-submit-paths",action='store_true',help="DAG crea
 
 opts=  parser.parse_args()
 print(opts)
+posterior_commands = None
+if opts.eos_post_condor_commands:
+    with open(opts.eos_post_condor_commands) as stream:
+        posterior_commands = normalize_posterior_commands(json.load(stream))
 if not(opts.input_grid):
     raise Exception(" --input-grid FNAME required ")
 
@@ -798,6 +805,13 @@ if opts.jumpstart_marg_net:
 eospost_outfile = 'iteration_$(macroiteration)_post/output-$(macroiterationnext)-$(cluster)'
 if opts.use_osg:
     eospost_outfile = 'output-$(macroiterationnext)-$(cluster)'
+# Scientific posterior and prior workers share execution policy. Bookkeeping
+# may be local, but container/OSG prior Monte Carlo must remain a worker job.
+posterior_policy = dict(
+    use_osg=opts.use_osg, use_singularity=opts.use_singularity,
+    singularity_image=singularity_image, use_oauth_files=opts.use_oauth_files,
+    transfer_executable=opts.eos_post_transfer_executable,
+    condor_commands=posterior_commands)
 eospost_marg_job_list = []
 for schedule_indx, eos_post_args_here in enumerate(eos_post_args_per_iteration):
     eospost_marg_job, eospost_marg_job_name = dag_utils.write_hyperpost_sub(
@@ -806,18 +820,13 @@ for schedule_indx, eos_post_args_here in enumerate(eos_post_args_per_iteration):
         output=eospost_outfile, input_net=working_dir_inside + "/all.marg_net",
         request_memory=opts.request_memory_marg,
         request_disk=opts.eos_post_request_disk or opts.general_request_disk,
-        use_osg=opts.use_osg,
-        use_singularity=opts.use_singularity,
-        singularity_image=singularity_image,
-        use_oauth_files=opts.use_oauth_files,
-        transfer_executable=opts.eos_post_transfer_executable,
         transfer_files=(list(transfer_file_names_post)
-                        + list(opts.eos_post_transfer_file)))
+                        + list(opts.eos_post_transfer_file)),
+        **posterior_policy)
     eospost_marg_job.add_condor_cmd("initialdir",opts.working_directory+"/iteration_$(macroiteration)_post")
     eospost_marg_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).log")
     eospost_marg_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).err")
     eospost_marg_job.set_stdout_file(opts.working_directory+"/iteration_$(macroiteration)_post/logs/post-$(cluster)-$(process).out")
-    eospost_marg_job.add_condor_cmd('request_disk',opts.eos_post_request_disk or opts.general_request_disk)
     if opts.use_full_submit_paths:
         fname = opts.working_directory+"/"+eospost_marg_job.get_sub_file()
         eospost_marg_job.set_sub_file(fname)
@@ -837,14 +846,37 @@ if opts.terminal_evidence:
         eos_post_args_per_iteration[-1]
         + " --integrate-prior --n-output-samples 1 --no-plots "
     )
+    prior_remote = opts.use_osg or opts.use_singularity
+    prior_output = "prior-integral-$(macroiteration)"
+    prior_policy = dict(posterior_policy)
+    if prior_remote:
+        # Resolve the ordinary worker's input sources against its initialdir.
+        # The prior submits from the run root, not iteration_N_post.
+        post_initialdir = os.path.join(
+            opts.working_directory, "iteration_$(macroiteration)_post")
+        prior_inputs = [
+            item if os.path.isabs(item) or "://" in item
+            else os.path.normpath(os.path.join(post_initialdir, item))
+            for item in (list(transfer_file_names_post)
+                         + list(opts.eos_post_transfer_file))]
+        prior_policy.update(
+            transfer_files=prior_inputs,
+            transfer_output_files=[prior_output + suffix for suffix in (
+                ".dat", "+annotation.dat", "_withpriorchange.dat",
+                "_withpriorchange+annotation.dat")])
     terminal_prior_job, _ = dag_utils.write_hyperpost_sub(
         exe=eospost_exe, tag="EOS_POST_prior",
-        arg_str=terminal_prior_args, out_dir=opts.working_directory,
-        output="prior-integral-$(macroiteration)",
-        input_net=opts.working_directory + "/all.marg_net",
+        arg_str=terminal_prior_args,
+        out_dir="./" if prior_remote else opts.working_directory,
+        output=prior_output,
+        input_net=("./all.marg_net" if prior_remote
+                   else opts.working_directory + "/all.marg_net"),
         request_memory=opts.request_memory_marg,
-        request_disk=opts.general_request_disk,
-        universe=local_worker_universe, no_grid=no_worker_grid)
+        request_disk=((opts.eos_post_request_disk or opts.general_request_disk)
+                      if prior_remote else opts.general_request_disk),
+        universe="vanilla" if prior_remote else local_worker_universe,
+        no_grid=False if prior_remote else no_worker_grid,
+        **prior_policy)
     terminal_prior_job.add_condor_cmd("initialdir", opts.working_directory)
     terminal_prior_job.set_log_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).log")
     terminal_prior_job.set_stderr_file(opts.working_directory+"/iteration_$(macroiteration)_con/logs/prior-$(cluster)-$(process).err")
@@ -1192,6 +1224,9 @@ def build_z_subworkflow(iteration, posterior_args):
     ]
     if opts.eos_post_request_disk:
         command += ["--eos-post-request-disk", str(opts.eos_post_request_disk)]
+    if opts.eos_post_condor_commands:
+        command += ["--eos-post-condor-commands",
+                    os.path.abspath(opts.eos_post_condor_commands)]
     command += [
         "--n-samples-per-job", str(opts.n_samples_per_job),
         "--n-iterations", str(opts.n_iterations_subdag_max),

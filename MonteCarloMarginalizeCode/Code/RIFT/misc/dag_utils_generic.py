@@ -6299,6 +6299,12 @@ def write_hyperpost_sub(tag='HYPER', exe=None, input_net='all.marg_net',output='
         ile_job.add_condor_cmd('transfer_input_files', fname_str)
         ile_job.add_condor_cmd('should_transfer_files','YES')
 
+    if transfer_output_files is not None:
+        outputs = (transfer_output_files if isinstance(transfer_output_files, str)
+                   else ",".join(dict.fromkeys(transfer_output_files)))
+        ile_job.add_condor_cmd("transfer_output_files", outputs)
+        ile_job.add_condor_cmd("should_transfer_files", "YES")
+
     # Periodic remove: kill jobs running longer than max runtime
     # https://stackoverflow.com/questions/5900400/maximum-run-time-in-condor
     if not(max_runtime_minutes is None):

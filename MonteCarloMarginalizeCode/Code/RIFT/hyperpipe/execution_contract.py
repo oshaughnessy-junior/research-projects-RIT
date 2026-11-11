@@ -104,3 +104,43 @@ def commands_for_backend(execution, backend):
         commands.update(backend_commands.get("htcondor", {}))
     commands.update(backend_commands.get(backend, {}))
     return commands
+
+
+_POSTERIOR_STRUCTURAL_COMMANDS = {
+    "universe", "executable", "arguments", "initialdir", "input", "output",
+    "error", "log", "queue", "requirements", "should_transfer_files",
+    "when_to_transfer_output", "singularityimage",
+    "singularitybindcvmfs", "container_image", "cmd", "args",
+    "iwd", "jobuniverse", "in", "out", "err", "userlog",
+    "transferinput", "transferoutput", "transferoutputremaps",
+}
+_POSTERIOR_COMMAND_NAME = re.compile(r"^[+A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def normalize_posterior_commands(commands):
+    """Validate optional posterior policy without surrendering transport ownership.
+
+    The DAG writer owns placement, sandbox inputs/returns, and scientific
+    arguments. Native settings such as environment, resource requests, runtime,
+    accounting and site attributes remain explicit caller policy.
+    """
+    if not isinstance(commands, dict):
+        raise ValueError("posterior condor commands must be a JSON object")
+    execution = normalize_execution(
+        {"condor_commands": commands}, set(), "posterior")
+    result = commands_for_backend(execution, "htcondor")
+    reserved = {key.replace("_", "") for key in _POSTERIOR_STRUCTURAL_COMMANDS}
+    for key, value in result.items():
+        canonical = key.lower().lstrip("+") if isinstance(key, str) else ""
+        if canonical.startswith("my."):
+            canonical = canonical[3:]
+        canonical = canonical.replace("_", "")
+        if (not isinstance(key, str)
+                or not _POSTERIOR_COMMAND_NAME.fullmatch(key)
+                or canonical in reserved
+                or canonical.startswith(("transfer", "singularity", "container", "docker"))):
+            raise ValueError("unsafe or reserved posterior command {!r}".format(key))
+        if (not isinstance(value, _SCALAR_TYPES)
+                or (isinstance(value, str) and ("\n" in value or "\r" in value))):
+            raise ValueError("posterior command {!r} must be a single-line scalar".format(key))
+    return dict(result)
