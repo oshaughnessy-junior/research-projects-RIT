@@ -6439,7 +6439,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
       if not('sigma_lnL' in grid_out.dtype.names):
         grid_out = add_field(grid_out, [('sigma_lnL',float)])
       grid_out['lnL'][indx_event] = log_res + manual_avoid_overflow_logarithm
-      grid_out['sigma_lnL'][indx_event] = log_res + manual_avoid_overflow_logarithm
+      grid_out['sigma_lnL'][indx_event] = sqrt_var_over_res
       line_out = np.array(list(grid_out[indx_event])) # convert tuple to list then to array - very silly
 #      print(grid_out[indx_event], line_out, type(line_out))
       np.savetxt(fname_output_txt, [line_out], header=' '.join(grid_out.dtype.names) )
