@@ -19,6 +19,11 @@ supported because the pinned response constructs its time arrays internally.
 Both ends need generated waveform padding. The adapter trims an explicit
 integer number of samples from each end and advances the returned epoch.
 It rejects changes to sample count and coverage outside the orbit.
+Interpolation order defaults to 25; an explicit `interpolation_order=29` is also
+accepted. All other orders are refused. Both orders retain the full-output
+finiteness check before trimming; retained-domain numerical qualification does
+not imply the public call will pass this stricter check. Selecting an order
+provides no scientific qualification by itself.
 
 The backend receives `hp+i*hc`. FEW's default complex output is `hp-i*hc`;
 callers using the FEW polarization pair should pass it without another sign flip.
