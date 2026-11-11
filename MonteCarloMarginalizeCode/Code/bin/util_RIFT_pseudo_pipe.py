@@ -808,6 +808,7 @@ parser.add_argument("--transverse-seed-climb-exe",default=None,help="DAG modes: 
 #   and (crucially) so the --glitch-basis-file .npz rides the condor transfer_input_files list.
 parser.add_argument("--internal-ile-inner-product",default=None,type=str,help="Passthrough to ILE --internal-ile-inner-product: 'fd-diagonal' (default OFF, classic), 'td-toeplitz' (time-domain Toeplitz precision kernel, plan T3) or 'td-gs' (fully time-domain code path: unwindowed data, untapered templates, Toeplitz covariance on hard-cut pieces, U(t)/V(t); see --internal-ile-td-mref/-piece/-acf-file). EXPERIMENTAL. Enables the TD/glitch flags below.")
 parser.add_argument("--internal-ile-td-mref",default=None,type=float,help="Passthrough to ILE --td-mref MSUN (td-gs: time unit of the pieces).")
+parser.add_argument("--internal-ile-td-piece-ifo",action='append',default=None,help="Passthrough to ILE --td-piece-ifo 'IFO:START,END' (td-gs; repeatable): pieces for one detector, replacing --internal-ile-td-piece there.")
 parser.add_argument("--internal-ile-td-piece",action='append',default=None,help="Passthrough to ILE --td-piece 'START,END' in units of M_ref relative to the event time (td-gs; repeatable). In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-td-ifo-time-offset",action='append',default=None,help="Passthrough to ILE --td-ifo-time-offset 'IFO:SECONDS' (td-gs; repeatable).")
 parser.add_argument("--internal-ile-td-acf-file",action='append',default=None,help="Passthrough to ILE --td-acf-file 'IFO:path.npy' (td-gs; repeatable; tdanalysis (2,N) [tau,R] format). The .npy is ADDED TO THE ILE CONDOR TRANSFER LIST and the flag rewritten to the transferred basename on OSG, as for --internal-ile-glitch-basis-file.")
@@ -815,7 +816,7 @@ parser.add_argument("--internal-ile-td-dense-max-n",default=None,type=int,help="
 parser.add_argument("--internal-ile-td-u-stride",default=None,type=int,help="Passthrough to ILE --td-u-stride (td-gs).")
 parser.add_argument("--internal-ile-td-u-method",default=None,type=str,help="Passthrough to ILE --td-u-method {auto,prefix,recursion,batched,chunked} (td-gs).")
 parser.add_argument("--internal-ile-td-subsample",default=None,type=int,help="Passthrough to ILE --td-subsample K (td-gs: templates placed to 1/K of a sample with tdanalysis' Lanczos resampler; Precompute cost x K; default 1 = whole samples).")
-parser.add_argument("--internal-ile-td-highpass",default=None,type=float,help="Passthrough to ILE --td-highpass FREQ (td-gs: zero-phase high-pass of the data, e.g. 10 Hz for real strain with walled ACFs; default off).")
+parser.add_argument("--internal-ile-td-highpass",default=None,type=float,help="Passthrough to ILE --td-highpass FREQ (td-gs, or td-toeplitz with --internal-ile-td-gap where it is required: zero-phase high-pass of the data, e.g. 10 Hz for real strain with walled ACFs; default off).")
 parser.add_argument("--internal-ile-td-u-svd-tol",default=None,type=float,help="Passthrough to ILE --td-u-svd-tol TOL (td-gs: SVD-over-time compression of U(t),V(t); recommended 1e-13; default off).")
 parser.add_argument("--internal-ile-td-acf-cond",default=None,type=float,help="Passthrough to ILE --td-acf-cond (td-gs PSD->ACF target condition number).")
 parser.add_argument("--internal-ile-td-calibration-correction-type",default=None,type=str,help="Passthrough to ILE --td-calibration-correction-type {rift,bilby} (td-gs with in-loop calmarg: how a realization becomes the template factor; rift = RIFT's FD convention, bilby = per-detector bilby_pipe semantics).")
@@ -825,7 +826,7 @@ parser.add_argument("--internal-ile-td-solver",default=None,type=str,help="Passt
 parser.add_argument("--internal-ile-td-acf-duration",default=None,type=float,help="Passthrough to ILE --td-acf-duration [s] (TD truncated-segment path).")
 parser.add_argument("--internal-ile-td-analysis-start",default=None,type=float,help="Passthrough to ILE --td-analysis-start [s] (template-frame segment start, plan T5/D1).")
 parser.add_argument("--internal-ile-td-analysis-end",default=None,type=float,help="Passthrough to ILE --td-analysis-end [s] (template-frame segment end, plan T5/D1).")
-parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="DISABLED (refused). To excise data use --internal-ile-inner-product td-gs with disjoint --internal-ile-td-piece intervals.")
+parser.add_argument("--internal-ile-td-gap",action='append',default=None,help="Passthrough to ILE --td-gap 'tstart,tend' (geocenter s rel. event, repeatable; requires --internal-ile-td-highpass). On the command line write a negative start as --internal-ile-td-gap=-.1,.1. In an ini give a Python list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-basis",action='append',default=None,help="Passthrough to ILE --glitch-basis 'IFO:t1,t2,f1,f2[:r]' (analytic Slepian glitch marginalization, G3). Repeatable. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-basis-file",action='append',default=None,help="Data-informed glitch basis for one detector, 'IFO:path.npz' (G4, glitschen/BayesWave PCA/SVD). Repeatable. The .npz is ADDED TO THE ILE CONDOR TRANSFER LIST and the ILE flag is rewritten to reference the transferred basename, so it works on execute nodes / OSG. Requires --internal-ile-inner-product td-toeplitz. In an ini give a list literal or a single quoted string.")
 parser.add_argument("--internal-ile-glitch-sigma",default=None,type=str,help="Passthrough to ILE --glitch-sigma (glitch amplitude hyperparameter mode; only 'profile' is wired).")
@@ -956,18 +957,6 @@ if opts.puff_periodic_mode not in ('off', 'gap', 'mean'):
     parser.error('--puff-periodic-mode must be off, gap, or mean')
 if opts.puff_periodic_mode != 'off' and opts.internal_use_amr:
     parser.error('--puff-periodic-mode requires the covariance puff workflow, not AMR')
-
-# --internal-ile-td-gap is refused, from the command line or the ini above.
-_TD_GAP_REFUSAL = (" FAILURE: --internal-ile-td-gap is disabled (the gap-marginalized td-toeplitz "
-                   "likelihood is not yet regularized for fMax < fNyq).  To excise data, use "
-                   "--internal-ile-inner-product td-gs with --internal-ile-td-mref M and disjoint "
-                   "--internal-ile-td-piece START,END intervals (units of M_ref) covering the data "
-                   "to KEEP.  Pieces are independent blocks: correlations across the gap are dropped.")
-def _td_gap_requested(_v):
-    return bool(_v if isinstance(_v, (list, tuple)) else _v is not None)
-if _td_gap_requested(opts.internal_ile_td_gap):
-    print(_TD_GAP_REFUSAL)
-    sys.exit(1)
 
 # After the ini, which can set the mode.
 if eccentric_phase_pipeline.requested(opts):
@@ -2100,9 +2089,11 @@ if opts.internal_ile_inner_product:
         line += " --td-analysis-start {} ".format(opts.internal_ile_td_analysis_start)
     if not(opts.internal_ile_td_analysis_end is None):
         line += " --td-analysis-end {} ".format(opts.internal_ile_td_analysis_end)
-    if _as_list(opts.internal_ile_td_gap):      # also set via an ini
-        print(_TD_GAP_REFUSAL)
+    if _as_list(opts.internal_ile_td_gap) and opts.internal_ile_td_highpass is None:
+        print(" FAILURE: --internal-ile-td-gap requires --internal-ile-td-highpass FREQ (e.g. 10)")
         sys.exit(1)
+    for _gap in _as_list(opts.internal_ile_td_gap):
+        line += " --td-gap {} ".format(_gap)
     for _gb in _as_list(opts.internal_ile_glitch_basis):
         line += " --glitch-basis {} ".format(_gb)
     if opts.internal_ile_glitch_sigma:
@@ -2134,6 +2125,8 @@ if opts.internal_ile_inner_product:
         line += " --td-mref {} ".format(opts.internal_ile_td_mref)
     for _piece in _as_list(opts.internal_ile_td_piece):
         line += " --td-piece {} ".format(_piece)
+    for _piece in _as_list(opts.internal_ile_td_piece_ifo):
+        line += " --td-piece-ifo {} ".format(_piece)
     for _off in _as_list(opts.internal_ile_td_ifo_time_offset):
         line += " --td-ifo-time-offset {} ".format(_off)
     if not(opts.internal_ile_td_dense_max_n is None):
@@ -2171,7 +2164,7 @@ elif (opts.internal_ile_td_gap or opts.internal_ile_glitch_basis or
       opts.internal_ile_glitch_basis_file or opts.internal_ile_glitch_sigma or
       opts.internal_ile_td_solver or opts.internal_ile_td_analysis_start is not None or
       opts.internal_ile_td_analysis_end is not None or opts.internal_ile_td_acf_duration is not None or
-      opts.internal_ile_td_mref is not None or opts.internal_ile_td_piece or
+      opts.internal_ile_td_mref is not None or opts.internal_ile_td_piece or opts.internal_ile_td_piece_ifo or
       opts.internal_ile_td_ifo_time_offset or opts.internal_ile_td_acf_file or
       opts.internal_ile_td_dense_max_n is not None or opts.internal_ile_td_u_stride is not None or
       opts.internal_ile_td_u_method or opts.internal_ile_td_acf_cond is not None or

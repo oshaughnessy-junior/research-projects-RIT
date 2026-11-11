@@ -232,6 +232,11 @@ FILES=(
   # under a misspelt keyword and silently dropped -- delivering it correctly makes a
   # malformed entry fatal, so the non-dict guard is part of that fix.  4 tests, ~22 s.
   "$C/test/test_cip_portfolio_members.py"
+  # -- CIP --eos-affine-parameter central: dM-per-branch prior over twin-star branches, with
+  # fake EOS objects and CIP driver subprocesses (each timeout <= 600 s, below this job cap).
+  "$C/test/test_eos_affine_central.py"
+  "$C/test/test_eos_multibranch_grid.py"
+  "$C/test/test_eos_branch_surface_rejection.py"
   # -- the lnL fill for query rows the coordinate conversion cannot map.  fit_rf and fit_xg
   # fill nonfinite / |x|>1e37 rows with lnL_default_large_negative, and a sign error made that
   # fill +500 instead of -500, so any unmappable row the sampler gave prior weight to took the
@@ -246,6 +251,9 @@ FILES=(
   # Its companion test_lalsim_eos_reviewed_integration.py needs a private reviewed LALSuite
   # and is rostered EXPENSIVE.
   "$C/test/test_lalsim_eos_compat.py"
+  # -- EOS: NuclearMatter-Backend sequence branches (twin stars).  Synthetic h5py files only;
+  # the default primary-branch accessors must stay bitwise identical to the v1 contract.
+  "$C/test/test_nmb_sequence_branches.py"
   "$C/test/test_waveform_sample_rejection.py"
   # -- packaging / config contracts / waveform conventions
   "$C/test/test_advanced_parameter_ports.py"
@@ -692,7 +700,11 @@ EXPECTED_PASSED=1739
 # The six td-gs startup checks in test_td_upstream_guards.py (non-native template generators,
 # five cases, and the native-generator case) import td_gs_precompute, so they also skip here;
 # ci.yml's time-domain likelihood step runs them with tdanalysis installed.
-MAX_SKIPPED=32 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent
+# test_eos_affine_central.py: +5.  Two nmbseq cases skip until the NMB sequence branch API
+# (companion PR #536) is on this branch, and three strict xfails record pre-existing rift_O4d
+# mass-mode export behaviour with --using-eos-branch --no-matter2.  This counter counts xfails
+# as skips.
+MAX_SKIPPED=37 # the optional tdanalysis PCG test, the six GS tests and the six td-gs startup checks when the extra is absent; test_eos_affine_central.py's two nmbseq skips and three strict xfails
 
 # The floors must be INTEGERS, and this is checked rather than assumed.  `[ 347 -lt FOO ]` does
 # not fail the build: bash prints "integer expression expected", returns 2, and the `if` is
@@ -745,12 +757,14 @@ for f in "${FILES[@]}"; do
   collected_total=$(( collected_total + n ))
   file_floor=1
   if [ "$f" = "$C/test/test_lalsim_eos_compat.py" ]; then file_floor=49; fi
+  if [ "$f" = "$C/test/test_nmb_sequence_branches.py" ]; then file_floor=16; fi
   if [ "$f" = "$C/test/test_waveform_sample_rejection.py" ]; then file_floor=19; fi
   if [ "$f" = "$C/test/test_posterior_compression.py" ]; then file_floor=41; fi
   if [ "$f" = "$C/test/test_raw_distance_contract.py" ]; then file_floor=44; fi
   # Transfer matrix, container guards, and newline requirements must remain covered.
   if [ "$f" = "$C/test/test_auxiliary_grid_transfers.py" ]; then file_floor=18; fi
   if [ "$f" = "$C/test/integrators/test_gmm_sample_matches_score.py" ]; then file_floor=17; fi
+  if [ "$f" = "$C/test/test_eos_affine_central.py" ]; then file_floor=49; fi
   if [ "$n" -lt "$file_floor" ]; then
     echo "test-core-units.sh: $f collects $n tests; requires at least $file_floor." >&2
     echo "  Restore the required test cases; reduced collection can hide a missing gate." >&2

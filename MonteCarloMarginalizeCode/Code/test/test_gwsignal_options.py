@@ -11,7 +11,7 @@ import pytest
 
 lal = pytest.importorskip("lal")
 lalsim = pytest.importorskip("lalsimulation")
-pytest.importorskip("astropy.units")
+units = pytest.importorskip("astropy.units")
 pytest.importorskip("gwpy.timeseries")
 pytest.importorskip("lalsimulation.gwsignal")
 
@@ -52,6 +52,8 @@ def capture_generator(monkeypatch, callback):
 
 @pytest.mark.parametrize("entry", ["hlmoft", "hoft", "complex_hoft"])
 def test_generic_options_reach_every_generator(monkeypatch, entry):
+    P = waveform_params()
+    P.lambda1, P.lambda2 = 125., 800.
     requested = {
         "antisymmetric_modes_hm": True,
         "enable_antisymmetric_modes": True,
@@ -77,12 +79,14 @@ def test_generic_options_reach_every_generator(monkeypatch, entry):
         assert "gwsignal_extra_kwargs" not in parameters
         assert parameters["mass1"].value == pytest.approx(60)
         assert parameters["deltaT"].value == pytest.approx(1.0 / 2048)
+        assert parameters["lambda1"].to_value(units.dimensionless_unscaled) == 125.
+        assert parameters["lambda2"].to_value(units.dimensionless_unscaled) == 800.
         parameters["future_nested_option"]["flags"]["x"] = True
 
     capture_generator(monkeypatch, check)
     with pytest.raises(GeneratorReached):
         getattr(GWSignal, entry)(
-            waveform_params(), approx_string="SEOBNRv5PHM",
+            P, approx_string="SEOBNRv5PHM",
             gwsignal_extra_kwargs=requested, lmax_nyquist=4,
             legacy_future_option={"x": 1}, force_22_mode=True,
             fd_L_frame=True, fd_alignment_postevent_time=2, e_freq=0,
@@ -106,7 +110,7 @@ def test_legacy_options_remain_generic(monkeypatch, entry):
 
 @pytest.mark.parametrize("entry", ["hlmoft", "hoft", "complex_hoft"])
 @pytest.mark.parametrize("field", ["mass1", "mass2", "spin1x", "spin1y", "spin1z",
-                                    "spin2x", "spin2y", "spin2z", "deltaT",
+                                    "spin2x", "spin2y", "spin2z", "lambda1", "lambda2", "deltaT",
                                     "f22_start", "f22_ref", "distance", "inclination",
                                     "phi_ref", "eccentricity", "longAscNodes", "meanPerAno"])
 @pytest.mark.parametrize("explicit", [True, False])

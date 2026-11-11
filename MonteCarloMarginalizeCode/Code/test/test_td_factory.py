@@ -26,6 +26,7 @@ PYTHONPATH=<worktree>/MonteCarloMarginalizeCode/Code (lal 7.7.0).  Runnable as
 import warnings
 
 import numpy as np
+import pytest
 
 import lal
 import RIFT.lalsimutils as lsu
@@ -489,23 +490,58 @@ def test_gapped_overlap_marginalizes_gap():
     rng = np.random.default_rng(1291)
     n, fs = 64, 64.
     ctx = ToeplitzInnerProductContext(lambda f: 1.+(f/10.)**2, 1., 32., 1.,
-          fMax=31., analyticPSD_Q=True, gap_sample_ranges=[(25, 37)])
+          fMax=31., analyticPSD_Q=True, gap_sample_ranges=[(25, 37)], data_highpass=0.5)
     # A full-length gap uses the full precision apply, not another dense N x N
     # matrix and an O(N^3) eigensolve.
     assert ctx._Kseg is None
     # Exercise the FFT apply used for long streams, against an explicitly formed
-    # marginal retained precision K_RR - K_RG K_GG^+ K_GR at this tractable size.
+    # marginal retained precision K_RR - K_RG K_GG^-1 K_GR at this tractable size.
     ctx._use_dense = False
-    K = ctx.kappa[np.abs(np.subtract.outer(np.arange(n), np.arange(n)))]
+    w = ctx.fill_weights()
+    K = np.fft.irfft(w, n=n)[np.abs(np.subtract.outer(np.arange(n), np.arange(n)))]
     R, G = ctx.retain_mask, ~ctx.retain_mask
     dense = np.zeros((n, n))
-    dense[np.ix_(R, R)] = K[np.ix_(R, R)] - K[np.ix_(R, G)] @ np.linalg.pinv(
-        K[np.ix_(G, G)], rcond=1e-12, hermitian=True) @ K[np.ix_(G, R)]
+    dense[np.ix_(R, R)] = K[np.ix_(R, R)] - K[np.ix_(R, G)] @ np.linalg.solve(
+        K[np.ix_(G, G)], K[np.ix_(G, R)])
     dense *= ctx.ip_normalization
     fd = lal.CreateCOMPLEX16FrequencySeries("x", lal.LIGOTimeGPS(0.),
           0., 1., lsu.lsu_HertzUnit, n)
     h, d = [rng.normal(size=n)+1j*rng.normal(size=n) for _ in range(2)]
     hf, df = ctx._fd_from_td(h, fd), ctx._fd_from_td(d, fd)
     _, q, _, _ = ToeplitzComplexOverlap(ctx).ip(hf, df)
-    expected = [np.vdot(np.roll(h, k), dense @ d) for k in range(n)]
+    # the overlap fills the gap to minimize ||HP d||^2 + 1e-10 ||d||^2, then high-passes
+    f = np.fft.fftfreq(n, 1. / fs)
+    hp = np.where(f != 0, 1. / (1. + (0.5 / np.where(f != 0, np.abs(f), 1.)) ** 16), 0.)
+    A = np.fft.ifft(hp + 1e-10).real[np.abs(np.subtract.outer(np.arange(n), np.arange(n)))]
+    d_fill = d.copy()
+    d_fill[G] = -np.linalg.solve(A[np.ix_(G, G)], A[np.ix_(G, R)] @ d[R])
+    d_hp = np.fft.ifft(np.fft.fft(d_fill) * hp)
+    expected = [np.vdot(np.roll(h, k), dense @ d_hp) for k in range(n)]
     np.testing.assert_allclose(q.data.data, expected, rtol=1e-11, atol=1e-12)
+
+
+@pytest.mark.parametrize("gaps", [[(128, 129)], [(100, 110), (128, 129)]])
+def test_gapped_overlap_ignores_excised_samples(gaps):
+    """Changing only gap samples leaves Q(t) unchanged: the high-pass never reads them."""
+    from RIFT.likelihood.td_inner_product import ToeplitzInnerProductContext, ToeplitzComplexOverlap
+    rng = np.random.default_rng(532)
+    n, fs = 256, 128.
+    ctx = ToeplitzInnerProductContext(lambda f: 1. + 0. * np.asarray(f), fs / n, fs / 2, 20.,
+          fMax=50., analyticPSD_Q=True, gap_sample_ranges=gaps, data_highpass=12.9)
+    fd = lal.CreateCOMPLEX16FrequencySeries("x", lal.LIGOTimeGPS(0.),
+          0., fs / n, lsu.lsu_HertzUnit, n)
+    h = np.cos(2 * np.pi * 20. * np.arange(n) / fs).astype(complex)
+    d = rng.normal(size=n).astype(complex)
+    G = ~ctx.retain_mask
+    d_bad = d.copy()
+    d_bad[G] = 1e6
+    q = [ToeplitzComplexOverlap(ctx).ip(ctx._fd_from_td(h, fd), ctx._fd_from_td(x, fd))[1]
+         .data.data for x in (d, d_bad)]
+    assert np.abs(q[0]).max() > 0.1     # the data does reach Q
+    np.testing.assert_allclose(q[1], q[0], rtol=0, atol=1e-6 * np.abs(q[0]).max())
+    # On the TD stream itself, a NaN in the gap is never read.
+    d_nan = d.real.copy()
+    d_nan[G] = np.nan
+    got = ctx.segment_dot_td(h.real, ctx.highpass_gapped_data(d_nan))
+    ref = ctx.segment_dot_td(h.real, ctx.highpass_gapped_data(d.real))
+    np.testing.assert_allclose(got, ref, rtol=1e-12)

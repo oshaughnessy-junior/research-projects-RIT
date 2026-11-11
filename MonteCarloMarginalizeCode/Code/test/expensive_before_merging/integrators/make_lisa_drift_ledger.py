@@ -61,7 +61,7 @@ RULES = [
      "and whether a lensing-type F is response-independent for LISA, is a physics decision "
      "to make with LISA-specific validation, not a passthrough to copy."),
     # Ground-based TD operators: only this explicitly reviewed option set.
-    (r"^OPTION:--(internal-ile-inner-product|td-subsample|td-calibration-correction-type|td-calibration-fir-half-length|td-highpass|td-u-svd-tol|td-mref|td-piece|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
+    (r"^OPTION:--(internal-ile-inner-product|td-subsample|td-calibration-correction-type|td-calibration-fir-half-length|td-highpass|td-u-svd-tol|td-mref|td-piece|td-piece-ifo|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
      "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not "
      "wired into the LISA driver. Porting requires a TDI-channel covariance, boundary "
      "and response-model decision with LISA-specific validation; copying the "
