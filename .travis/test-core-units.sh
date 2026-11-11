@@ -162,6 +162,7 @@ FILES=(
   # tests/test_marg_contract.py] fails; any contiguous order passes.
   "$C/test/hyperpipe/tests/test_cit_execution_runner.py"
   "$C/test/hyperpipe/tests/test_marg_contract.py"
+  "$C/test/hyperpipe/tests/test_marg_transfer_policy.py"
   "$C/test/hyperpipe/tests/test_posterior_transport.py"
   "$C/test/hyperpipe/tests/test_osg_truncated_frames_helper.py"
   "$C/test/hyperpipe/tests/test_terminal_contract.py"

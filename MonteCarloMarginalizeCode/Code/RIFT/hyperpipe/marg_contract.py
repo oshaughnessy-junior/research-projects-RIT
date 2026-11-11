@@ -151,20 +151,22 @@ class MargJobSpec(object):
         if image and "://" not in str(image):
             self.execution["singularity_image"] = _expand_path(image, base_dir)
         transfer_files = self.execution.get("transfer_files", [])
-        transfer_output_files = self.execution.get("transfer_output_files", [])
+        transfer_output_files = self.execution.get("transfer_output_files")
         if not isinstance(transfer_files, list):
             raise ValueError(
                 "MARG job {!r} execution transfer_files must be a list".format(
                     self.name))
-        if not isinstance(transfer_output_files, list):
+        if transfer_output_files is not None and not isinstance(transfer_output_files, list):
             raise ValueError(
                 "MARG job {!r} execution transfer_output_files must be a list"
                 .format(self.name))
         self.execution["transfer_files"] = [
-            _expand_path(item, base_dir)
+            item if "://" in str(item) else _expand_path(item, base_dir)
             for item in transfer_files
         ]
-        self.execution["transfer_output_files"] = list(transfer_output_files)
+        # Preserve an omitted policy for the writer; explicit lists stay distinct.
+        self.execution["transfer_output_files"] = (
+            None if transfer_output_files is None else list(transfer_output_files))
 
     @property
     def result_glob(self):
