@@ -17,7 +17,8 @@ concurrency:
 
 jobs:
   install:
-    runs-on: ubuntu-latest
+    # Python 3.9 has no setup-python build for Ubuntu 26.04.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +67,8 @@ jobs:
 
   import-check:
     needs: install
-    runs-on: ubuntu-latest
+    # Python 3.9 has no setup-python build for Ubuntu 26.04.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     # Verify every declared module imports cleanly under both the pinned
     # legacy lane (py3.9 + numpy 1.24.4) and the modern lane (py3.12 +
     # numpy 2.x). Catches platform-portability regressions like the
@@ -109,7 +111,8 @@ jobs:
 
   dependency-compat-check:
     needs: install
-    runs-on: ubuntu-latest
+    # Python 3.9 has no setup-python build for Ubuntu 26.04.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     # Focused upstream-library smoke test for scipy/h5py/numba/matplotlib plus
     # RIFT's portable precision dtype. This complements the broader import and
     # test-run jobs with a compact version matrix and small functional probes.
@@ -800,7 +803,8 @@ jobs:
 
   test-run:
     needs: install
-    runs-on: ubuntu-latest
+    # Python 3.9 has no setup-python build for Ubuntu 26.04.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     # Integrator + posterior gate. We run this in two CI lanes:
     #   - legacy : py3.9 + numpy 1.24.4 -- the historically known-good
     #              configuration on Linux x86_64 where np.float128 is real.
