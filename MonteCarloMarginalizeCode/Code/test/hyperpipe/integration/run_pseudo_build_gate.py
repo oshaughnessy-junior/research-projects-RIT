@@ -1357,6 +1357,26 @@ def _assert_calibration_waveform_policy_parity(run_base, xml_grid, ascii_grid,
             print("calibration waveform parity: PASS", label, hyper)
 
 
+def _assert_posterior_native_policy(hyper: Path, policy):
+    """The same explicit runtime policy reaches ordinary, prior and Z workers."""
+    subs = list(hyper.glob("EOS_POST_worker_*.sub"))
+    prior = hyper / "EOS_POST_prior.sub"
+    assert prior.is_file(), prior
+    subs.append(prior)
+    # Recursive Z subworkflows have ordinary workers but intentionally no prior.
+    subs.extend(path for path in hyper.rglob("EOS_POST_worker_*.sub")
+                if path not in subs)
+    assert subs
+    for sub in subs:
+        commands = dict(
+            (key.strip().lower(), value.strip())
+            for key, value in (
+                line.split("=", 1) for line in sub.read_text().splitlines()
+                if "=" in line))
+        for key, value in policy.items():
+            assert commands[key.lower()] == str(value), (sub, key, commands)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1390,13 +1410,21 @@ def main(argv=None):
         hyper_auto = _build(
             "Hyperpipe", run_base, ascii_grid, cache, None,
             run_label="hyperpipe-auto-bilby", bilby_ini=bilby_ini)
+        posterior_policy = {"environment": '"PATH=/pinned/bin PYTHONPATH=."'}
+        posterior_policy_file = run_base / "posterior_policy.json"
+        posterior_policy_file.write_text(json.dumps(posterior_policy))
+        posterior_policy_args = [
+            "--hyperpipe-eos-post-condor-commands", posterior_policy_file.name]
         hyper_osg = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
             run_label="hyperpipe-osg-calibration", osg_calibration=True,
-            extra_args=["--internal-cip-request-disk", "4G"])
+            extra_args=["--internal-cip-request-disk", "4G"] + posterior_policy_args)
         hyper_z = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
-            run_label="hyperpipe-z-convergence", z_convergence=True)
+            run_label="hyperpipe-z-convergence", z_convergence=True,
+            extra_args=posterior_policy_args)
+        _assert_posterior_native_policy(hyper_osg, posterior_policy)
+        _assert_posterior_native_policy(hyper_z, posterior_policy)
         hyper_jax = _build(
             "Hyperpipe", run_base, ascii_grid, cache, pickle_file,
             run_label="hyperpipe-jax-ile", extra_args=["--use-jax-ile"])

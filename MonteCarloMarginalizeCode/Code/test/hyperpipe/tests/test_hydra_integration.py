@@ -9,6 +9,7 @@ running the DAG-builder (general.dry-run=true).
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import sys
@@ -25,7 +26,8 @@ def _ensure_hydra_available() -> None:
         pytest.skip(f"hydra/omegaconf not importable in this env: {exc}")
 
 
-def test_util_rift_hyperpipe_dry_run(rift_root, rift_py, tmp_path):
+@pytest.mark.parametrize("runtime_policy", [False, True])
+def test_util_rift_hyperpipe_dry_run(rift_root, rift_py, tmp_path, runtime_policy):
     _ensure_hydra_available()
 
     base = tmp_path / "base"
@@ -61,6 +63,8 @@ def test_util_rift_hyperpipe_dry_run(rift_root, rift_py, tmp_path):
         'event-file:null, n-chunk:100, coord-module:null, extra-args:""}]',
     ]
 
+    if runtime_policy:
+        overrides.append('+post.condor-commands={environment:"PATH=/pinned/bin PYTHONPATH=."}')
     cmd = [sys.executable, str(rift_py / "bin" / "util_RIFT_hyperpipe.py"), *overrides]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(rift_py) + os.pathsep + env.get("PYTHONPATH", "")
@@ -128,3 +132,11 @@ def test_util_rift_hyperpipe_dry_run(rift_root, rift_py, tmp_path):
         "--event-file",
     ):
         assert needle in full, f"missing flag in dry-run command line: {needle}"
+
+    command_file = run / "eos_post_condor_commands.json"
+    if runtime_policy:
+        assert json.loads(command_file.read_text()) == {
+            "environment": "PATH=/pinned/bin PYTHONPATH=."}
+        assert "--eos-post-condor-commands " + str(command_file) in full
+    else:
+        assert not command_file.exists()
