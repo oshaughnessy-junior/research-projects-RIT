@@ -108,3 +108,57 @@ def test_unreadable_metadata_warns_and_does_not_abort(tmp_path):
     with pytest.warns(UserWarning):
         P_list, _ = hpio.read_grid_to_P_list(path, P_factory=FakeP)
     assert P_list[0].ampO == 0
+
+
+@pytest.mark.parametrize("active", ("", "1"))
+@pytest.mark.parametrize("existing_metrics", (False, True))
+@pytest.mark.parametrize("log_res,offset,sigma", ((-10.0, 7.0, 0.125),
+                                                (-10.0, 70.0, 0.125),
+                                                (-10.0, 7.0, 0.0)))
+def test_actual_ile_auxiliary_grid_writer_keeps_uncertainty_separate(
+        tmp_path, monkeypatch, active, existing_metrics, log_res, offset, sigma):
+    """Run the real post-integration writer, not ILE or a stand-in estimator."""
+    import ast
+    import copy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    driver = Path(__file__).resolve().parents[1] / "bin" / "integrate_likelihood_extrinsic_batchmode"
+    tree = ast.parse(driver.read_text())
+    condition = ast.dump(ast.parse("opts.output_file and opts.sim_grid", mode="eval").body)
+    blocks = [node for node in ast.walk(tree)
+              if isinstance(node, ast.If) and ast.dump(node.test) == condition]
+    assert len(blocks) == 1, "the actual auxiliary-grid writer must be identified uniquely"
+    writer = ast.fix_missing_locations(ast.Module(
+        body=[copy.deepcopy(blocks[0])], type_ignores=[]))
+
+    params = [("m1", float), ("m2", float), ("extra_coordinate", float)]
+    fields = ([("lnL", float), ("sigma_lnL", float)] if existing_metrics else []) + params
+    grid = np.zeros(3, dtype=fields)
+    grid["m1"] = [30., 31., 32.]
+    grid["m2"] = [20., 21., 22.]
+    grid["extra_coordinate"] = [-0.2, 0.3, 0.4]
+    if existing_metrics:
+        grid["lnL"] = 91.
+        grid["sigma_lnL"] = 92.
+    before = grid.copy()
+    output = tmp_path / "marginal"
+    monkeypatch.setenv("RIFT_HYPERPIPELINE_FORMAT", active)
+    namespace = dict(np=np, opts=SimpleNamespace(output_file=str(output), sim_grid="input.grid"),
+                     grid_in=grid, indx_event=1, log_res=log_res,
+                     manual_avoid_overflow_logarithm=offset, sqrt_var_over_res=sigma)
+    exec(compile(writer, str(driver), "exec"), namespace)
+
+    # The oracle is the independently supplied uncertainty, not the shifted lnL.
+    path = tmp_path / "marginal_1_.grid"
+    table = np.atleast_1d(np.genfromtxt(path, names=True))
+    expected_names = tuple(fields[i][0] for i in range(len(fields)))
+    if not existing_metrics:
+        expected_names += ("lnL", "sigma_lnL")
+    assert table.dtype.names == expected_names
+    assert len(table) == 1
+    assert table["lnL"][0] == log_res + offset
+    assert table["sigma_lnL"][0] == sigma
+    for name, _ in params:
+        assert table[name][0] == before[name][1]
+    assert np.array_equal(grid, before), "reporting must not mutate the input grid"
