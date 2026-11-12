@@ -70,6 +70,7 @@ FILES=(
   "$C/test/test_td_factory.py"
   "$C/test/test_td_driver_normalization.py"
   "$C/test/test_td_glitch.py"
+  "$C/test/test_td_glitch_uprime_t.py"
   "$C/test/test_td_inner_product.py"
   "$C/test/test_td_rank_augmentation.py"
   "$C/test/test_td_segment.py"
