@@ -272,6 +272,10 @@ class ToeplitzInnerProductContext(object):
         self._glitch_delta_lnZ_minus = 0.0
         self._glitch_has_mean = False      # True iff mu_mix is carried (pinned / signmix)
         self._glitch_sign_odds = None      # closed-form ln(L+/L-) at attach (h=0)
+        self._glitch_basis_fd_cache = None  # FD series of each basis column (beta(t) inputs)
+        # sigma_g grid mode: list of (sigma_g, ln prior weight, Delta lnZ(sigma_g)); None
+        # when sigma_g is profiled or pinned.
+        self._glitch_sigma_grid = None
 
     # ------------------------------------------------------------------ segment (T5)
 
@@ -970,11 +974,12 @@ class ToeplitzInnerProductContext(object):
         data_fd : lal.COMPLEX16FrequencySeries
             The detector data (same object the overlap step will receive); used to profile
             sigma_g, form gamma / g_hat / Delta lnZ.
-        sigma_g : "profile" or float
-            "profile" (default, the only wired mode) maximizes Delta lnZ over sigma_g on d
-            alone (Sec. 4, empirical Bayes).  A float pins sigma_g.  Grid marginalization is
-            OUT OF SCOPE for G3 (follow-on: precompute {d_corr, M} per grid value and
-            logsumexp inside ILE).
+        sigma_g : "profile", float, or dict(mode="grid", snr=(lo, hi, K))
+            "profile" (default) maximizes Delta lnZ over sigma_g on d alone (Sec. 4,
+            empirical Bayes).  A float pins sigma_g.  The grid dict stores K log-uniform
+            nodes in the glitch SNR scale with their ln weights and Delta lnZ
+            (``glitch_sigma_grid``) and activates the node of largest weighted evidence;
+            the per-sample combination is TDInnerProductFactory.glitch_grid_sets.
 
         NOTE (scope): glitch marginalization is implemented for the FULL segment only.  On a
         truncated/gapped segment (``segment_active``) the base operator is the truncated
@@ -1005,7 +1010,20 @@ class ToeplitzInnerProductContext(object):
         self._glitch_data_fd_ref = data_fd
 
         # --- amplitude profile / pin (population-prior presence conditioning via sigma_g_min) ---
-        if sigma_g == "profile":
+        self._glitch_basis_fd_cache = None
+        self._glitch_sigma_grid = None
+        if isinstance(sigma_g, dict) and sigma_g.get("mode") == "grid":
+            if prior_mode == "signmix" or len(self._glitch_aug.blocks) != 1:
+                raise NotImplementedError(
+                    "sigma_g grid mode supports one zero-mean or pinned block per detector "
+                    "(not signmix)")
+            nodes = glitch_sigma_grid_nodes(self.glitch_snr_scale(), *sigma_g["snr"])
+            self._glitch_sigma_grid = [
+                (s, lw, float(self._glitch_aug.delta_lnZ(d_td, s))) for s, lw in nodes]
+            # Active node (the one Q'/U' are first built at): the largest prior-weighted
+            # data-only evidence.  It only sets the numerical offset; see glitch_grid_offsets.
+            sig = max(self._glitch_sigma_grid, key=lambda n: n[1] + n[2])[0]
+        elif sigma_g == "profile":
             if prior_mode == "signmix":
                 # empirical-Bayes on the MIXTURE evidence (a single sigma_g for both branches)
                 sig, _ = self._glitch_aug.profile_sigma_g_signmix(d_td, sigma_g_min=sigma_g_min)
@@ -1138,6 +1156,55 @@ class ToeplitzInnerProductContext(object):
         """MAP glitch reconstruction g_hat = B M^-1 gamma (TD, diagnostic); None if inactive."""
         return self._glitch_ghat_td
 
+    # ---- arrival-time-dependent U'(t) and the sigma_g grid -------------------------------
+
+    def glitch_snr_scale(self):
+        r"""sqrt(tr(Lambda0 G)): the expected glitch SNR per unit sigma_g.
+
+        For a ~ N(0, sigma_g^2 Lambda0), E[a^T G a] = sigma_g^2 tr(Lambda0 G), so a prior
+        stated on the glitch SNR scale maps to sigma_g = snr / glitch_snr_scale().  Depends on
+        the basis and the PSD only, never on the analysed data."""
+        blk = self._glitch_aug.blocks[0]
+        return float(np.sqrt(np.trace(blk["Lambda0"].dot(blk["G"]))))
+
+    def glitch_coefficients(self, sigma_g=None, sign=None):
+        r"""Posterior-mean coefficients c with g_hat = B c, at ``sigma_g`` (default: active).
+
+        c = mu_a + M^{-1} gamma_tilde (Eq. Qprime).  Q is linear in the data, so
+        Q'(t; sigma) = Q(t) - beta(t) . c(sigma) with beta from glitch_basis_fd()."""
+        aug = self._glitch_aug
+        sig = self._glitch_sigma_g if sigma_g is None else float(sigma_g)
+        sgn = self._glitch_active_sign if sign is None else float(sign)
+        if len(aug.blocks) != 1:
+            raise NotImplementedError("glitch_coefficients: one concatenated block expected")
+        gamma_t = aug._gamma_tilde(self._glitch_data_td, sig, 0, sign=sgn)
+        c = aug._Minv_apply(gamma_t, sig, 0)
+        if aug.blocks[0]["has_mean"]:
+            c = c + aug.mu_a(sig, 0, sign=sgn)
+        return np.asarray(c, dtype=complex)
+
+    def glitch_Minv_apply(self, y, sigma_g=None):
+        """M^{-1} applied on the last axis of ``y`` (r), at ``sigma_g`` (default: active)."""
+        sig = self._glitch_sigma_g if sigma_g is None else float(sigma_g)
+        return self._glitch_aug._Minv_apply(y, sig, 0)
+
+    def glitch_basis_fd(self):
+        """Basis columns B_j as FD series packed like the data (cached).
+
+        Fed to the uncorrected overlap they give beta_lm(t)_j = <h_lm(t) | B_j> on exactly
+        the time grid and epoch convention of Q_lm(t)."""
+        if self._glitch_basis_fd_cache is None:
+            B = self._glitch_aug.blocks[0]["B"]
+            self._glitch_basis_fd_cache = [
+                self._fd_from_td(B[:, j].astype(complex), self._glitch_data_fd_ref)
+                for j in range(B.shape[1])]
+        return self._glitch_basis_fd_cache
+
+    @property
+    def glitch_sigma_grid(self):
+        """[(sigma_g, ln prior weight, Delta lnZ(sigma_g))] in grid mode, else None."""
+        return self._glitch_sigma_grid
+
     # ------------------------------------------------------------------ optional iterative
 
     def _ensure_pcg(self, covariance_acf=None):
@@ -1269,8 +1336,11 @@ class ToeplitzComplexIP(object):
     byte-identical).
     """
 
-    def __init__(self, context):
+    def __init__(self, context, glitch_correct=True):
         self.ctx = context
+        # False: the base Hermitian form conj(h1)^T K h2 with no rank-r glitch correction
+        # (the U of Eq. Uprime, from which U'(t) is built).
+        self.glitch_correct = glitch_correct
 
     def ip(self, h1, h2, include_epoch_differences=False):
         ctx = self.ctx
@@ -1312,7 +1382,7 @@ class ToeplitzComplexIP(object):
             h1_td = ctx.template_in_data_frame(h1_td, h1.epoch)
             h2_td = ctx.template_in_data_frame(h2_td, h2.epoch)
         val = ctx.ip_normalization * ctx.dot_td(h1_td, h2_td)
-        if ctx.glitch_active:
+        if ctx.glitch_active and self.glitch_correct:
             # G3: U'/V' = U/V - conj(Phi^T h1)^T M^{-1} (Phi^T h2)  (Hermitian correction).
             val = val - ctx.glitch_ip_correction(h1_td, h2_td)
         return val
@@ -1339,8 +1409,11 @@ class ToeplitzComplexOverlap(object):
       * rhoPhase = angle(rhoTS[rhoIdx])
     """
 
-    def __init__(self, context):
+    def __init__(self, context, glitch_correct=True):
         self.ctx = context
+        # False: correlate against the data as given, without subtracting g_hat (used to
+        # form beta_lm(t) = <h_lm(t) | B_j> for U'(t)).
+        self.glitch_correct = glitch_correct
         self._revplan = lal.CreateReverseCOMPLEX16FFTPlan(self.ctx.len2side, 0)
         self._fwdplan = None    # built lazily for the segment path only
         self._intgd = lal.CreateCOMPLEX16FrequencySeries(
@@ -1363,7 +1436,8 @@ class ToeplitzComplexOverlap(object):
         # overlap is linear in the data, this is the base machinery run on the glitch-
         # subtracted data d_corr = d - g_hat (g_hat = B M^{-1} gamma).  Default (no glitch)
         # returns `data` unchanged -> byte-identical.
-        data_use = ctx.glitch_corrected_data_fd(data) if ctx.glitch_active else data
+        data_use = (ctx.glitch_corrected_data_fd(data)
+                    if (ctx.glitch_active and self.glitch_correct) else data)
 
         if ctx._use_gs:
             # Covariance kernel: no FD weight exists, so correlate h with w = C^{-1} d in TD.
@@ -1474,6 +1548,67 @@ class ToeplitzComplexOverlap(object):
         return np.sqrt(2.0 * self.ctx.deltaF * np.abs(val))
 
 
+def glitch_sigma_grid_nodes(snr_scale, snr_lo, snr_hi, n_nodes):
+    r"""Nodes and ln-weights for a log-uniform prior on the glitch SNR scale.
+
+    The prior is uniform in u = ln(sigma_g) on [ln(snr_lo/snr_scale), ln(snr_hi/snr_scale)];
+    the nodes are the K = ``n_nodes`` equally spaced points of the trapezoid rule on that
+    interval, with weights normalised to sum to one.  Returns [(sigma_g, ln w)]."""
+    n_nodes = int(n_nodes)
+    if not (0 < snr_lo < snr_hi) or n_nodes < 2:
+        raise ValueError("sigma_g grid needs 0 < snr_lo < snr_hi and at least 2 nodes")
+    u = np.linspace(np.log(snr_lo / snr_scale), np.log(snr_hi / snr_scale), n_nodes)
+    w = np.full(n_nodes, 1.0)
+    w[0] = w[-1] = 0.5
+    w = w / w.sum()
+    return [(float(np.exp(uk)), float(np.log(wk))) for uk, wk in zip(u, w)]
+
+
+def glitch_time_indexed_cross_terms(U_base, V_base, beta, beta_conj, Minv_apply):
+    r"""Arrival-time-dependent U'(t), V'(t) (Eq. Uprime) from the overlap series beta.
+
+        U'_ab(t) = U_ab - beta_a(t)^T M^{-1} conj(beta_b(t))
+        V'_ab(t) = V_ab - betac_a(t)^T M^{-1} conj(beta_b(t))
+
+    ``beta[mode]`` and ``beta_conj[mode]`` are (N_window, r) arrays,
+    beta_lm(t)_j = <h_lm(t)|B_j> and betac for the conjugate-mode template, on the Q time
+    grid.  ``U_base``/``V_base`` are the uncorrected scalar cross terms keyed by mode pair.
+    This is ToeplitzInnerProductContext.glitch_ip_correction evaluated at every shift:
+    Phi^T h_t = conj(beta(t)) because B and the precision are real."""
+    Mb = {b: Minv_apply(np.conj(beta[b])) for b in beta}
+    U_t = {key: U_base[key] - np.sum(beta[key[0]] * Mb[key[1]], axis=-1) for key in U_base}
+    V_t = {key: V_base[key] - np.sum(beta_conj[key[0]] * Mb[key[1]], axis=-1) for key in V_base}
+    return U_t, V_t
+
+
+def glitch_grid_logsumexp(lnL_by_node, offsets, xpy=np):
+    r"""Combine per-node lnL with offsets ln w_k + Delta lnZ_k - Delta lnZ_active (Eq. dlnz).
+
+    Returns ln sum_k exp(lnL_k + offset_k): the per-sample likelihood marginalised over the
+    sigma_g grid, still carrying the active node's Delta lnZ as the separate constant."""
+    acc = None
+    for lnL_k, off in zip(lnL_by_node, offsets):
+        term = lnL_k + off
+        acc = term if acc is None else xpy.logaddexp(acc, term)
+    return acc
+
+
+class _UncorrectedGlitchIP(object):
+    """Factory adapter: the overlap and scalar ip on ``ctx`` with no glitch correction.
+
+    Passed as IP_factory to ComputeModeIPTimeSeries / ComputeModeCrossTermIP so that beta(t)
+    and the base U, V come out with the keys, epochs and time grid of Q and U."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def overlap(self, *args, **kwargs):
+        return ToeplitzComplexOverlap(self.ctx, glitch_correct=False)
+
+    def ip_scalar(self, *args, **kwargs):
+        return ToeplitzComplexIP(self.ctx, glitch_correct=False)
+
+
 class TDInnerProductFactory(object):
     r"""Factory of TD-Toeplitz inner products for the Precompute seam (task T3).
 
@@ -1530,9 +1665,25 @@ class TDInnerProductFactory(object):
                  gaps=None, segment_start_index=0, gap_time_origin=None,
                  glitch_specs=None, glitch_sigma="profile", glitch_basis_files=None,
                  glitch_prior_mode="m2", glitch_sigma_min=None,
-                 window_shape=None, data_highpass=None):
+                 window_shape=None, data_highpass=None, glitch_uprime="reference",
+                 glitch_sigma_grid_snr=None):
         self.solver = solver
         self.data_highpass = data_highpass
+        # glitch_uprime: 'reference' (U' at the template's storage placement, scalar) or
+        # 'time-indexed' (U'(t) on the Q time grid, Eq. Uprime; requires explicit phase
+        # sampling in the likelihood).  glitch_sigma_grid_snr: (snr_lo, snr_hi, K) for
+        # glitch_sigma='grid', a log-uniform prior on the glitch SNR scale.
+        if glitch_uprime not in ("reference", "time-indexed"):
+            raise ValueError("glitch_uprime must be 'reference' or 'time-indexed', got %r"
+                             % (glitch_uprime,))
+        if glitch_sigma == "grid":
+            if glitch_sigma_grid_snr is None:
+                raise ValueError("glitch_sigma='grid' needs glitch_sigma_grid_snr=(lo, hi, K)")
+            if glitch_uprime != "time-indexed":
+                raise ValueError("glitch_sigma='grid' requires glitch_uprime='time-indexed'")
+        self.glitch_uprime = glitch_uprime
+        self.glitch_sigma_grid_snr = glitch_sigma_grid_snr
+        self._glitch_ti_last = {}      # det -> beta series and base U/V of the last Precompute
         # population-prior detection-conditioned prior mode {m2,signmix,pinned} (default m2 =
         # zero-mean Gaussian behavior, bit-identical) and the presence-conditioning amplitude floor
         # sigma_g_min (strain; default None = code default bounds).  Both apply only to a
@@ -1567,8 +1718,7 @@ class TDInnerProductFactory(object):
         #                 Sigma_shape; COVARIANCE-ONLY or FULL mode), 'mu' (length r
         #                 dimensionless population-mean direction mu_hat, scale mixture
         #                 mu_a = sigma_g mu_hat; FULL mode).  SPD is validated on load.
-        #   glitch_sigma: "profile" (only wired mode); grid marginalization is a documented
-        #                 follow-on (out of scope for G3).
+        #   glitch_sigma: "profile", a float (pinned), or "grid" (glitch_sigma_grid_snr).
         # The data + geocenter epoch needed to place the basis and profile sigma_g are supplied
         # per detector via register_detector_data (called by ILE before Precompute), keyed on
         # id(psd) so context_for can attach the basis when it first builds a detector's context.
@@ -1886,7 +2036,10 @@ class TDInnerProductFactory(object):
             # meaningless here; fall back to m2 (zero-mean) regardless of the requested mode.
             mode_for_attach = "m2"
         block = (B, Lambda0, ifo) if mu0 is None else (B, Lambda0, ifo, mu0)
-        info = ctx.attach_glitch_basis([block], data_fd, sigma_g=self.glitch_sigma,
+        sigma_spec = self.glitch_sigma
+        if sigma_spec == "grid":
+            sigma_spec = dict(mode="grid", snr=tuple(self.glitch_sigma_grid_snr))
+        info = ctx.attach_glitch_basis([block], data_fd, sigma_g=sigma_spec,
                                        sigma_g_min=self.glitch_sigma_min,
                                        prior_mode=mode_for_attach)
         ctx._glitch_ifo_label = ifo
@@ -1896,6 +2049,12 @@ class TDInnerProductFactory(object):
               "mode=%s, sigma_g=%.3e, Delta_lnZ=%.4f"
               % (ifo, B.shape[1], t_start, t_end, band_note, mode_for_attach,
                  info["sigma_g"], info["delta_lnZ"]))
+        if ctx.glitch_sigma_grid is not None:
+            print("  [G3] %s sigma_g grid (log-uniform glitch SNR scale on [%g, %g], K=%d, "
+                  "snr per unit sigma_g = %.4e): sigma_g / ln w / Delta_lnZ = %s"
+                  % (ifo, self.glitch_sigma_grid_snr[0], self.glitch_sigma_grid_snr[1],
+                     int(self.glitch_sigma_grid_snr[2]), ctx.glitch_snr_scale(),
+                     ", ".join("%.3e/%.3f/%.3f" % n for n in ctx.glitch_sigma_grid)))
         if _odds is not None:
             # per-event regime indicator the paper promises, logged next to guess_snr/Delta_lnZ
             print("  [G3] %s sign-odds ln(L+/L-)=2<d|B mu_a>_C' = %+.4f (data-only, h=0); "
@@ -1948,6 +2107,75 @@ class TDInnerProductFactory(object):
             if odds is not None:
                 out[getattr(c, "_glitch_ifo_label", "?")] = odds
         return out
+
+    # -------------------------------------------------------------- U'(t) and sigma_g grid
+
+    def glitch_time_indexed_context(self, fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q=False):
+        """The detector's context if it carries a glitch basis and U'(t) is requested."""
+        if self.glitch_uprime != "time-indexed":
+            return None
+        ctx = self.context_for(fmin, fMax, fNyq, deltaF, psd, analyticPSD_Q=analyticPSD_Q)
+        return ctx if ctx.glitch_active else None
+
+    @staticmethod
+    def uncorrected(ctx):
+        """IP_factory adapter giving the overlap and ip on ``ctx`` with no glitch correction."""
+        return _UncorrectedGlitchIP(ctx)
+
+    def glitch_time_indexed_terms(self, det, ctx, beta, beta_conj, U_base, V_base):
+        """Record one detector's beta series and base U, V; return U'(t), V'(t) at the
+        active sigma_g (Eq. Uprime).  The record feeds glitch_grid_sets."""
+        self._glitch_ti_last[det] = dict(ctx=ctx, beta=beta, beta_conj=beta_conj,
+                                         U_base=U_base, V_base=V_base)
+        return glitch_time_indexed_cross_terms(U_base, V_base, beta, beta_conj,
+                                               ctx.glitch_Minv_apply)
+
+    @property
+    def glitch_sigma_grid_active(self):
+        return self.glitch_sigma == "grid"
+
+    def glitch_grid_sets(self, lookupKNDict, rholmArrayDict):
+        r"""Per-node packed (Q', U'(t), V'(t)) for the sigma_g grid, and the node offsets.
+
+        Returns (offsets, det, sets): sets[k] = ({det: Q'_k}, {det: U'_k(t)}, {det: V'_k(t)})
+        for the glitch detector ``det`` (the caller keeps the other detectors' arrays), and
+        offsets[k] = ln w_k + Delta lnZ_k - Delta lnZ_active, so that
+        logsumexp_k(lnL_k + offsets[k]) + Delta lnZ_active is the sigma_g-marginal per-sample
+        lnL.  Q'_k = Q'_active + beta . (c_active - c_k) is exact because Q is linear in the
+        data."""
+        grid_ctx = [c for c in self._glitch_contexts if c.glitch_sigma_grid is not None]
+        if len(grid_ctx) != 1:
+            raise NotImplementedError("sigma_g grid mode supports exactly one glitch detector "
+                                      "(got %d)" % len(grid_ctx))
+        ctx = grid_ctx[0]
+        dets = [d for d, rec in self._glitch_ti_last.items() if rec["ctx"] is ctx]
+        if len(dets) != 1:
+            raise RuntimeError("sigma_g grid: no U'(t) record for the glitch detector")
+        det = dets[0]
+        rec = self._glitch_ti_last[det]
+        dz_active = ctx.glitch_delta_lnZ
+        c_active = ctx.glitch_coefficients()
+        modes = sorted(lookupKNDict[det], key=lambda m: lookupKNDict[det][m])
+        nmode = len(modes)
+        offsets, sets = [], []
+        for sig, lnw, dz in ctx.glitch_sigma_grid:
+            dc = c_active - ctx.glitch_coefficients(sigma_g=sig)
+            Q = np.array(rholmArrayDict[det], dtype=complex, copy=True)
+            for i, m in enumerate(modes):
+                Q[i] = Q[i] + rec["beta"][m].dot(dc)
+            U_t, V_t = glitch_time_indexed_cross_terms(
+                rec["U_base"], rec["V_base"], rec["beta"], rec["beta_conj"],
+                lambda y, _s=sig: ctx.glitch_Minv_apply(y, sigma_g=_s))
+            npts = Q.shape[-1]
+            ctU = np.zeros((npts, nmode, nmode), dtype=complex)
+            ctV = np.zeros((npts, nmode, nmode), dtype=complex)
+            for i, a in enumerate(modes):
+                for j, b in enumerate(modes):
+                    ctU[:, i, j] = U_t[(a, b)]
+                    ctV[:, i, j] = V_t[(a, b)]
+            sets.append(({det: Q}, {det: ctU}, {det: ctV}))
+            offsets.append(lnw + dz - dz_active)
+        return offsets, det, sets
 
     # -------------------------------------------------------------- FL-shaped constructors
 
@@ -2004,10 +2232,9 @@ class TDInnerProductFactory(object):
                 % (rep["rel_var"], warn_tol, tag), stacklevel=2)
 
         # G3 extension: when a glitch basis is attached, check whether it overlaps the SLIDING
-        # dominant-template support across the marginalization window.  The scalar U' correction
-        # is evaluated at the reference time (template-frame convention); if the glitch support
-        # overlaps the template track the correction becomes time-dependent (U'(t)) and the
-        # time-indexed U'(t) lookup -- deferred here -- would be needed.  We warn but proceed.
+        # dominant-template support across the marginalization window (storage frame: it can
+        # miss an overlap at the arrival time).  With glitch_uprime='reference' the U'
+        # correction is one reference-time value; 'time-indexed' carries U'(t) instead.
         if ctx.glitch_active and ctx._glitch_support is not None:
             gi0, gi1 = ctx._glitch_support
             hpk = int(np.argmax(np.abs(h_td)))
@@ -2017,16 +2244,20 @@ class TDInnerProductFactory(object):
             # sliding support of the template across +-n samples
             overlap = (gi0 < hi1 + n) and (hi0 - n < gi1)
             rep["glitch_overlaps_template"] = bool(overlap)
+            ti = self.glitch_uprime == "time-indexed"
             print("  [G3]%s glitch basis support=[%d,%d) vs template support=[%d,%d) (+-%d "
-                  "slide): overlap=%s; U' evaluated at reference time (time-indexed U'(t) "
-                  "deferred)." % (tag, gi0, gi1, hi0, hi1, n, overlap))
-            if overlap:
+                  "slide, storage frame): overlap=%s; U' %s." % (
+                      tag, gi0, gi1, hi0, hi1, n, overlap,
+                      "time-indexed U'(t) on the Q grid" if ti else
+                      "evaluated at the reference time (--glitch-uprime reference)"))
+            if overlap and not ti:
                 import warnings
                 warnings.warn(
                     "TDInnerProductFactory: glitch basis%s overlaps the sliding template "
-                    "support -- the U' correction is time-dependent across the window; G3 uses "
-                    "the reference-time scalar U' (time-indexed U'(t) lookup deferred, see "
-                    "TD_LIKELIHOOD.md Sec. 2/2b)." % tag, stacklevel=2)
+                    "support -- the U' correction is time-dependent across the window, and "
+                    "glitch_uprime='reference' uses one reference-time value; use "
+                    "glitch_uprime='time-indexed' (ILE --glitch-uprime time-indexed)." % tag,
+                    stacklevel=2)
         return rep
 
 

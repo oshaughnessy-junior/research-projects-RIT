@@ -357,7 +357,9 @@ optp.add_option("--td-analysis-end", type=float, default=None, help="TD segment 
 optp.add_option("--td-gap", action="append", default=None, help="TD gap interval 'tstart,tend' in geocenter seconds relative to the event time. Repeatable. The gap samples are marginalized. Requires --internal-ile-inner-product td-toeplitz and --td-highpass (e.g. 10).")
 optp.add_option("--glitch-basis", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector. Format 'IFO:t1,t2,f1,f2[:r]': IFO the glitchy detector; t1,t2 geocenter seconds relative to the event time (glitch time support); f1,f2 Hz (glitch band); optional :r number of Slepian columns (default from the 2*W*T time-bandwidth theorem). A per-detector, band-limited Slepian (DPSS) basis is built and its coefficients are analytically marginalized (Woodbury) in the TD Toeplitz Precompute: Q'/U' corrections + a per-detector Delta-lnZ evidence term added to lnL_marg. Repeatable (one glitch block per detector). Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
 optp.add_option("--glitch-basis-file", action="append", default=None, help="Analytic GLITCH MARGINALIZATION basis for one detector from a FILE (data-informed basis, TD_LIKELIHOOD.md Sec. 3 modes 3/4: e.g. glitschen-style PCA of real glitches, or BayesWave-draw SVD). Format 'IFO:path.npz'; the npz must contain 'basis' (n_snip x r time-domain snippet columns at the analysis sample rate), 'lambda0' (length-r dimensionless shape prior, max entry 1 per design Sec. 2b -- sigma_g carries the strain scale), 't0' (scalar: geocenter seconds RELATIVE TO THE EVENT TIME of snippet sample 0), and 'fs' (snippet sample rate [Hz], checked against the analysis rate). The snippet columns are zero-embedded into the analysis segment at t0 and their coefficients marginalized exactly like --glitch-basis (same Woodbury Q'/U' corrections + per-detector Delta-lnZ). Repeatable (one block per detector); mutually exclusive per-IFO with --glitch-basis. Requires --internal-ile-inner-product td-toeplitz. EXPERIMENTAL.")
-optp.add_option("--glitch-sigma", type=str, default="profile", help="Glitch amplitude hyperparameter sigma_g mode for --glitch-basis: 'profile' (default, and the only mode wired in G3: empirical-Bayes maximize Delta-lnZ over sigma_g per detector from the data). Grid marginalization is a documented follow-on (out of scope for G3).")
+optp.add_option("--glitch-sigma", type=str, default="profile", help="Glitch amplitude hyperparameter sigma_g mode for --glitch-basis/--glitch-basis-file: 'profile' (default: maximize Delta-lnZ over sigma_g per detector, using the analysed data) or 'grid' (marginalize sigma_g over a stated prior, --glitch-sigma-grid-snr: the per-sample likelihood is the prior-weighted logsumexp over the grid nodes of lnL(sigma_k) + Delta-lnZ(sigma_k); requires --glitch-uprime time-indexed and one glitch detector).")
+optp.add_option("--glitch-sigma-grid-snr", type=str, default=None, help="For --glitch-sigma grid: 'LO,HI,K'. Log-uniform prior on the glitch SNR scale rho_g in [LO,HI], converted per detector to sigma_g = rho_g / sqrt(tr(Lambda0 G)) (basis and PSD only, not the data), integrated with the K-node trapezoid rule in ln sigma_g. Fix LO,HI from the glitch training corpus, not from the analysed data.")
+optp.add_option("--glitch-uprime", type=str, default="reference", help="Template-norm correction for --glitch-basis/--glitch-basis-file: 'reference' (default: U' = U - beta^T M^-1 beta at the template's storage placement, one value per intrinsic point) or 'time-indexed' (U'(t) on the matched-filter time grid, gathered at each sample's arrival time). 'time-indexed' requires explicit orbital-phase sampling (a distance-only marginalization table, or none), --time-marginalization --vectorized --gpu (accepts --force-xpy), and --interpolate-time nearest or cubic.")
 optp.add_option("-w", "--window-shape", type=float, default=0, help="Shape of Tukey window to apply to data (default is no windowing)")
 optp.add_option("--psd-window-shape", type=float, default=0, help="Shape of Tukey window that *was* applied to the PSD being passed. If nonzero, we will rescale the PSD by the ratio of window shape results")
 optp.add_option("-m", "--time-marginalization", action="store_true", help="Perform marginalization over time via direct numerical integration. Default is false.")
@@ -623,12 +625,44 @@ if opts.early_time_multirate_backend and not opts.early_time_multirate:
 # td-gs (fully time-domain Precompute) produces time-indexed U(t), V(t); several options
 # below are restricted for it, so the request is recorded before they are resolved.
 _td_gs_requested = (opts.internal_ile_inner_product == "td-gs")
+# A glitch basis with --glitch-uprime time-indexed also produces time-indexed U'(t), V'(t),
+# so it inherits every restriction below that is keyed on a time-indexed self term.
+_glitch_requested = bool(opts.glitch_basis or opts.glitch_basis_file)
+if opts.glitch_uprime not in ("reference", "time-indexed"):
+    raise ValueError("--glitch-uprime must be 'reference' or 'time-indexed', got %r" % (opts.glitch_uprime,))
+if opts.glitch_uprime == "time-indexed" and not _glitch_requested:
+    raise ValueError("--glitch-uprime time-indexed requires --glitch-basis or --glitch-basis-file")
+_glitch_ti_requested = _glitch_requested and opts.glitch_uprime == "time-indexed"
+_time_indexed_uv_requested = _td_gs_requested or _glitch_ti_requested
+_time_indexed_uv_source = ("--internal-ile-inner-product td-gs" if _td_gs_requested
+                           else "--glitch-uprime time-indexed")
+if _glitch_ti_requested and not (opts.time_marginalization and opts.vectorized and opts.gpu):
+    raise ValueError("--glitch-uprime time-indexed requires --time-marginalization --vectorized "
+                     "--gpu (--force-xpy runs the same NoLoop likelihood on numpy): only NoLoop "
+                     "consumes time-indexed U'(t), V'(t)")
+opts._glitch_sigma_grid_snr = None
+if opts.glitch_sigma == "grid":
+    if not _glitch_ti_requested:
+        raise ValueError("--glitch-sigma grid requires a glitch basis and --glitch-uprime time-indexed")
+    try:
+        _lo, _hi, _k = opts.glitch_sigma_grid_snr.split(",")
+        opts._glitch_sigma_grid_snr = (float(_lo), float(_hi), int(_k))
+    except (AttributeError, ValueError):
+        raise ValueError("--glitch-sigma grid requires --glitch-sigma-grid-snr LO,HI,K, got %r"
+                         % (opts.glitch_sigma_grid_snr,))
+    if not (0 < opts._glitch_sigma_grid_snr[0] < opts._glitch_sigma_grid_snr[1]) or opts._glitch_sigma_grid_snr[2] < 2:
+        raise ValueError("--glitch-sigma-grid-snr needs 0 < LO < HI and K >= 2")
+    if opts.resample_time_marginalization:
+        raise NotImplementedError("--glitch-sigma grid with --resample-time-marginalization: the "
+                                  "time draw would use one sigma_g node, not the marginal")
+elif opts.glitch_sigma_grid_snr is not None:
+    raise ValueError("--glitch-sigma-grid-snr is only used with --glitch-sigma grid")
 # Validate the requested Q route before optional unsupported-backend imports.
 opts.q_time_pregrid_factor = validate_q_time_pregrid_factor(opts.q_time_pregrid_factor)
 if opts.q_time_pregrid_factor > 1 and (
         not opts.time_marginalization or not opts.vectorized or not opts.gpu
         or opts.rotation_slow or opts.freqresponse or opts.calibration_envelope_directory
-        or _td_gs_requested or opts.zero_likelihood):
+        or _time_indexed_uv_requested or opts.zero_likelihood):
     raise NotImplementedError(Q_TIME_PREGRID_RESTRICTION)
 # The GWSignal route does not consume RIFT's LAL-dictionary options. Reject the
 # explicit combination before data loading and the per-event exception handler,
@@ -793,7 +827,7 @@ from RIFT.likelihood.time_posterior import resolve_time_posterior_export_mode
 _ti_for_export = 'nearest' if opts._interp_time_from_default else opts._noloop_time_interp
 opts._time_posterior_export = resolve_time_posterior_export_mode(
     opts.time_posterior_export, _ti_for_export,
-    continuous_available=not (opts.rotation_slow or opts.freqresponse or _td_gs_requested))
+    continuous_available=not (opts.rotation_slow or opts.freqresponse or _time_indexed_uv_requested))
 # NOTE: deliberately NOT announcing the stencil here.  opts.gpu is not resolved yet at this
 # point, so we cannot yet tell whether the stencil will actually be used -- and a banner that
 # names a stencil the run then ignores is worse than no banner, because it reads as proof.
@@ -1086,11 +1120,11 @@ if (opts._noloop_time_interp != 'nearest' and _fused_calmarg_would_run
         "make the current behaviour explicit" % TIME_INTERP_DEFAULT))
 # td-gs: the time-indexed self term U(t), V(t) is gathered with the 'nearest' or 'cubic'
 # stencil only, so a 'sinc' default falls back to 'nearest' and an explicit 'sinc' is refused.
-if (_td_gs_requested and opts._noloop_time_interp not in ('nearest', 'cubic')
+if (_time_indexed_uv_requested and opts._noloop_time_interp not in ('nearest', 'cubic')
         and not _stencil_downgrades):
     _stencil_downgrades.append((
-        "--internal-ile-inner-product td-gs gathers its time-indexed self term with the "
-        "'nearest' or 'cubic' stencil only",
+        "%s gathers its time-indexed self term with the "
+        "'nearest' or 'cubic' stencil only" % _time_indexed_uv_source,
         "pass '--interpolate-time cubic' (or 'nearest') explicitly"))
 if _stencil_downgrades and opts._interp_time_from_default:
     for _dg_reason, _dg_remedy in _stencil_downgrades:
@@ -1113,7 +1147,7 @@ if _stencil_downgrades and opts._interp_time_from_default:
     opts._legacy_interpolate_time = False
     opts._time_posterior_export = resolve_time_posterior_export_mode(
         opts.time_posterior_export, 'nearest',
-        continuous_available=not (opts.rotation_slow or opts.freqresponse or _td_gs_requested))
+        continuous_available=not (opts.rotation_slow or opts.freqresponse or _time_indexed_uv_requested))
 if opts._noloop_time_interp != 'nearest' and _fused_calmarg_would_run:
     # SAY SO.  This combination is not refused -- the user named both flags and the stencil is
     # the one that is honoured -- but until now the loss of the fused kernel was silent at all
@@ -1136,17 +1170,17 @@ if opts._noloop_time_interp != 'nearest' and not _stencil_is_honoured:
         "present, which keeps the identical NoLoop code path on numpy -- or drop "
         "--interpolate-time. Refusing rather than running a different likelihood than the one "
         "you asked for." % (opts._noloop_time_interp, ", ".join(_stencil_missing)))
-if _td_gs_requested and opts._noloop_time_interp not in ('nearest', 'cubic'):
+if _time_indexed_uv_requested and opts._noloop_time_interp not in ('nearest', 'cubic'):
     raise ValueError(
-        "--interpolate-time %r was requested, but --internal-ile-inner-product td-gs gathers "
+        "--interpolate-time %r was requested, but %s gathers "
         "its time-indexed self term U(t), V(t) with the 'nearest' or 'cubic' stencil only. "
-        "Use --interpolate-time cubic or nearest." % (opts._noloop_time_interp,))
-if (_td_gs_requested and opts.resample_time_marginalization and
+        "Use --interpolate-time cubic or nearest." % (opts._noloop_time_interp, _time_indexed_uv_source))
+if (_time_indexed_uv_requested and opts.resample_time_marginalization and
         opts._time_posterior_export == "continuous"):
     raise NotImplementedError(
-        "continuous time-posterior export is not implemented for --internal-ile-inner-product "
-        "td-gs (the time-indexed self term is evaluated on the likelihood's own time grid "
-        "only); use --time-posterior-export grid")
+        "continuous time-posterior export is not implemented for %s "
+        "(the time-indexed self term is evaluated on the likelihood's own time grid "
+        "only); use --time-posterior-export grid" % _time_indexed_uv_source)
 if (opts.resample_time_marginalization and
         opts._time_posterior_export == "continuous" and
         (not opts.gpu or opts.rotation_slow or opts.freqresponse)):
@@ -1172,7 +1206,7 @@ _tq_prereqs = (
     ('no calibration marginalization (--calibration-envelope-directory)',
      not bool(opts.calibration_envelope_directory)),
     ('not --internal-ile-inner-product td-gs (time-indexed rho_sq; only the historical '
-     'Simpson rule has been checked for it)', not _td_gs_requested),
+     'Simpson rule has been checked for it)', not _time_indexed_uv_requested),
 )
 # Phase marginalization is refused by 'peak-local' ONLY -- 'bandlimited' supports it
 # and must not regress.  It is not a plain CLI boolean: it is a property of the
@@ -1181,9 +1215,10 @@ _tq_prereqs = (
 # likelihood also refuses it, but by then the run is under way.
 _tq_phase_marg = bool(opts.distance_marginalization) and bool(
     lookup_table["phase_marginalization"])
-if _td_gs_requested and _tq_phase_marg:
-    raise ValueError("td-gs requires explicit orbital-phase sampling: the finite-segment "
-                     "template norm depends on phase; use a distance-only lookup table")
+if _time_indexed_uv_requested and _tq_phase_marg:
+    raise ValueError("%s requires explicit orbital-phase sampling: the time-indexed "
+                     "template norm depends on phase; use a distance-only lookup table"
+                     % _time_indexed_uv_source)
 if opts._time_quadrature == 'peak-local' and _tq_phase_marg:
     _tq_prereqs = _tq_prereqs + ((
         "not phase marginalization (the peak-local width picks up an (I1/I0)(|kappa|/D) "
@@ -1934,7 +1969,9 @@ if opts.internal_ile_inner_product == "td-toeplitz":
         gaps=td_gaps, data_highpass=opts.td_highpass,
         glitch_specs=glitch_specs, glitch_sigma=opts.glitch_sigma,
         glitch_basis_files=glitch_basis_files,
-        window_shape=opts.window_shape)
+        window_shape=opts.window_shape,
+        glitch_uprime=opts.glitch_uprime,
+        glitch_sigma_grid_snr=opts._glitch_sigma_grid_snr)
     # Register each detector's (psd, data, event time) so the per-IFO glitch basis can be
     # placed and its sigma_g profiled (G3).  Keyed on id(psd) -- the object Precompute forwards.
     for _inst in data_dict:
@@ -4434,6 +4471,7 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
       # reset to default.  Should not be needed, but weird python scoping error
       manual_avoid_overflow_logarithm = manual_avoid_overflow_logarithm_default 
 
+    _glitch_grid = None
     if opts.vectorized:
         lookupNKDict = {}
         lookupKNDict={}
@@ -4473,6 +4511,15 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                          _comp.rel_err_fro, _comp.rel_err_max))
                 ctUArrayDict[det] = _comp
                 ctVArrayDict[det] = _comp
+        # sigma_g grid (--glitch-sigma grid): one packed (Q', U'(t), V'(t)) set per node for
+        # the glitch detector; the likelihood combines them per sample (_noloop_glitch).
+        _glitch_grid = None
+        if (ile_ip_factory is not None and getattr(ile_ip_factory, "glitch_sigma_grid_active", False)
+                and not opts.zero_likelihood):
+            _gg_off, _gg_det, _gg_sets = ile_ip_factory.glitch_grid_sets(lookupKNDict, rholmArrayDict)
+            _glitch_grid = dict(det=_gg_det, offsets=[float(x) for x in _gg_off], sets=_gg_sets)
+            print("  [G3] sigma_g grid: %d nodes on %s; offsets ln w + Delta_lnZ - Delta_lnZ_active = %s"
+                  % (len(_gg_sets), _gg_det, ", ".join("%.3f" % x for x in _glitch_grid["offsets"])))
         if opts.q_time_pregrid_factor > 1:
             try:
                 _q_transfer = cupy.asarray if opts.gpu and (not xpy_default is np) else None
@@ -4516,6 +4563,10 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                     ctUArrayDict[det] = cupy.asarray(ctUArrayDict[det])
                     ctVArrayDict[det] = cupy.asarray(ctVArrayDict[det])
                 epochDict[det] = cupy.asarray(epochDict[det])
+                if _glitch_grid is not None and det == _glitch_grid["det"]:
+                    for _gs in _glitch_grid["sets"]:
+                        for _gd in _gs:
+                            _gd[det] = cupy.asarray(_gd[det])
                 if _have_cal_crossterms:
                     ctUArrayDict_cal[det] = cupy.asarray(ctUArrayDict_cal[det])
                     ctVArrayDict_cal[det] = cupy.asarray(ctVArrayDict_cal[det])
@@ -4909,6 +4960,25 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
         _glitch_lnL_constant = float(ile_ip_factory.glitch_delta_lnZ_total())
     if _glitch_lnL_constant != 0.0:
         manual_avoid_overflow_logarithm += _glitch_lnL_constant
+    if _glitch_grid is not None and not (opts.time_marginalization and opts.vectorized and opts.gpu):
+        raise ValueError("--glitch-sigma grid is combined per sample only in the NoLoop "
+                         "likelihood (--time-marginalization --vectorized --gpu/--force-xpy)")
+
+    def _noloop_glitch(tvals, P_here, rhoD, ctU, ctV, **kw):
+        """NoLoop likelihood; with --glitch-sigma grid, the prior-weighted logsumexp over the
+        sigma_g nodes, each node with its own Q', U'(t), V'(t) for the glitch detector."""
+        if _glitch_grid is None:
+            return factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+                tvals, P_here, lookupNKDict, rhoD, ctU, ctV, epochDict, **kw)
+        _gd = _glitch_grid["det"]
+        _lnLs = []
+        for _q, _u, _v in _glitch_grid["sets"]:
+            _r2, _u2, _v2 = dict(rhoD), dict(ctU), dict(ctV)
+            _r2[_gd], _u2[_gd], _v2[_gd] = _q[_gd], _u[_gd], _v[_gd]
+            _lnLs.append(factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(
+                tvals, P_here, lookupNKDict, _r2, _u2, _v2, epochDict, **kw))
+        from RIFT.likelihood.td_inner_product import glitch_grid_logsumexp
+        return glitch_grid_logsumexp(_lnLs, _glitch_grid["offsets"], xpy=xpy_default)
 
     if not opts.time_marginalization:
 
@@ -5179,8 +5249,8 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                         freqresponse_data['V_by_pp'], freqresponse_data['epochDict'], Lmax=opts.l_max,
                         time_interp=opts._noloop_time_interp, xpy=xpy_default)
                 else:
-                  lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
-                        P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default,n_cal=n_cal_for_likelihood,
+                  lnL = _noloop_glitch(tvals,
+                        P, rholmArrayDict, ctUArrayDict, ctVArrayDict,Lmax=opts.l_max,xpy=xpy_default,n_cal=n_cal_for_likelihood,
                         cal_method=('fused' if use_fused_calmarg and opts._noloop_time_interp == 'nearest' else 'loop'), cal_log_weights=calibration_log_weights,
                         time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                         ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)  # non-distmarg: default-helper fused kernel (cal_distmarg=None)
@@ -5391,8 +5461,8 @@ def analyze_event(P_list, indx_event, data_dict, psd_dict, fmax, opts,inv_spec_t
                     P.psi= psi_true
                     P.phiref = phi_orb_true
 
-                  lnL = factored_likelihood.DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop(tvals,
-                    P, lookupNKDict, rholmArrayDict, ctUArrayDict, ctVArrayDict,epochDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood,n_cal=n_cal_for_likelihood,
+                  lnL = _noloop_glitch(tvals,
+                    P, rholmArrayDict, ctUArrayDict, ctVArrayDict,Lmax=opts.l_max,xpy=xpy_default, loglikelihood=distmarg_loglikelihood,n_cal=n_cal_for_likelihood,
                     cal_method=('fused' if cal_distmarg_dict is not None and opts._noloop_time_interp == 'nearest' else 'loop'), cal_distmarg=(cal_distmarg_dict if opts._noloop_time_interp == 'nearest' else None), cal_log_weights=calibration_log_weights,
                     time_interp=opts._noloop_time_interp, td_subsample=td_subsample_for_likelihood,
                     ctUArrayDict_cal=ctUArrayDict_cal, ctVArrayDict_cal=ctVArrayDict_cal)
