@@ -2403,6 +2403,9 @@ class _AVNetworkSky:
         self.rotation = coordinates.build_network_frame(
             np.asarray(like.data.detectors[names[0]]["location"]),
             np.asarray(like.data.detectors[names[1]]["location"]), self.gmst)
+        # Keep the small frame on host for final cloud conversion: the retained
+        # population must never return to the GPU after sampling.
+        self.rotation_host = np.asarray(self.rotation)
         self.baseline = tuple(names[:2])
         # One compiled transform per batch shape; eager dispatch of the rotation
         # otherwise dominates the GPU wall time of each likelihood chunk.
@@ -2434,6 +2437,34 @@ class _AVNetworkSky:
 
     def log_likelihood(self, *cols):
         return self.physical.log_likelihood(*self._physical_columns(*cols))
+
+
+def _av_network_to_physical_host(network, theta, eval_chunk):
+    """Convert retained host rows with bounded NumPy geometry, no JAX dispatch.
+
+    Use the same ECEF matrix and angular conventions as network_to_equatorial.
+    Only RA/DEC columns change; all other physical coordinates remain exact.
+    The output stays on host and temporary geometry arrays are bounded by the
+    resolved evaluation chunk. An empty cloud needs no transform.
+    """
+    eval_chunk = int(eval_chunk)
+    if eval_chunk < 1:
+        raise ValueError("network output conversion chunk must be positive")
+    theta = np.asarray(theta)
+    out = theta.copy()
+    for start in range(0, len(theta), eval_chunk):
+        stop = min(start + eval_chunk, len(theta))
+        polar = np.arccos(np.clip(theta[start:stop, network.ra_index], -1., 1.))
+        azimuth = theta[start:stop, network.dec_index]
+        sin_polar = np.sin(polar)
+        vector = np.column_stack((sin_polar * np.cos(azimuth),
+                                  sin_polar * np.sin(azimuth), np.cos(polar)))
+        # Matrix rows are network basis vectors: network -> ECEF is v @ R.
+        ecef = vector @ network.rotation_host
+        out[start:stop, network.ra_index] = np.mod(
+            network.gmst - np.arctan2(-ecef[:, 1], ecef[:, 0]), 2. * np.pi)
+        out[start:stop, network.dec_index] = np.arcsin(np.clip(ecef[:, 2], -1., 1.))
+    return out
 
 
 def _av_sample_bounds(order, d_min, d_max, sample_d_min=None,
@@ -2923,7 +2954,7 @@ def adaptive_volume_sample(like, d_min, d_max, sampler_method="AV",
         log_joint_s_prior = np.asarray(sampler._rvs["log_joint_s_prior"], dtype=float)
         log_weight = out_lnL + log_joint_prior - log_joint_s_prior
     if network is not None:
-        theta = np.asarray(network.to_physical(theta))
+        theta = _av_network_to_physical_host(network, theta, lnL.eval_chunk)
         if not already_fair:
             with np.errstate(divide="ignore"):
                 log_jacobian = np.log(np.maximum(np.cos(theta[:, network.dec_index]), 0.))
