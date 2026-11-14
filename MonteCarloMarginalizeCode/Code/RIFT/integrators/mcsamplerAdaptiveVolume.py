@@ -2079,7 +2079,7 @@ class MCSampler(SamplerOutputMixin, object):
         if bShowEvaluationLog:
             print(" .... mcsampler : providing verbose output ..... ")
 
-        current_log_aggregate = None
+        n_evaluated = 0   # integrand evaluations so far
         eff_samp = 0  # ratio of max weight to sum of weights
         stop_eff_samp = 0
         maxlnL = -np.inf  # max lnL
@@ -2205,12 +2205,8 @@ class MCSampler(SamplerOutputMixin, object):
             # For now: no prior, just duplicate VT algorithm
             log_integrand =lnL  + log_joint_p_prior
 #            log_weights = tempering_exp*lnL + log_joint_p_prior
-            # log aggregate: NOT USED at present, remember the threshold is floating
-            if current_log_aggregate is None:
-              current_log_aggregate = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
-            else:
-              current_log_aggregate = update_log(current_log_aggregate, log_integrand,xpy=xpy,special=xpy_special_default)
-            
+            n_evaluated += len(log_integrand)
+
             loglkl = log_integrand # note we are putting the prior in here
 
             # Admit only FINITE samples above threshold.  A +inf lnL (overflow in a
@@ -2338,7 +2334,7 @@ class MCSampler(SamplerOutputMixin, object):
             if self.d_adaptive > 0:
               self.binunique = dilate_bins(self.binunique, self.nbins, self.indx_adaptive, self.dilate_layers)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
-            self.ntotal = current_log_aggregate[0]
+            self.ntotal = n_evaluated
             # accumulate the binomial variance of this cycle's ln(V) update:
             # Var(ln p_hat) ~= (1-p_hat)/(n p_hat) = (1-nrec/ninj)/nrec.  Cycles reuse
             # surviving samples, so this is an approximate (disclosed) budget rather
@@ -2443,14 +2439,6 @@ class MCSampler(SamplerOutputMixin, object):
         rel_var = rel_var_mc + trunc_p**2
         eff_samp = np.sum(np.exp(log_wt - np.max(log_wt)))
         maxval = np.max(allloglkl)  # max of log
-
-        # Integral value: NOT RELIABLE b/c not just using samples in 
-#        outvals = finalize_log(current_log_aggregate,xpy=xpy)
-#        log_wt_tmp = allloglkl[np.isfinite(allloglkl)]  # remove infinite entries
-#        outvals = init_log(log_wt_tmp)
-#        print(outvals, log_int, maxval, current_log_aggregate)
-#        eff_samp = xpy.exp(  outvals[0]+np.log(len(allloglkl)) - maxval)   # integral value minus floating point, which is maximum
-#        rel_var = np.exp(outvals[1]/2  - outvals[0]  - np.log(self.ntotal)/2 )
 
         # Do a fair draw of points, if option is set. CAST POINTS BACK TO NUMPY, IDEALLY
         # (DESIGN_rvs_naming.md) _rvs is the RETAINED set at this point -- pruned,

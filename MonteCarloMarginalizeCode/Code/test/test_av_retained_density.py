@@ -393,8 +393,9 @@ def test_unique_rows_matches_numpy_row_unique():
 
 def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
     """Everything a seeded AV pass leaves behind, for the paths that find occupied bins:
-    integrate_log cold, from a warm seed, run on to 400 effective samples, with a dilation
-    layer on a thin ring, and the portfolio's update_sampling_prior_selfish."""
+    integrate_log cold, from a warm seed, run on to 400 effective samples past one empty
+    chunk, with a dilation layer on a thin ring, and the portfolio's
+    update_sampling_prior_selfish."""
     np.random.seed(seed)
     names = ['x%d' % i for i in range(ndim)]
     s = mcsamplerAV.MCSampler(n_chunk=n_chunk)
@@ -408,6 +409,8 @@ def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
     def lnF(*xs):
         widths.append(np.array(s.dx))
         Y = np.array(xs).T - 0.5
+        if mode == 'long' and len(widths) == 20:     # one chunk with no finite value
+            return np.full(len(Y), -np.inf)
         if mode == 'dilate':         # few points per bin, so one point can open a bin
             return -0.5 * ((np.hypot(Y[:, 0], Y[:, 1]) - 0.3) / 0.002)**2 - 0.5 * np.sum((Y[:, 2:] / 0.05)**2, axis=1)
         return -0.5 * np.sum(Y**2, axis=1) / sig**2
@@ -426,7 +429,8 @@ def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
                               dilate_layers=int(mode == 'dilate'))
         stats = out[3]['av_stopping_statistics']
         state = dict(lnZ=out[0], ln_var=out[1], n_eff=out[2], n_drawn=stats['total_draws'],
-                     n_retained=stats['retained_rows'], unseen=out[3]['unseen_frac_final'],
+                     n_retained=stats['retained_rows'], unseen=out[3]['unseen_frac_final'], ntotal=s.ntotal,
+                     n_empty=out[3]['n_empty_cycles'],
                      X=np.column_stack([s._rvs[name] for name in names]))
         state.update({'rvs ' + str(k): v for k, v in s._rvs.items()})
     state.update(binunique=s.binunique, ninbin=s.ninbin, dx=s.dx,
@@ -451,6 +455,8 @@ def test_av_pass_identical_to_reference_binning(mode, monkeypatch):
         got, want = np.asarray(keyed[key]), np.asarray(rows[key])
         assert got.dtype == want.dtype, key
         np.testing.assert_array_equal(got, want, err_msg=key)
+    assert mode == 'selfish' or keyed['ntotal'] == keyed['n_drawn'] > 0
+    assert mode == 'selfish' or keyed['n_empty'] == (mode == 'long'), 'the empty chunk moved'
     if mode in ('cold', 'warm', 'long'):      # no dilation: the bins are those of the retained points
         np.testing.assert_array_equal(keyed['binunique'],
                                       np.unique((keyed['X'] / keyed['dx']).astype(int), axis=0))
