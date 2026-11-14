@@ -101,6 +101,10 @@
       "decision": "NA",
       "reason": "Calibration Monte-Carlo error probe; see the --calibration-* reason."
     },
+    "FUNC:analyze_event._noloop_glitch": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
     "FUNC:dLofz": {
       "decision": "PORT",
       "reason": "Cosmology helpers behind --d-prior-redshift. Planck15 via the framework helper; the interpolation grid still needs a z ceiling that covers MBHB (z~20), which is a gridding choice rather than a physics decision."
@@ -362,6 +366,14 @@
       "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
     },
     "OPTION:--glitch-sigma": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--glitch-sigma-grid-snr": {
+      "decision": "PHYSICS",
+      "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
+    },
+    "OPTION:--glitch-uprime": {
       "decision": "PHYSICS",
       "reason": "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not wired into the LISA driver. Porting requires a TDI-channel covariance, boundary and response-model decision with LISA-specific validation; copying the ground-based option passthrough would not establish that model."
     },
