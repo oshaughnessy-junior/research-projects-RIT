@@ -87,3 +87,73 @@ def test_import_skipped_file_remains_zero_for_shell_floor(tmp_path):
     result,output=invoke(tmp_path,['test_ok.py','test_skip.py'])
     assert result.returncode==0,result.stdout+result.stderr
     assert output.read_text()=='test_ok.py\t1\ntest_skip.py\t0\n'
+
+
+@pytest.mark.parametrize("known_skip,new_skip,invalid_metadata,expected_rc", [
+    (False, False, None, 0), (True, False, None, 0),
+    (False, True, None, 1), (True, True, None, 1),
+    (True, False, "reason", 1), (True, False, "classname", 1),
+])
+def test_outcome_allowance_requires_named_actual_skip(
+        tmp_path, known_skip, new_skip, invalid_metadata, expected_rc):
+    """Synthetic accounting replay: subtest passes cannot fund an ordinary skip.
+
+    The scientific suites are not executed. The real shell gate consumes synthetic
+    collection counts and JUnit, while its own XML parser and every guard run.
+    """
+    import re
+    import xml.etree.ElementTree as ET
+
+    script = Path(__file__).with_name("test-core-units.sh").resolve()
+    source = script.read_text()
+    value = lambda name: int(re.search(r"^"+name+r"=(\d+)", source, re.MULTILINE)[1])
+    tests, base_skips = value("EXPECTED_TESTS"), value("MAX_SKIPPED")
+    total = max(tests, value("EXPECTED_PASSED") + base_skips + int(known_skip)) + 3
+    xml = tmp_path/"synthetic-outcomes.xml"
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite", tests=str(total), failures="0", errors="0",
+                          skipped=str(base_skips+int(known_skip)+int(new_skip)))
+    if known_skip:
+        case = ET.SubElement(suite, "testcase",
+            classname="MonteCarloMarginalizeCode.Code.test.test_eos_posterior_tempering_kwarg",
+            name="test_the_argparse_spelling_is_inert_at_the_sampler")
+        if invalid_metadata == "classname":
+            case.set("classname", "synthetic.not_test_eos_posterior_tempering_kwarg")
+        reason = "synthetic wrong reason" if invalid_metadata == "reason" else (
+            "cupy importable: run is not bit-reproducible under numpy seeding")
+        ET.SubElement(case, "skipped", type="pytest.skip", message=reason)
+    ET.ElementTree(root).write(xml)
+    stub = tmp_path/"accounting-python"
+    stub.write_text("#!"+sys.executable+"\n"+r'''
+import os,sys,shutil
+from pathlib import Path
+args=sys.argv[1:]
+if args[0]=='-c':sys.exit(0)
+if args[0]=='-':os.execv(sys.executable,[sys.executable,'-I','-S',*args])
+if args[0].endswith('core_unit_collection.py'):
+    files=args[2:]
+    floors={'test_lalsim_eos_compat.py':49,'test_waveform_sample_rejection.py':19,
+            'test_posterior_compression.py':41,'test_raw_distance_contract.py':44,
+            'test_auxiliary_grid_transfers.py':18,'test_gmm_sample_matches_score.py':17,
+            'test_eos_affine_central.py':49,'test_nmb_sequence_branches.py':16}
+    counts=[floors.get(Path(name).name,1) for name in files]
+    counts[-1]+=int(os.environ['SYNTHETIC_TEST_COUNT'])-sum(counts)
+    Path(args[1]).write_text(''.join(name+'\t'+str(n)+'\n' for name,n in zip(files,counts)))
+    sys.exit(0)
+if args[:2]==['-m','pytest']:
+    path=next(a.split('=',1)[1] for a in args if a.startswith('--junit-xml='))
+    shutil.copyfile(os.environ['SYNTHETIC_JUNIT'],path)
+    sys.exit(0)
+raise RuntimeError('unexpected accounting invocation')
+''')
+    stub.chmod(0o755)
+    env = dict(os.environ, RIFT_COREUNIT_PYTHON=str(stub), RIFT_COREUNIT_WORKERS="1",
+               SYNTHETIC_JUNIT=str(xml), SYNTHETIC_TEST_COUNT=str(tests),
+               PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    result = subprocess.run(["bash", str(script)], env=env, capture_output=True,
+                            text=True, timeout=120)
+    assert result.returncode == expected_rc, result.stdout+result.stderr
+    if expected_rc:
+        assert "SKIPPED, at most" in result.stderr
+    else:
+        assert "core unit gate: PASS" in result.stdout

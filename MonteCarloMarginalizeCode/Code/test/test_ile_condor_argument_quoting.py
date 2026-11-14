@@ -102,9 +102,11 @@ def test_generic_slurm_script_preserves_literal_argv_without_condor_escaping(tmp
     script = tmp_path / 'ILE.sbatch'
     dag_utils_generic.SlurmBackend().emit_job(job, str(script))
     completed = subprocess.run(['bash', str(script)], capture_output=True, text=True,
-                               env={'PATH': '/usr/bin:/bin', 'SLURM_VAR_EVENT': '7'}, timeout=10)
+                               env={'PATH': '/usr/bin:/bin', 'SLURM_VAR_MACROEVENT': '7',
+                                    'SLURM_VAR_EVENT': '99'}, timeout=10)
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert json.loads(recorded.read_text()) == shlex.split(command) + ['--event=7']
+    expected = [token.replace('$(macroevent)', '7') for token in shlex.split(command)]
+    assert json.loads(recorded.read_text()) == expected + ['--event=7']
 
 
 @pytest.mark.parametrize('command', CASES)

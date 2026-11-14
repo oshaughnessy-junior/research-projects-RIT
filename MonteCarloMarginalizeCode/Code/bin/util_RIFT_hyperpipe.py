@@ -78,6 +78,7 @@ prints it.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import shutil
 import shlex
@@ -88,6 +89,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from RIFT.hyperpipe import config as hyper_config
+from RIFT.hyperpipe.execution_contract import normalize_posterior_commands
 from RIFT.hyperpipe.coords import coord_spec_from_config_section
 from RIFT.hyperpipe.marg_list import assemble_marg_list
 
@@ -445,6 +447,15 @@ def my_app(cfg: DictConfig) -> None:
         f"--test-args {args_test_path}",
         f"--test-exe {test_exe}",
     ]
+    post_commands = _cfg_get(cfg["post"], "condor-commands", {})
+    if OmegaConf.is_config(post_commands):
+        post_commands = OmegaConf.to_container(post_commands, resolve=True)
+    post_commands = normalize_posterior_commands(post_commands)
+    if post_commands:
+        post_commands_path = os.path.join(run_dir, "eos_post_condor_commands.json")
+        with open(post_commands_path, "w") as stream:
+            json.dump(post_commands, stream, indent=2)
+        cmd_parts.append("--eos-post-condor-commands " + shlex.quote(post_commands_path))
     # one --event-file per marg entry (critical for multi-event!)
     for ev in marg.event_files:
         cmd_parts.append(f"--event-file {ev}")

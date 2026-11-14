@@ -18,6 +18,7 @@ pytest.importorskip('gwpy')
 import numpy as np
 from RIFT.calmarg import rift_source
 from RIFT.physics import GWSignal
+from RIFT.misc import dag_utils_generic
 
 BIN = Path(__file__).resolve().parents[1] / 'bin'
 
@@ -31,7 +32,8 @@ def calibration_cli_from_manual(manual, use_gwsignal=True):
     opts = SimpleNamespace(calibration_reweighting=True, use_gwsignal=use_gwsignal,
                            assume_eccentric=False, manual_extra_ile_args=manual, use_ini=False,
                            internal_mitigate_fd_J_frame='L_frame', calibration_reweighting_initial_extra_args=None)
-    scope = {'opts': opts, 'cmd': '', 'argparse': argparse, 'shlex': shlex, 'ast': ast}
+    scope = {'opts': opts, 'cmd': '', 'argparse': argparse, 'shlex': shlex, 'ast': ast,
+             'dag_utils_generic': dag_utils_generic}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(BIN / 'util_RIFT_pseudo_pipe.py'), 'exec'), scope)
     token, = shlex.split(scope['cmd'])
     flag, value = token.split('=', 1)

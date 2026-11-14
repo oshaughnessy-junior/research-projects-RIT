@@ -286,6 +286,7 @@ def _driver_export_loop(eos, m, u=None, central=False, no_matter1=False, no_matt
     ns = dict(np=np, lal=lal, samples=samples, indx_list=np.arange(len(m)), low_level_coord_names=["m1", "m2"],
               mass_in_eos_support=mass_in_eos_support, dat_logL=np.zeros(len(m)),
               P=P, my_eos=eos, downselect_dict={}, P_list=[], kept_indx_list=[], lnL_list=[], eos_branch_list=[],
+              _extra_fit_names=[], _extra_out=[],
               eos_affine=eos_affine, eos_affine_central=central, source_redshift=0.,
               eos_affine_no_matter1=no_matter1 or assume_eos_but_primary_bh,
               eos_affine_m_max_all=eos_affine.all_branch_max_mass_msun(eos) if central else None,
