@@ -305,3 +305,44 @@ def test_dilation_recovers_thin_ring_evidence():
     on = np.array([_thin_ring_lnZ_error(s, 1) for s in seeds])
     assert off.mean() < -0.1, "undilated lnZ - exact = {}".format(off)
     assert abs(on.mean()) < 0.1, "dilated lnZ - exact = {}".format(on)
+
+
+def _av_lnZ_and_points(lnF, lo, hi, seed, n_chunk, nmax):
+    """AV on the box [lo, hi]^2 with a constant prior that does NOT vanish outside the box."""
+    np.random.seed(seed)
+    s = mcsamplerAV.MCSampler(n_chunk=n_chunk)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    for name in ('x', 'y'):
+        s.add_parameter(name, pdf=None, left_limit=lo, right_limit=hi, adaptive_sampling=True,
+                        prior_pdf=lambda x, w=hi - lo: np.full(np.shape(x), 1.0 / w))
+    out = s.integrate_log(lnF, 'x', 'y', nmax=nmax, neff=1e12, n=n_chunk,
+                          no_protect_names=True, verbose=False)
+    X = np.column_stack([s._rvs['x'], s._rvs['y']])
+    return out[0], X
+
+
+def test_draws_outside_the_limits_are_not_retained():
+    """Gaussian centred 0.01 inside the upper corner of the unit square, so 31% of its mass in
+    each axis lies past the limit.  Bins overhang the box; out-of-box draws used to be retained
+    and their bins seeded the next grid: lnZ came out +0.74, the untruncated Gaussian.  Exact: erfs."""
+    from scipy.special import erf
+    sig, mu = 0.02, 0.99
+    one_axis = 0.5 * (erf((1 - mu) / (np.sqrt(2) * sig)) + erf(mu / (np.sqrt(2) * sig)))
+    exact = 2 * np.log(np.sqrt(2 * np.pi) * sig * one_axis)
+    lnF = lambda x, y: -0.5 * ((np.asarray(x) - mu)**2 + (np.asarray(y) - mu)**2) / sig**2
+    for seed in (1, 2):
+        lnZ, X = _av_lnZ_and_points(lnF, 0.0, 1.0, seed, n_chunk=4000, nmax=200000)
+        assert np.all((X >= 0.0) & (X <= 1.0)), "retained point outside the limits"
+        assert abs(lnZ - exact) < 0.02, "lnZ - exact = {:.4f}".format(lnZ - exact)
+
+
+def test_rosenbrock_ridge_leaving_the_box():
+    """2-D Rosenbrock on [-5,5]^2: the ridge y = x^2 exits at y = 5 where lnL ~ -1.5.
+    Quadrature gives lnZ = -5.804132; without the box the integral is ln(pi/1000) = -5.7630.
+    At this budget the unfixed sampler read +0.016 to +0.024 (6 seeds), the fix within 0.005."""
+    exact = -5.804132363794471
+    lnF = lambda x, y: -((1 - np.asarray(x))**2 + 100 * (np.asarray(y) - np.asarray(x)**2)**2)
+    lnZ, X = _av_lnZ_and_points(lnF, -5.0, 5.0, 1, n_chunk=10000, nmax=200000)
+    assert np.all((X >= -5.0) & (X <= 5.0)), "retained point outside the limits"
+    assert abs(lnZ - exact) < 0.01, "lnZ - exact = {:.4f}".format(lnZ - exact)

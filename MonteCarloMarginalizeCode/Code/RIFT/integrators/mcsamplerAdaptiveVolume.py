@@ -2121,6 +2121,17 @@ class MCSampler(SamplerOutputMixin, object):
             ntotal_true += len(rv)
             _bu = np.asarray(identity_convert(self.binunique))
             draw_grids.append((np.array(identity_convert(self.dx)), _BinSet(_bu[:, _keep_dims], n_bins=len(_bu)), len(rv)))
+            # nbins is not an integer, so the last bin on an axis overhangs the parameter limits.
+            # A draw outside the limits has integrand zero: it counts in n_drawn above but is
+            # neither evaluated nor retained.  Retained, it added mass from outside the box and
+            # seeded out-of-box bins, so the live set crept outward cycle by cycle.
+            # Evidence: RIFT_roboto_paper analyses/av_rosenbrock_bias_20261114.
+            _rv_h = np.asarray(identity_convert(rv))
+            _inbox = np.all((_rv_h[:, _keep_dims] >= self.my_ranges[_keep_dims, 0])
+                            & (_rv_h[:, _keep_dims] <= self.my_ranges[_keep_dims, 1]), axis=1)
+            if not np.all(_inbox):
+              rv = _rv_h[_inbox]
+              log_joint_p_prior = np.asarray(identity_convert(log_joint_p_prior))[_inbox]
             if cupy_ok:
               rv = identity_convert_togpu(rv) # send random numbers to GPU : ugh
               log_joint_p_prior = identity_convert_togpu(log_joint_p_prior)    # send to GPU if required. Don't waste memory reassignment otherwise
