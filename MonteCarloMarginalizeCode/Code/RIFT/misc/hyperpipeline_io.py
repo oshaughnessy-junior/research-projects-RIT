@@ -24,6 +24,12 @@ value is truthy (``1``, ``true``, ``yes``, case-insensitive), the new code
 paths are taken.  When the variable is unset or falsy, the executables behave
 exactly as before -- existing pipelines are unaffected.
 
+Grids written by :func:`write_grid_from_P_list` carry a
+``RIFT_HYPERPIPELINE_META`` line before the column header.  Readers older than
+that line take it for the header, so workers must run RIFT at least as new as
+the DAG builder; an older ILE reads such a grid as default templates and
+exits 0.
+
 Default columns
 ---------------
 

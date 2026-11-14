@@ -55,3 +55,15 @@ The Hyperpipe-style format is a specialized version of the labeled ASCII format 
 - **Required Fields**: The first two fields are always ``lnL`` (log-likelihood) and ``sigma_lnL`` (uncertainty in log-likelihood).
 
 This format is critical for pipelines where downstream tools expect a fixed schema regardless of the specific parameters being analyzed.
+
+**Activation and version skew:**
+The format is opt-in: ILE writes it and CIP reads it only when the environment variable ``RIFT_HYPERPIPELINE_FORMAT`` is set to ``1``.
+Files start with the line ``# RIFT_HYPERPIPELINE_V1``.
+Grids written by CIP and by the Asimov builder add a second line, ``# RIFT_HYPERPIPELINE_META ...``, that records the waveform settings (``ampO``, ``fmin``, ``fref`` and others) before the column header.
+
+.. warning::
+
+   With ``RIFT_HYPERPIPELINE_FORMAT=1``, every ILE and CIP job must run a RIFT version at least as new as the one that built the DAG.
+   RIFT releases before the ``RIFT_HYPERPIPELINE_META`` line was added take that line for the column header.
+   Such an ILE reads the grid as default templates, fails every point, and still exits 0.
+   Pin the worker container or code tarball to the builder's version.
