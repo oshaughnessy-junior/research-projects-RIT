@@ -74,14 +74,24 @@ Independent Gaussian coefficients can be integrated analytically with Woodbury
 identities. Glitch bases require the full segment; combining them with TD cuts,
 gaps or shortened ACF duration is refused. Duplicate basis specifications and
 requests for detectors without data are also refused. Multiple disturbance blocks retain cross-Gram terms within a detector.
-The default scale is empirically profiled, not integrated under a hyperprior.
+The default scale is empirically profiled, using the analysed data.
+`--glitch-sigma grid --glitch-sigma-grid-snr LO,HI,K` instead integrates it under
+a log-uniform prior on the glitch SNR scale, sigma_g sqrt(tr(Lambda0 G)), with K
+trapezoid nodes in ln sigma_g. The per-sample likelihood is the prior-weighted
+logsumexp over nodes of lnL(sigma_k) + Delta lnZ(sigma_k). Because Q is linear in
+the data, each node's Q' comes from the same beta series as U'(t), so the grid adds
+r x r algebra and K NoLoop evaluations per sample, not K Precomputes. It requires
+`--glitch-uprime time-indexed` and one glitch detector.
 
-The current Precompute self-overlaps are scalar values at the nominal geocenter
-event, with template epochs translated into the detector data frame. A localized
-basis can make them arrival-time dependent; endpoint diagnostics do not bound
-that effect. Posterior coverage and precision evidences require validation of this
-approximation or time-indexed self terms. A visually accurate reconstruction does
-not establish signal preservation. This PR exposes the zero-mean Gaussian CLI;
+By default (`--glitch-uprime reference`) the self-overlap correction is one value
+per intrinsic point, at the template's storage placement. A localized basis makes it
+arrival-time dependent, and the storage-frame overlap check can miss the overlap at
+arrival. `--glitch-uprime time-indexed` computes beta_lm(t)_j = <h_lm(t)|B_j> with
+the same overlap as Q and hands NoLoop U'(t) = U - beta(t)^T M^-1 conj(beta(t)) (and
+V'(t)) on the Q grid. As with td-gs, time-indexed norms need explicit orbital-phase
+sampling (a distance-only marginalization table), the NoLoop flags and the
+`nearest` or `cubic` stencil; other combinations are refused at startup. A visually
+accurate reconstruction does not establish signal preservation. This PR exposes the zero-mean Gaussian CLI;
 population-prior helpers are tested at library level, while two-pass sign-mixture
 sampling and its output-bookkeeping integration are deferred.
 

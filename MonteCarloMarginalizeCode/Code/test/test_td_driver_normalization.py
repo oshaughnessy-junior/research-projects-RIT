@@ -18,10 +18,13 @@ def test_glitch_constant_in_integral_and_saved_likelihood(constant, log_return):
     start = next(i for i, n in enumerate(analyze.body) if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == '_glitch_lnL_constant' for t in n.targets))
     init = analyze.body[start:start+3]
+    # The callbacks reach NoLoop through _noloop_glitch (sigma_g grid combination).
+    helper = next(n for n in analyze.body if isinstance(n, ast.FunctionDef)
+                  and n.name == '_noloop_glitch')
     callback = next(n for n in ast.walk(analyze) if isinstance(n, ast.FunctionDef)
                     and n.name == 'likelihood_function' and len(n.args.args) == 6
-                    and any(isinstance(x, ast.Attribute) and x.attr ==
-                    'DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop' for x in ast.walk(n)))
+                    and any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
+                            and x.func.id == '_noloop_glitch' for x in ast.walk(n)))
     raw = np.array([-2., -1.])
     flags = ['declination_cosine_sampler', 'inclination_cosine_sampler',
              'd_prior_redshift', 'internal_reparam_dl_incl',
@@ -40,8 +43,9 @@ def test_glitch_constant_in_integral_and_saved_likelihood(constant, log_return):
         ctUArrayDict_cal=None, ctVArrayDict_cal=None, supplemental_ln_likelihood=None,
         return_lnL=log_return, manual_avoid_overflow_logarithm=17.,
         identity_convert_lnL=lambda x:x,
-        ile_ip_factory=SimpleNamespace(glitch_delta_lnZ_total=lambda: constant))
-    code = ast.fix_missing_locations(ast.Module(body=[*init, callback], type_ignores=[]))
+        ile_ip_factory=SimpleNamespace(glitch_delta_lnZ_total=lambda: constant),
+        _glitch_grid=None)
+    code = ast.fix_missing_locations(ast.Module(body=[*init, helper, callback], type_ignores=[]))
     exec(compile(code, str(source), 'exec'), namespace)
     x = np.array([0.2, 0.3])
     value = namespace['likelihood_function'](x, x, x, x, x, np.array([100., 200.]))
@@ -52,6 +56,21 @@ def test_glitch_constant_in_integral_and_saved_likelihood(constant, log_return):
     # This is the same offset restoration used by evidence and sample-export writers.
     restored = sampler_log + namespace['manual_avoid_overflow_logarithm']
     np.testing.assert_allclose(restored, raw+constant, atol=1e-12, rtol=0)
+    # sigma_g grid: two nodes with the same per-node lnL and ln-offsets ln(0.25), ln(0.75)
+    # combine to the single-node value; nodes are swapped into the glitch detector only.
+    seen = []
+
+    def noloop(*a, **kw):
+        seen.append(a[3]["L1"])
+        return raw.copy()
+    namespace["factored_likelihood"].DiscreteFactoredLogLikelihoodViaArrayVectorNoLoop = noloop
+    namespace["_glitch_grid"] = dict(det="L1", offsets=[np.log(.25), np.log(.75)],
+                                     sets=[({"L1": "q0"}, {"L1": 0}, {"L1": 0}),
+                                           ({"L1": "q1"}, {"L1": 0}, {"L1": 0})])
+    value = namespace['likelihood_function'](x, x, x, x, x, np.array([100., 200.]))
+    sampler_log = value if log_return else np.log(value)
+    np.testing.assert_allclose(sampler_log, raw-17., atol=1e-12, rtol=0)
+    assert seen == ["q0", "q1"]
 
 
 @pytest.mark.parametrize('constant', [0.0, -30.0, 5.0, 1000.0])

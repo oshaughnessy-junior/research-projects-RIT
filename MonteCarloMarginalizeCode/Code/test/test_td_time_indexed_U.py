@@ -543,8 +543,9 @@ def test_tdgs_phase_table_refused_at_driver_startup(td, phase):
     tree = ast.parse((Path(__file__).resolve().parents[1] / "bin/integrate_likelihood_extrinsic_batchmode").read_text())
     node = next(n for n in tree.body if isinstance(n, ast.If) and
                 isinstance(n.test, ast.BoolOp) and
-                {v.id for v in n.test.values if isinstance(v, ast.Name)} == {"_td_gs_requested", "_tq_phase_marg"})
-    scope = dict(_td_gs_requested=td, _tq_phase_marg=phase)
+                {v.id for v in n.test.values if isinstance(v, ast.Name)} == {"_time_indexed_uv_requested", "_tq_phase_marg"})
+    scope = dict(_time_indexed_uv_requested=td, _tq_phase_marg=phase,
+                 _time_indexed_uv_source="--internal-ile-inner-product td-gs")
     compiled = compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), "driver_phase_guard", "exec")
     if td and phase:
         with pytest.raises(ValueError, match="explicit orbital-phase sampling"):
