@@ -151,6 +151,17 @@ A typical parameter grid file might look like this:</p>
 - <strong>Strict Column Order</strong>: Enforces a consistent column order to prevent randomization during data processing.
 - <strong>Required Fields</strong>: The first two fields are always <code class="docutils literal notranslate"><span class="pre">lnL</span></code> (log-likelihood) and <code class="docutils literal notranslate"><span class="pre">sigma_lnL</span></code> (uncertainty in log-likelihood).</p>
 <p>This format is critical for pipelines where downstream tools expect a fixed schema regardless of the specific parameters being analyzed.</p>
+<p><strong>Activation and version skew:</strong>
+The format is opt-in: ILE writes it and CIP reads it only when the environment variable <code class="docutils literal notranslate"><span class="pre">RIFT_HYPERPIPELINE_FORMAT</span></code> is set to <code class="docutils literal notranslate"><span class="pre">1</span></code>.
+Files start with the line <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">RIFT_HYPERPIPELINE_V1</span></code>.
+Grids written by CIP and by the Asimov builder add a second line, <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">RIFT_HYPERPIPELINE_META</span> <span class="pre">...</span></code>, that records the waveform settings (<code class="docutils literal notranslate"><span class="pre">ampO</span></code>, <code class="docutils literal notranslate"><span class="pre">fmin</span></code>, <code class="docutils literal notranslate"><span class="pre">fref</span></code> and others) before the column header.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">RIFT_HYPERPIPELINE_FORMAT=1</span></code>, every ILE and CIP job must run a RIFT version at least as new as the one that built the DAG.
+RIFT releases before the <code class="docutils literal notranslate"><span class="pre">RIFT_HYPERPIPELINE_META</span></code> line was added take that line for the column header.
+Such an ILE reads the grid as default templates, fails every point, and still exits 0.
+Pin the worker container or code tarball to the builder’s version.</p>
+</div>
 </section>
 </section>
 
