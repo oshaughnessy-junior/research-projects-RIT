@@ -2132,6 +2132,14 @@ class MCSampler(SamplerOutputMixin, object):
             if not np.all(_inbox):
               rv = _rv_h[_inbox]
               log_joint_p_prior = np.asarray(identity_convert(log_joint_p_prior))[_inbox]
+            if len(rv) == 0:
+              # every draw fell in a bin's out-of-box slice: nothing to evaluate, and the
+              # likelihood and log aggregate must not see a zero-length chunk.  The draws still
+              # count (draw_grids, ntotal_true), so nmax ends the loop.
+              cycle += 1
+              if cycle > 1000:
+                break
+              continue
             if cupy_ok:
               rv = identity_convert_togpu(rv) # send random numbers to GPU : ugh
               log_joint_p_prior = identity_convert_togpu(log_joint_p_prior)    # send to GPU if required. Don't waste memory reassignment otherwise
