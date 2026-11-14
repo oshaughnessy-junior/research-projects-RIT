@@ -323,6 +323,18 @@ if [ "${_NFCONTRACT_PASSED:-0}" -ne "$_NFCONTRACT_EXPECTED" ]; then
     exit 1
 fi
 
+# AV2 (mcsamplerVaraha2, opt-in --sampler-method AV2): known answer, normalized member density,
+# stall reported as collapse, pinned parameter, portfolio member.  ~15 s.
+_AV2_TESTS=MonteCarloMarginalizeCode/Code/test/integrators/test_AV2_varaha2.py
+_AV2_EXPECTED=5
+_AV2_OUT=$(python -m pytest -q "$_AV2_TESTS" 2>&1 | tee >(cat >&2)) \
+    || { echo "AV2 gate FAILED" >&2; exit 1; }
+_AV2_PASSED=$(printf '%s\n' "$_AV2_OUT" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '^[0-9]+')
+if [ "${_AV2_PASSED:-0}" -ne "$_AV2_EXPECTED" ]; then
+    echo "AV2 gate: expected $_AV2_EXPECTED passed, got ${_AV2_PASSED:-0}" >&2
+    exit 1
+fi
+
 # Supplementary-likelihood plugin hook: the NAL reader/evaluator (pure numpy, no data) and the
 # static guard on the drivers' prepare-hook wiring, which is what makes the plugin receive the
 # SAMPLING basis at all. Both are seconds-long and protect a silent-wrong-answer path.
