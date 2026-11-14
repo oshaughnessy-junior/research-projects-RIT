@@ -21,6 +21,7 @@ arch:
 
 post:
   exe: null
+  condor-commands: {}
   coord-module: null
   coords-fit: "x y z"
   coords-sample: "x:[-8,8] y:[-8,8] z:[-8,8]"

@@ -60,6 +60,7 @@ arch:
 
 post:
   # Final posterior-construction stage (CIP-family executable).
+  condor-commands: {}            # explicit shared posterior/prior runtime policy
   exe: null                     # default = `which util_ConstructEOSPosterior.py`
   coord-module: null            # importable module name, e.g. "rift_default"
   coords-fit: ""                # "x y z"

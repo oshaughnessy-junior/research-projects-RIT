@@ -52,8 +52,16 @@ RULES = [
      "Frequency spacing of a loaded data series, used by the td-gs (finite-covariance "
      "time-domain) set-up. The LISA driver has no td-gs code path; see the TD option "
      "reason below."),
+    # Extra-parameter waveform-transform seam (RIFT/likelihood/hlm_transform.py).
+    (r"^(OPTION:--supplementary-waveform-transform-.*|FUNC:_waveform_transform_extra_rows(\._is_known)?)$", "PHYSICS",
+     "Extra-parameter seam: a plugin transfer function F(f; lambda, P) multiplies the "
+     "ground-based h_lm banks inside PrecomputeLikelihoodTerms, with lambda read from "
+     "declared Hyperpipe grid columns and echoed into the output row. The LISA driver has "
+     "its own precompute and TDI response; whether F acts before or after the response, "
+     "and whether a lensing-type F is response-independent for LISA, is a physics decision "
+     "to make with LISA-specific validation, not a passthrough to copy."),
     # Ground-based TD operators: only this explicitly reviewed option set.
-    (r"^OPTION:--(internal-ile-inner-product|td-subsample|td-calibration-correction-type|td-calibration-fir-half-length|td-highpass|td-u-svd-tol|td-mref|td-piece|td-piece-ifo|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma)$", "PHYSICS",
+    (r"^(OPTION:--(internal-ile-inner-product|td-subsample|td-calibration-correction-type|td-calibration-fir-half-length|td-highpass|td-u-svd-tol|td-mref|td-piece|td-piece-ifo|td-ifo-time-offset|td-acf-file|td-acf-cond|td-dense-max-n|td-u-stride|td-u-method|td-whiteness-check|td-solver|td-acf-duration|td-analysis-start|td-analysis-end|td-gap|glitch-basis|glitch-basis-file|glitch-sigma|glitch-sigma-grid-snr|glitch-uprime)|FUNC:analyze_event\._noloop_glitch)$", "PHYSICS",
      "The ground-based Toeplitz/cropped-precision and Gaussian-glitch factory is not "
      "wired into the LISA driver. Porting requires a TDI-channel covariance, boundary "
      "and response-model decision with LISA-specific validation; copying the "
@@ -491,6 +499,15 @@ RULES = [
     (r"^OPTION:--check-good-enough$", "PORT",
      "Early-exit when the pipeline has written an 'ile_good_enough' sentinel. Pipeline "
      "plumbing, detector-agnostic."),
+    (r"^OPTION:--zero-likelihood-data-free$", "PORT",
+     "Explicit indexed-grid validation mode layered on --zero-likelihood. LISA already "
+     "supports --zero-likelihood and --sim-grid, so the same data-free pipeline gate is "
+     "applicable, but should be ported with a LISA end-to-end consumer rather than as an "
+     "untested parser-only option."),
+    (r"^FUNC:(_load_hyperpipeline_io|_run_data_free_early_exit)$", "PORT",
+     "Implementation helpers for --zero-likelihood-data-free. They are detector-neutral "
+     "indexed-grid and output plumbing and therefore travel with that option when its "
+     "LISA end-to-end consumer is ported."),
     (r"^OPTION:--random-event$", "PORT",
      "Pick a random event from the input file. Detector-agnostic; flagged dangerous in "
      "its own help text for oversampling reasons that apply equally to LISA."),

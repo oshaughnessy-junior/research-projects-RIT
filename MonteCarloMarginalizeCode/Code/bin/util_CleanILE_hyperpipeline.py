@@ -65,6 +65,9 @@ def main(argv=None):
                         help="Decimal-place precision used when grouping "
                              "duplicate intrinsic rows (default 5, mirrors "
                              "util_CleanILE).")
+    parser.add_argument("--preserve-intrinsic-values", action="store_true",
+                        help="Group by exact parsed intrinsic values, without decimal rounding. "
+                             "For event factors evaluated on one shared grid.")
     parser.add_argument("--no-consolidate", action="store_true",
                         help="Skip the per-key weighted averaging; just "
                              "concatenate, drop bad-sigma rows, sort by lnL "
@@ -99,7 +102,7 @@ def main(argv=None):
     else:
         arr, columns = hpio.consolidate(arr, columns,
                                         sigma_cut=args.sigma_cut,
-                                        digits=args.digits)
+                                        digits=None if args.preserve_intrinsic_values else args.digits)
 
     # Materialise as a plain (N,K) float matrix for write_table.
     import numpy as _np

@@ -270,14 +270,12 @@ def test_dag_chains_levels_per_sim(tmp_path):
                             run_queue_kind="condor")
     archive = Archive(base_location=base, manifest=manifest,
                       generator_spec=_gen)
-    rq = DualCondorRunQueue()
+    rq = DualCondorRunQueue(submit_mode="embed")
     n1 = archive.register(0.1, target_level=2)
     n2 = archive.register(0.2, target_level=3)
     rq.submit(archive, [n1, n2])
-    # *.dag, not iterdir(): where condor_submit_dag IS installed it runs and
-    # drops four companion files beside the DAG (.condor.sub, .dagman.log,
-    # .lib.err, .lib.out), so a directory count is 5 there and 1 on a machine
-    # without HTCondor. This test was green only on the latter.
+    # This test inspects graph construction; embed mode leaves real dispatch
+    # to the caller even when HTCondor is installed on the test host.
     dags = sorted((base / "run_queue" / "dags").glob("*.dag"))
     assert len(dags) == 1, [p.name for p in
                             (base / "run_queue" / "dags").iterdir()]

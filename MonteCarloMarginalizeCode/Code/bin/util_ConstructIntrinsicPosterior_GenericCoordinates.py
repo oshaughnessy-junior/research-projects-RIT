@@ -24,6 +24,8 @@ from RIFT.precision import RiftFloat
 
 import argparse
 import sys
+import os
+import importlib.util
 import numpy as np
 import numpy.lib.recfunctions
 import scipy
@@ -364,6 +366,14 @@ parser.add_argument("--supplementary-likelihood-factor-code", default=None,type=
 parser.add_argument("--supplementary-likelihood-factor-function", default=None,type=str,help="With above option, specifies the specific function used as an external likelihood. EXPERTS ONLY")
 parser.add_argument("--supplementary-likelihood-factor-ini", default=None,type=str,help="With above option, specifies an ini file that is parsed (here) and passed to the preparation code, called when the module is first loaded, to configure the module. EXPERTS ONLY")
 parser.add_argument("--supplementary-prior-code",default=None,type=str,help="Import external priors, assumed in scope as extra_prior.prior_dict_pdf, extra_prior.prior_range.  Currentlyonly supports seperable external priors")
+# Named extra grid columns (Hyperpipe input only).  A column of a self-describing Hyperpipe grid
+# that is neither lnL/sigma_lnL, a fixed hyperpipeline column, nor in lalsimutils.valid_params
+# (the classification ILE's --supplementary-waveform-transform-parameter uses) is an EXTRA
+# parameter lambda.  CIP refuses to run while any extra column is unhandled: dropping it would
+# pool rows that differ only in lambda.  Each must be fit, pinned or ignored.
+parser.add_argument("--integration-parameter-range",action='append',default=None,help="Hyperpipe extra grid columns only: sampling range of an extra column used as a coordinate, NAME:[a,b] (repeatable; same syntax as util_ConstructEOSPosterior.py).  Required for every extra column given with --parameter.  The prior is uniform on [a,b]; override it with --import-prior-dictionary-file or a --supplementary-likelihood-factor-code plugin (which receives one array per sampling coordinate, extra columns included).  The column is written back into the output grid so ILE->CIP->ILE preserves it.")
+parser.add_argument("--extra-column-pin",action='append',default=None,help="Hyperpipe extra grid columns only: NAME:VALUE.  Keep only input rows whose NAME equals VALUE (to within 5e-6 + 1e-9*max(1,|VALUE|): consolidation rounds every column to 5 decimals by default), do not fit NAME, and write VALUE as a constant column in the output grid.")
+parser.add_argument("--extra-column-ignore",action='append',default=None,help="Hyperpipe extra grid columns only: NAME.  Drop the column and POOL rows that differ only in it (deliberately), and do not write it to the output grid.")
 
 opts=  parser.parse_args()
 if opts.sampler_av_dilate_layers < 0:
@@ -1046,11 +1056,29 @@ if opts.eccentric_phase_coordinates:
 # The effective shear is invariant under component exchange, so both features
 # have the same exchange parity as the native anomaly.
 fit_symmetry_names = ['meanPerAno' if p in eccentric_phase.FEATURE_NAMES else p for p in coord_names]
+# Named extra columns of a Hyperpipe --fname (see the extra-column block after the data load).
+# Known this early so that bookkeeping which interrogates ChooseWaveformParams -- exchange
+# symmetry, tex labels -- skips them: P has no such attribute, and extract_param exits on it.
+_early_extra = ()
+try:
+    from RIFT.misc import hyperpipeline_io as _hpio_early
+    if opts.fname and os.path.isfile(opts.fname) and _hpio_early.sniff(opts.fname):
+        _early_extra = _hpio_early.extra_column_names(_hpio_early.read_header(opts.fname),
+                                                      known=lalsimutils.valid_params)
+except (ImportError, ValueError, OSError):
+    pass
+for _n in _early_extra:
+    tex_dictionary.setdefault(_n, _n)
+def _symmetry_sign_exchange(names):
+    """lalsimutils.symmetry_sign_exchange, with extra columns (exchange-invariant: +1) skipped."""
+    std = [n for n in names if n not in _early_extra]
+    sig = iter(lalsimutils.symmetry_sign_exchange(std) if std else [])
+    return [1 if n in _early_extra else next(sig) for n in names]
 print(" Coordinate names for fit :, ", coord_names)
 if not(opts.no_plots):
     print(" Rendering coordinate names : ",  render_coordinates(coord_names))  # map(lambda x: tex_dictionary[x], coord_names)
 if opts.fit_method =="polynomial" or opts.fit_method == 'quadratic':
-    print(" Symmetry for these fitting coordinates :", lalsimutils.symmetry_sign_exchange(fit_symmetry_names))
+    print(" Symmetry for these fitting coordinates :", _symmetry_sign_exchange(fit_symmetry_names))
 print(" Coordinate names for Monte Carlo :, ", low_level_coord_names)
 if not(opts.no_plots):
     print(" Rendering coordinate names : ", list(map(lambda x: tex_dictionary[x], low_level_coord_names)))
@@ -2534,7 +2562,36 @@ if opts.use_eccentricity:
 # downstream `for line in dat: line[col_lnL] ...` loop is unchanged.
 # Detection: env var RIFT_HYPERPIPELINE_FORMAT, else file-content sniff.
 # ----------------------------------------------------------------------
-from RIFT.misc import hyperpipeline_io as _hpio
+try:
+    from RIFT.misc import hyperpipeline_io as _hpio
+except ImportError:
+    _helper_path = os.path.join(os.getcwd(), "hyperpipeline_io.py")
+    if not os.path.isfile(_helper_path):
+        raise
+    _helper_spec = importlib.util.spec_from_file_location(
+        "rift_staged_hyperpipeline_io", _helper_path)
+    _hpio = importlib.util.module_from_spec(_helper_spec)
+    _helper_spec.loader.exec_module(_hpio)
+# ----------------------------------------------------------------------
+# Named extra grid columns (lambda; e.g. lensing parameters echoed by ILE's
+# --supplementary-waveform-transform-parameter).  Each must be FIT (--parameter, with
+# --integration-parameter-range), PINNED (--extra-column-pin) or IGNORED
+# (--extra-column-ignore); otherwise refuse, because dropping it would pool rows that
+# differ only in lambda.  lambda is carried positionally in `dat` (after sigma_lnL) and in
+# arrays alongside P, never stored on ChooseWaveformParams.
+# ----------------------------------------------------------------------
+def _set_extra_column_uniform_maps(names, ranges):
+    """Uniform, normalized prior on [a,b] for each fit extra column (a function, not an inline
+    block, so the prior-map sweep in test_cip_priors.py -- which execs every top-level `if`
+    that writes prior_map -- does not try to run the data-dependent extra-column block)."""
+    for name in names:
+        a, b = ranges[name]
+        prior_range_map[name] = [a, b]
+        prior_map[name] = (lambda x, w=b - a: np.ones(np.shape(x)) / w)
+
+_extra_fit_names = []   # fit AND sampled extra columns, header order
+_extra_pin = {}         # pinned extra column -> value
+_extra_col = {}         # kept extra column -> positional index in dat
 _use_hpip = _hpio.is_active() or _hpio.sniff(opts.fname)
 if _use_hpip:
     print(" Hyperpipeline ASCII input format detected for ", opts.fname)
@@ -2559,17 +2616,22 @@ if _use_hpip:
     # through (aliased to P.phi/P.theta), so the sky is fit/sampled like any
     # other coordinate.  No positional all.net hacking.
     _use_sky = _has("ecliptic_longitude")
+    # Named extra columns (lambda): kept, appended after sigma_lnL in the legacy layout.
+    _extra_all = _hpio.extra_column_names(_hdr, known=lalsimutils.valid_params)
+    _extra_kept = tuple(c for c in _extra_all if c not in (opts.extra_column_ignore or []))
     dat = _hpio.to_legacy_dat(_arr,
                               use_eccentricity=_use_ecc, use_meanPerAno=_use_mpa,
                               use_tides=_use_tides, use_eos_index=_use_eos,
                               use_distance=_use_dist,
                               use_eob_parameters=_use_eob,
-                              use_hyperbolic=_use_hyp, use_sky=_use_sky)
+                              use_hyperbolic=_use_hyp, use_sky=_use_sky,
+                              extra_columns=_extra_kept)
     _ix = _hpio.legacy_column_indices(
         use_eccentricity=_use_ecc, use_meanPerAno=_use_mpa,
         use_tides=_use_tides, use_eos_index=_use_eos,
         use_distance=_use_dist, use_eob_parameters=_use_eob,
-        use_hyperbolic=_use_hyp, use_sky=_use_sky)
+        use_hyperbolic=_use_hyp, use_sky=_use_sky,
+        extra_columns=_extra_kept)
     col_lnL = _ix["lnL"]
     col_distance = _ix["distance"]
     col_lambda1 = _ix["lambda1"]
@@ -2580,9 +2642,112 @@ if _use_hpip:
     col_meanPerAno = _ix["meanPerAno"]
     col_ecliptic_longitude = _ix["ecliptic_longitude"]
     col_ecliptic_latitude = _ix["ecliptic_latitude"]
+    for _name in _extra_kept:
+        _extra_col[_name] = _ix[_name]
+    _extra_ignore = list(opts.extra_column_ignore or [])
+    for _name in _extra_ignore:
+        if _name not in _extra_all:
+            parser.error("--extra-column-ignore {}: not an extra column of {} (extra columns: {})".format(
+                _name, opts.fname, list(_extra_all)))
+    for _spec in (opts.extra_column_pin or []):
+        _name, _, _val = _spec.partition(':')
+        if _name not in _extra_all:
+            parser.error("--extra-column-pin {}: {} is not an extra column of {} (extra columns: {})".format(
+                _spec, _name, opts.fname, list(_extra_all)))
+        try:
+            _extra_pin[_name] = float(_val)
+        except ValueError:
+            parser.error("--extra-column-pin {}: expected NAME:VALUE".format(_spec))
+        if not np.isfinite(_extra_pin[_name]):
+            parser.error("--extra-column-pin {}: VALUE must be finite".format(_spec))
+    _extra_ranges = {}
+    for _spec in (opts.integration_parameter_range or []):
+        _name, _, _rng = _spec.partition(':')
+        if _name not in _extra_all:
+            parser.error("--integration-parameter-range {}: {} is not an extra column of {} (extra columns: {}); "
+                         "ranges of standard coordinates use their own options (--mc-range, ...)".format(
+                             _spec, _name, opts.fname, list(_extra_all)))
+        try:
+            _r = [float(v) for v in eval(_rng)]
+        except Exception:
+            _r = None
+        if _r is None or len(_r) != 2 or not (np.isfinite(_r).all() and _r[0] < _r[1]):
+            parser.error("--integration-parameter-range {}: expected NAME:[a,b] with finite a<b".format(_spec))
+        _extra_ranges[_name] = _r
+    _extra_unhandled = []
+    for _name in _extra_all:
+        _in_fit, _in_samp = _name in coord_names, _name in low_level_coord_names
+        _modes = [m for m, on in (("--parameter", _in_fit or _in_samp), ("--extra-column-pin", _name in _extra_pin),
+                                  ("--extra-column-ignore", _name in _extra_ignore)) if on]
+        if len(_modes) > 1:
+            parser.error("extra column {}: conflicting treatments {}".format(_name, _modes))
+        if _in_fit or _in_samp:
+            if not (_in_fit and _in_samp):
+                parser.error("extra column {} must be both fit and sampled: pass --parameter {} "
+                             "(it cannot be derived from other coordinates, so --parameter-implied or "
+                             "--parameter-nofit alone is refused)".format(_name, _name))
+            if _name not in _extra_ranges:
+                parser.error("extra column {} is sampled: give its prior range with "
+                             "--integration-parameter-range {}:[a,b]".format(_name, _name))
+            _extra_fit_names.append(_name)
+        elif not _modes:
+            _extra_unhandled.append(_name)
+    if _extra_unhandled:
+        parser.error("{} has extra column(s) {} that this run neither fits nor pins nor ignores. Dropping them "
+                     "would silently pool rows that differ only in them. Use --parameter NAME with "
+                     "--integration-parameter-range NAME:[a,b], or --extra-column-pin NAME:VALUE, or "
+                     "--extra-column-ignore NAME.".format(opts.fname, _extra_unhandled))
+    _unused_ranges = [n for n in _extra_ranges if n not in _extra_fit_names]
+    if _unused_ranges:
+        parser.error("--integration-parameter-range given for {} which is not sampled (--parameter)".format(_unused_ranges))
+    if _extra_fit_names:
+        _bad = [flag for flag, on in (("--using-eos", opts.using_eos), ("--tabular-eos-file", opts.tabular_eos_file),
+                                      ("--eccentric-phase-coordinates", opts.eccentric_phase_coordinates),
+                                      ("--prior-in-integrand-correction", opts.prior_in_integrand_correction),
+                                      ("--report-best-point", opts.report_best_point)) if on]
+        if _bad:
+            parser.error("fitting extra column(s) {} is not supported with {}".format(_extra_fit_names, _bad))
+        _set_extra_column_uniform_maps(_extra_fit_names, _extra_ranges)
+        print(" Extra grid columns fit and sampled (uniform prior): ",
+              dict((n, _extra_ranges[n]) for n in _extra_fit_names))
+    if _extra_pin:
+        print(" Extra grid columns pinned (rows kept only at the pinned value): ", _extra_pin)
+    if _extra_ignore:
+        print(" WARNING: extra grid columns IGNORED; rows differing only in them are pooled: ", _extra_ignore)
 else:
     _use_sky = False
+    _extra_all = ()
+    _extra_kept = ()
+    if opts.integration_parameter_range or opts.extra_column_pin or opts.extra_column_ignore:
+        parser.error("--integration-parameter-range/--extra-column-pin/--extra-column-ignore apply only to "
+                     "named extra columns of a Hyperpipe (self-describing) --fname; {} is not one".format(opts.fname))
     dat = np.loadtxt(opts.fname)
+
+_extra_in_rows = []     # lambda (fit names) per P_list_in entry, for the quadpuff contingency
+
+def _extra_output_columns(rows):
+    """(name, values) pairs for write_grid_from_P_list: fit extra columns from *rows* (one list per
+    output P, ordered as _extra_fit_names), pinned ones as constants, in input-header order.
+    None when there are no extra columns, so ordinary output is unchanged."""
+    if not (_extra_fit_names or _extra_pin):
+        return None
+    rows = np.asarray(rows, dtype=float).reshape(len(rows), len(_extra_fit_names))
+    out = []
+    for _n in _extra_all:
+        if _n in _extra_fit_names:
+            out.append((_n, rows[:, _extra_fit_names.index(_n)]))
+        elif _n in _extra_pin:
+            out.append((_n, np.full(len(rows), _extra_pin[_n])))
+    return out
+
+if _extra_fit_names:
+    # P carries no lambda: an extra column read off a P (plot truth lines) is unknown.
+    _extract_fit_param_standard = extract_fit_param
+    def extract_fit_param(P, name):
+        if name in _extra_fit_names:
+            return np.nan
+        return _extract_fit_param_standard(P, name)
+
 dat_orig = dat
 dat_orig = dat[dat[:,col_lnL].argsort()] # sort  http://stackoverflow.com/questions/2828059/sorting-arrays-in-numpy-by-column
 if col_meanPerAno:
@@ -2620,7 +2785,7 @@ for item in extra_plot_coord_names:
 symmetry_list=None
 if not(opts.tabular_eos_file):
     if opts.fit_method == 'quadratic' or opts.fit_method == 'polynomial':
-        symmetry_list =lalsimutils.symmetry_sign_exchange(fit_symmetry_names)  # identify symmetry due to exchange
+        symmetry_list =_symmetry_sign_exchange(fit_symmetry_names)  # identify symmetry due to exchange
 mc_min = 1e10
 mc_max = -1
 
@@ -2633,6 +2798,12 @@ if opts.mc_range:
     if opts.source_redshift>0:
         mc_cut_range =np.array(mc_cut_range)*(1+opts.source_redshift)  # prevent stupidity in grid selection
 print(" Stripping samples outside of ", mc_cut_range, " in mc")
+# --extra-column-pin tolerance.  CIP reads the CONSOLIDATED grid, and consolidation
+# (util_CleanILE_hyperpipeline.py, --intrinsic-digits 5 by default) rounds every column,
+# lambda included, to 5 decimals: a pin at pi/2 arrives as 1.5708.  A 1e-9 relative
+# tolerance rejected every row of such a run (only pins exact at 5 decimals survived).
+_EXTRA_PIN_ATOL = 0.5e-5
+_extra_pin_rejected = 0
 P= lalsimutils.ChooseWaveformParams()
 P_list_in = []
 for line in dat:
@@ -2644,6 +2815,9 @@ for line in dat:
       if opts.verbose:
           print(" Skipping ", line, " as too massive, with mass ", line[1]+line[2])
       continue
+  if _extra_pin and any(abs(line[_extra_col[_n]] - _v) > _EXTRA_PIN_ATOL + 1e-9*max(1.0, abs(_v)) for _n, _v in _extra_pin.items()):
+      _extra_pin_rejected += 1
+      continue  # --extra-column-pin: keep only rows at the pinned lambda
   if line[col_lnL+1] > opts.sigma_cut:
 #      if opts.verbose:
 #          print(" Skipping as large error ", line)
@@ -2696,6 +2870,7 @@ for line in dat:
     if opts.contingency_unevolved_neff == "quadpuff":
         P_copy = P.manual_copy()  # prevent duplication
         P_list_in.append(P_copy) # store  it, make sure distinct
+        _extra_in_rows.append([line[_extra_col[_n]] for _n in _extra_fit_names])
 
     # INPUT GRID: Evaluate binary parameters on fitting coordinates
     line_out = np.zeros(len(coord_names)+2)
@@ -2706,6 +2881,8 @@ for line in dat:
             line_out[x] = chi_pavg_out
         elif coord_names[x] =='ordering':
             continue
+        elif coord_names[x] in _extra_col:
+            line_out[x] = line[_extra_col[coord_names[x]]]
         else:
             line_out[x] = extract_fit_param(P, coord_names[x])
  #        line_out[x] = getattr(P, coord_names[x])
@@ -2730,6 +2907,8 @@ for line in dat:
             fac = lal.MSUN_SI
         if low_level_coord_names[x] == 'chi_pavg':
             line_out[x] = chi_pavg_out
+        elif low_level_coord_names[x] in _extra_col:
+            line_out[x] = line[_extra_col[low_level_coord_names[x]]]
         else:
             line_out[x] = P.extract_param(low_level_coord_names[x])/fac
         if low_level_coord_names[x] in ['mc']:
@@ -2751,6 +2930,9 @@ for line in dat:
         # INPUT GRID: Evaluate binary parameters on fitting coordinates
         line_out = np.zeros(len(coord_names)+2)
         for x in np.arange(len(coord_names)):
+            if coord_names[x] in _extra_col:
+                line_out[x] = line[_extra_col[coord_names[x]]]
+                continue
             line_out[x] = extract_fit_param(P, coord_names[x])
         line_out[-2] = line[col_lnL]
         line_out[-1] = line[col_lnL+1]  # adjoin error estimate
@@ -2769,18 +2951,29 @@ for line in dat:
             fac = 1
             if low_level_coord_names[x] in ['mc','m1','m2','mtot']:
                 fac = lal.MSUN_SI
+            if low_level_coord_names[x] in _extra_col:
+                line_out[x] = line[_extra_col[low_level_coord_names[x]]]
+                continue
             line_out[x] = P.extract_param(low_level_coord_names[x])/fac
             if low_level_coord_names[x] in ['mc']:
                 mc_index = x
         dat_out_low_level_coord_names.append(line_out)
         if opts.contingency_unevolved_neff == "quadpuff":
             P_list_in.append(P.manual_copy())  # mirrored row: keep P_list_in aligned with dat_out
+            _extra_in_rows.append([line[_extra_col[_n]] for _n in _extra_fit_names])
 
 Pref_default = P.copy()  # keep this around to fix the masses, if we don't have an inj
 
 # Force 32 bit dype
 dat_out = np.array(dat_out,dtype=internal_dtype)
 print(" Stripped size  = ", dat_out.shape,  " with memory usage (bytes) ", sys.getsizeof(dat_out))
+if _extra_pin:
+    print(" --extra-column-pin: {} input rows off the pinned value(s) dropped".format(_extra_pin_rejected))
+    if len(dat_out) == 0 and _extra_pin_rejected:
+        sys.exit("CIP: --extra-column-pin {} left no input rows ({} dropped as off the pinned value); "
+                 "the grid's values of {} are e.g. {}".format(
+                     _extra_pin, _extra_pin_rejected, list(_extra_pin),
+                     [sorted(set(np.round(dat[:, _extra_col[_n]], 9)))[:3] for _n in _extra_pin]))
 dat_out_low_level_coord_names = np.array(dat_out_low_level_coord_names)
 indx_P_in = np.arange(len(dat_out_low_level_coord_names))  # input row of each retained row; cut in step with it
  # scale out mass units
@@ -3449,6 +3642,30 @@ else:
  # is not optional on this path.
  my_fit = protect_fit_against_out_of_support(my_fit)
 
+if _extra_fit_names:
+    # Extra columns (lambda) are identity coordinates: in both the fit and the sampling basis.
+    # Convert the standard coordinates without them (lalsimutils' per-row fallback would try
+    # P.assign_param(lambda) and exit), then copy lambda across by name.  The EOS and
+    # eccentric-phase converters are refused with extra columns above, so the standard
+    # converter here is the plain one.
+    _ll_std = [n for n in low_level_coord_names if n not in _extra_fit_names]
+    _cn_std = [n for n in coord_names if n not in _extra_fit_names]
+    _ll_std_idx = [low_level_coord_names.index(n) for n in _ll_std]
+    _cn_std_idx = [coord_names.index(n) for n in _cn_std]
+    def convert_coords(x_in):
+        x_in = np.atleast_2d(x_in)
+        x_out = np.zeros((len(x_in), len(coord_names)))
+        if _cn_std:
+            x_out[:, _cn_std_idx] = lalsimutils.convert_waveform_coordinates(
+                x_in[:, _ll_std_idx], coord_names=_cn_std, low_level_coord_names=_ll_std,
+                source_redshift=source_redshift, enforce_kerr=opts.downselect_enforce_kerr, fref=opts.fref)
+        for _n in _extra_fit_names:
+            x_out[:, coord_names.index(_n)] = x_in[:, low_level_coord_names.index(_n)]
+        if _cn_std:
+            # keep the converter's whole-row -inf flag (Kerr violation) whole
+            x_out[np.all(np.isneginf(x_out[:, _cn_std_idx]), axis=1)] = -np.inf
+        return x_out
+
 if eos_affine_central:
  def convert_coords_central(x_in, u_in):
     x_out, log_weight, _ = eos_affine.convert_waveform_coordinates_with_eos_central(x_in, u_in, coord_names=coord_names,low_level_coord_names=low_level_coord_names,eos_class=my_eos,m_max_all=eos_affine_m_max_all,no_matter1=eos_affine_no_matter1, no_matter2=opts.no_matter2,source_redshift=source_redshift,enforce_kerr=opts.downselect_enforce_kerr,fref=opts.fref,branch_prior=opts.eos_branch_prior)
@@ -4087,6 +4304,8 @@ if not (opts.fail_unless_n_eff is None):
         sys.exit(1)
 def _assignable(name):
     """True if P.assign_param(name, ...) works (it exits on names it cannot set)."""
+    if name in _extra_fit_names:
+        return True   # extra columns are carried beside P, not assigned to it
     import contextlib, io
     P = lalsimutils.ChooseWaveformParams(fref=opts.fref)
     try:
@@ -4118,6 +4337,7 @@ if cip_acceptance_neff < opts.n_eff:
         delta_X = rv.rvs(size=len(X_puff))
         X_new = X_puff+delta_X
         P_out_list = []
+        _extra_puff_out = []   # lambda per P_out_list entry (extra columns ride beside P)
         # Loop over points 
         # Jitter using the parameters we use to fit with (physical components in RF modes)
         # Retained rows are sorted by lnL: visit them in random order, so a truncated output
@@ -4125,8 +4345,12 @@ if cip_acceptance_neff < opts.n_eff:
         for indx_P in np.random.permutation(len(X_puff)):
             include_item=True
             P = P_list_in[indx_P_in[indx_P]].manual_copy()   # copy: P_list_in is reused by later rows of a --n-events-to-analyze job
+            _lam = dict(zip(_extra_fit_names, _extra_in_rows[indx_P_in[indx_P]])) if _extra_fit_names else {}
             for indx in np.arange(len(puff_names)):
                 param  = puff_names[indx]
+                if param in _lam:
+                    _lam[param] = X_new[indx_P,indx]
+                    continue
                 fac = 1
                 if puff_names[indx] in ['mc', 'mtot', 'm1', 'm2']:
                     fac = lal.MSUN_SI
@@ -4140,8 +4364,12 @@ if cip_acceptance_neff < opts.n_eff:
                     val = val/lal.MSUN_SI
                 if val < downselect_dict[p][0] or val > downselect_dict[p][1]:
                     include_item = False
+            for _n, _v in _lam.items():   # a puffed lambda stays inside its prior range
+                if not (prior_range_map[_n][0] <= _v <= prior_range_map[_n][1]):
+                    include_item = False
             if include_item:
                 P_out_list.append(P)
+                _extra_puff_out.append([_lam[_n] for _n in _extra_fit_names])
                 if len(P_out_list) >= n_output_size:
                     break
 
@@ -4152,7 +4380,7 @@ if cip_acceptance_neff < opts.n_eff:
         # filled with 0 because these are posterior draws, not measurements;
         # ILE's --sim-grid reader ignores them via the lalsimutils.valid_params
         # intersection.
-        if _hpio.is_active():
+        if _use_hpip:
             _cols_out = _hpio.build_column_list(
                 use_eccentricity=opts.use_eccentricity, use_meanPerAno=opts.use_meanPerAno,
                 use_tides=opts.input_tides, use_eos_index=opts.input_eos_index,
@@ -4161,7 +4389,8 @@ if cip_acceptance_neff < opts.n_eff:
                                          P_out_list[:n_output_size],
                                          _cols_out,
                                          lal_module=lal,
-                                         lalsimutils_module=lalsimutils)
+                                         lalsimutils_module=lalsimutils,
+                                         extra_columns=_extra_output_columns(_extra_puff_out[:n_output_size]))
         else:
             lalsimutils.ChooseWaveformParams_array_to_xml(P_out_list[:n_output_size],fname=opts.fname_output_samples,fref=P.fref)
         sys.exit(0)
@@ -4377,6 +4606,8 @@ if opts.pseudo_gaussian_mass_prior:
         P=lalsimutils.ChooseWaveformParams()
         for indx_name in np.arange(len(low_level_coord_names)):
             p = low_level_coord_names[indx_name]
+            if p in _extra_fit_names:
+                continue
             # Do not bother to scale by solar masses, only to undo it later
             P.assign_param(p, samples[p][indx])
         m1[indx] = P.extract_param('m1')
@@ -4534,6 +4765,9 @@ for indx in np.arange(len(low_level_coord_names)):
         fac = lal.MSUN_SI
     if low_level_coord_names[indx] == 'ordering':
         continue
+    if low_level_coord_names[indx] in _extra_fit_names:
+        truth_here.append(np.nan)   # P carries no lambda
+        continue
     truth_here.append(Pref.extract_param(low_level_coord_names[indx])/fac)
 
 
@@ -4651,6 +4885,8 @@ if opts.verbose:
 lnL_list = []
 P_list =[]
 kept_indx_list = []   # cache index behind each P_list entry, for the export supply annotation
+_extra_out = []       # lambda (fit names) per P_list entry: extra columns ride beside P
+
 eos_branch_list = []  # central EOS affine parameter only: [b1, b2, n1, n2] per P_list entry
 P = lalsimutils.ChooseWaveformParams()
 P.approx = lalsim.GetApproximantFromString(opts.approx_output)
@@ -4677,6 +4913,8 @@ for indx_here in indx_list:
                 continue # skipping chi_pavg
             if coord_to_assign == 'ordering':
                 continue
+            if coord_to_assign in _extra_fit_names:
+                continue  # carried in _extra_out, not on P
             Pgrid.assign_param(coord_to_assign, line[indx]*fac)
 #            print indx_here, coord_to_assign, line[indx]
         # Test for downselect
@@ -4804,6 +5042,7 @@ for indx_here in indx_list:
             if eos_affine_central:
                 eos_branch_list.append([branch_row[1], branch_row[0], branch_row[3], branch_row[2]])
             lnL_list.append(dat_logL[indx_here])
+         _extra_out.append([samples[_n][indx_here] for _n in _extra_fit_names])
         else:
             True
 
@@ -4831,7 +5070,7 @@ if eos_affine_central and opts.eos_branch_prior == "mass-per-branch":
     lnL_list -= np.log(np.prod(np.asarray(eos_branch_list, dtype=float)[:, 2:], axis=1))
 # Hyperpipeline ASCII grid writer (opt-in via env var).  See note above the
 # earlier identical writer site -- same rationale.
-if _hpio.is_active():
+if _use_hpip:
     _cols_out = _hpio.build_column_list(
         use_eccentricity=opts.use_eccentricity, use_meanPerAno=opts.use_meanPerAno,
         use_tides=opts.input_tides, use_eos_index=opts.input_eos_index,
@@ -4841,7 +5080,8 @@ if _hpio.is_active():
                                  _cols_out,
                                  lal_module=lal,
                                  lalsimutils_module=lalsimutils,
-                                 lnL_values=lnL_list[:n_output_size])
+                                 lnL_values=lnL_list[:n_output_size],
+                                 extra_columns=_extra_output_columns(_extra_out[:n_output_size]))
 else:
     lalsimutils.ChooseWaveformParams_array_to_xml(P_list[:n_output_size],fname=opts.fname_output_samples,fref=P.fref)
 np.savetxt(opts.fname_output_samples+"_lnL.dat", lnL_list)
@@ -4884,6 +5124,9 @@ np.savetxt("best_point_by_lnL_value.dat", np.array([lnL_best]));
 dat_mass_post = np.zeros( (len(P_list),len(coord_names)),dtype=np.float64)
 for indx_line  in np.arange(len(P_list)):
     for indx in np.arange(len(coord_names)):
+        if coord_names[indx] in _extra_fit_names:
+            dat_mass_post[indx_line,indx] = _extra_out[indx_line][_extra_fit_names.index(coord_names[indx])]
+            continue
         fac=1
         if coord_names[indx] in ['mc', 'mtot', 'm1', 'm2']:
                 fac = lal.MSUN_SI

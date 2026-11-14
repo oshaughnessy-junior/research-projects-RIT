@@ -15,6 +15,8 @@ class _Stub:
     _validate_transverse_spin_coordinates = Rift._validate_transverse_spin_coordinates
     _validate_cip_fit_method = Rift._validate_cip_fit_method
     submit_dag = Rift.submit_dag
+    _uses_hyperpipe = Rift._uses_hyperpipe
+    _dag_filename = Rift._dag_filename
 
     def __init__(self, meta):
         self.production = SimpleNamespace(
@@ -54,6 +56,16 @@ def _submit(meta, capsys):
 @pytest.mark.parametrize("meta", [{}, {"scheduler": None}, {"scheduler": {}}, {"scheduler": {"priority": None}}])
 def test_submit_without_priority(meta, capsys):
     assert "-priority" not in _submit(meta, capsys)
+
+
+@pytest.mark.parametrize("pipeline, expected", [
+    (None, "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"),
+    ({}, "marginalize_intrinsic_parameters_BasicIterationWorkflow.dag"),
+    ({"pipeline-builder": "Hyperpipe"}, "marginalize_hyperparameters.dag"),
+])
+def test_submit_selects_builder_with_nullable_pipeline(pipeline, expected, capsys):
+    command = _submit({"scheduler": {"pipeline": pipeline}}, capsys)
+    assert command[-1] == expected
 
 
 @pytest.mark.parametrize("value", [900, "900", -5])

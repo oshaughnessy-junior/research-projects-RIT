@@ -71,16 +71,31 @@ def rift_py(rift_root: Path) -> Path:
 
 @pytest.fixture(scope="session")
 def hp_modules(rift_py: Path):
-    """Import the four lightweight hyperpipe modules and expose on a namespace."""
+    """Import the lightweight hyperpipe modules and expose them on a namespace."""
     if str(rift_py) not in sys.path:
         sys.path.insert(0, str(rift_py))
+    # These modules do not use lalsimutils. Bypass RIFT/__init__.py so the
+    # pipeline-build unit tests stay runnable in a small numpy/pytest env.
+    if "RIFT" not in sys.modules:
+        fake_rift = types.ModuleType("RIFT")
+        fake_rift.__path__ = [str(rift_py / "RIFT")]
+        sys.modules["RIFT"] = fake_rift
     coords = importlib.import_module("RIFT.hyperpipe.coords")
     config = importlib.import_module("RIFT.hyperpipe.config")
     marg_list = importlib.import_module("RIFT.hyperpipe.marg_list")
+    marg_contract = importlib.import_module("RIFT.hyperpipe.marg_contract")
+    execution_contract = importlib.import_module(
+        "RIFT.hyperpipe.execution_contract")
+    cip_pipeline = importlib.import_module("RIFT.misc.cip_pipeline")
+    dag_utils_generic = importlib.import_module("RIFT.misc.dag_utils_generic")
     drivers_base = importlib.import_module("RIFT.hyperpipe.drivers.base")
     return types.SimpleNamespace(
         coords=coords,
         config=config,
         marg_list=marg_list,
+        marg_contract=marg_contract,
+        execution_contract=execution_contract,
+        cip_pipeline=cip_pipeline,
+        dag_utils_generic=dag_utils_generic,
         drivers_base=drivers_base,
     )

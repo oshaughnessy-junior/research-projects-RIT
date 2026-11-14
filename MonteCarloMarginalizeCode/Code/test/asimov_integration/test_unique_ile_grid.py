@@ -36,8 +36,12 @@ def test_final_extrinsic_uses_weighted_posterior_grid():
     source = (Path(__file__).resolve().parents[2] / "bin/create_event_parameter_pipeline_BasicIteration").read_text()
     tree = ast.parse(source)
     assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)]
-    extr = next(n for n in assigns if any(isinstance(t, ast.Name) and t.id == "ile_args_extr" for t in n.targets))
-    assert ast.unparse(extr.value).startswith("ile_args_forposterior +")
+    extr = next(n for n in assigns if any(
+        isinstance(t, ast.Name) and t.id == "ile_args_extr"
+        for target in n.targets for t in ast.walk(target)))
+    assert isinstance(extr.value, ast.Call)
+    assert ast.unparse(extr.value.func) == "extrinsic_stage.derive_extrinsic_ile_args"
+    assert ast.unparse(extr.value.args[0]) == "ile_args_forposterior"
     posterior = next(n for n in assigns if any(isinstance(t, ast.Name) and t.id == "ile_args_forposterior" for t in n.targets))
     assert "overlap-grid-$(macroiteration)" in ast.unparse(posterior.value)
     call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and any(k.arg == "tag" and isinstance(k.value, ast.Constant) and k.value.value == "ILE_extr" for k in n.keywords))
