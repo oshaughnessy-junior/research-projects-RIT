@@ -250,7 +250,9 @@ def test_dilate_bins_only_on_given_axes_and_layers():
     nb = np.array([5.0, 5.0])
     assert np.array_equal(dilate_bins(b, nb, [0, 1], layers=0), b)
     assert set(map(tuple, dilate_bins(b, nb, [1]).tolist())) == {(2, 1), (2, 2), (2, 3)}
-    two = set(map(tuple, dilate_bins(b, nb, [0, 1], layers=2).tolist()))
+    two = dilate_bins(b, nb, [0, 1], layers=2)
+    assert len(two) == 13                           # each bin once: a repeated bin is drawn twice
+    two = set(map(tuple, two.tolist()))
     assert len(two) == 13 and (4, 2) in two and (3, 3) in two and (4, 3) not in two
 
 
@@ -305,3 +307,90 @@ def test_dilation_recovers_thin_ring_evidence():
     on = np.array([_thin_ring_lnZ_error(s, 1) for s in seeds])
     assert off.mean() < -0.1, "undilated lnZ - exact = {}".format(off)
     assert abs(on.mean()) < 0.1, "dilated lnZ - exact = {}".format(on)
+
+
+# Occupied bins are deduplicated by sorting one int64 key per row (unique_rows), which must
+# return what np.unique(axis=0) returns: the bin order fixes the order of every later draw.
+
+def test_unique_rows_matches_numpy_row_unique():
+    """Protects: unique_rows returns the rows, order, dtype and extras of np.unique(a, axis=0).
+    Oracle: reference, np.unique(a, axis=0)."""
+    from RIFT.integrators.mcsamplerAdaptiveVolume import unique_rows
+    rng = np.random.default_rng(5)
+
+    def clustered(ncol, dtype=np.int64):
+        return np.clip(np.rint(3 + 0.6 * rng.standard_normal((5000, ncol))), 0, 9).astype(dtype)
+
+    wide = np.zeros((5000, 70), dtype=np.int64)     # more columns than ravel_multi_index takes
+    wide[:, :12] = rng.integers(0, 2, size=(5000, 12))
+    big, negative = clustered(3), clustered(7)
+    big[0], negative[0] = 9, -1
+    cases = {'1 column': clustered(1), '7 columns': clustered(7), '8 columns': clustered(8),
+             'int32': clustered(7, np.int32), 'empty': np.empty((0, 7), dtype=np.int64),
+             'negative entry': negative, 'overflow': big * 268000, 'wide': wide}
+    for name, a in cases.items():
+        cells = np.prod(a.max(axis=0).astype(float) + 1.0) if len(a) else 0.0
+        assert (2.0**63 < cells < 2.0**64) == (name == 'overflow'), name   # keys would not fit int64
+        assert cells < 2.0**62 or name == 'overflow', name
+        assert (len(a) > 0 and a.min() < 0) == (name == 'negative entry'), name
+        for extras in ({}, dict(return_index=True), dict(return_inverse=True, return_counts=True),
+                       dict(return_index=True, return_inverse=True, return_counts=True)):
+            got, want = unique_rows(a, **extras), np.unique(a, axis=0, **extras)
+            if not extras:
+                got, want = (got,), (want,)
+            assert len(got) == len(want), (name, extras)
+            assert got[0].shape == want[0].shape and got[0].dtype == want[0].dtype, (name, extras)
+            for g, w in zip(got, want):
+                np.testing.assert_array_equal(np.asarray(g).ravel(), np.asarray(w).ravel(),
+                                              err_msg='{} {}'.format(name, extras))
+
+
+def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
+    """Everything a seeded AV pass leaves behind, for one of the paths that deduplicate bins:
+    integrate_log cold, with a dilation layer, from a warm seed, and the portfolio's
+    update_sampling_prior_selfish."""
+    np.random.seed(seed)
+    names = ['x%d' % i for i in range(ndim)]
+    s = mcsamplerAV.MCSampler(n_chunk=n_chunk)
+    s.xpy = np
+    s.identity_convert = lambda x: x
+    for name in names:
+        s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0,
+                        prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+
+    def lnF(*xs):
+        return -0.5 * np.sum((np.array(xs).T - 0.5)**2, axis=1) / sig**2
+
+    if mode == 'selfish':
+        s.setup()
+        for _ in range(12):
+            s.update_sampling_prior_selfish(lnF)
+        state = dict(V=s.V, live=s._selfish_state['allx'], live_lnL=s._selfish_state['allloglkl'])
+    else:
+        if mode == 'warm':
+            s.setup()
+            s.bootstrap_from_samples(0.5 + sig * np.random.default_rng(seed).standard_normal((500, ndim)))
+        out = s.integrate_log(lnF, *names, nmax=200000, neff=50, n=n_chunk, no_protect_names=True,
+                              verbose=False, enforce_bounds=True, dilate_layers=int(mode == 'dilate'))
+        stats = out[3]['av_stopping_statistics']
+        state = dict(lnZ=out[0], ln_var=out[1], n_eff=out[2], n_drawn=stats['total_draws'],
+                     n_retained=stats['retained_rows'], unseen=out[3]['unseen_frac_final'])
+        state.update({'rvs ' + str(k): v for k, v in s._rvs.items()})
+    state.update(binunique=s.binunique, ninbin=s.ninbin, dx=s.dx)
+    return state
+
+
+@pytest.mark.parametrize('mode', ['cold', 'dilate', 'warm', 'selfish'])
+def test_av_pass_identical_to_reference_binning(mode, monkeypatch):
+    """Protects: for a fixed seed an AV pass gives the same lnZ, sample counts, retained set and
+    final bins whichever way occupied bins are deduplicated.
+    Oracle: reference, the same pass with np.unique(a, axis=0) swapped in for unique_rows."""
+    keyed = _seeded_av_state(mode)
+    monkeypatch.setattr(mcsamplerAV, 'unique_rows', lambda a, **kw: np.unique(a, axis=0, **kw))
+    rows = _seeded_av_state(mode)
+    assert len(keyed['binunique']) > 20, 'the grid never left its starting bin'
+    assert keyed.keys() == rows.keys()
+    for key in keyed:
+        got, want = np.asarray(keyed[key]), np.asarray(rows[key])
+        assert got.dtype == want.dtype, key
+        np.testing.assert_array_equal(got, want, err_msg=key)

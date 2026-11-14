@@ -552,7 +552,8 @@ done
 # -> 1347 (provisional).
 # test_raw_distance_contract.py adds 44 tests and no skips -> 1391.
 # EOS rejection adds 13 EOS and 19 waveform regressions to the merged manifest.
-EXPECTED_TESTS=1423
+# test_av_retained_density.py: keyed row-unique invariant (1) and seeded AV parity (4) -> 1428.
+EXPECTED_TESTS=1428
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -593,7 +594,8 @@ EXPECTED_TESTS=1423
 # Review 3 adds 11 passes -> 1321 (provisional).
 # test_raw_distance_contract.py adds 44 passes -> 1365.
 # EOS and waveform rejection regressions add 32 required passes.
-EXPECTED_PASSED=1397
+# test_av_retained_density.py: keyed row-unique invariant and seeded AV parity add 5 passes -> 1402.
+EXPECTED_PASSED=1402
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them

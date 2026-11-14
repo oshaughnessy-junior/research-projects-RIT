@@ -841,6 +841,34 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
         return x
 
 
+def unique_rows(a, return_index=False, return_inverse=False, return_counts=False):
+    """np.unique(a, axis=0) for a 2-D integer array, with the same rows, order, dtype and extras
+    (the inverse comes back 1-D).
+
+    Each row is flattened to one int64 key in row-major order over shape = max + 1, so sorted
+    keys decode to the lexicographic row order np.unique returns.  Sorting int64 keys is far
+    cheaper than sorting rows.  np.unique itself handles the cases keys cannot: a negative
+    entry, a key range that would overflow int64, more columns than ravel_multi_index takes,
+    an empty array, or a non-integer dtype."""
+    a = np.asarray(a)
+    extras = dict(return_index=return_index, return_inverse=return_inverse, return_counts=return_counts)
+    keyed = a.ndim == 2 and a.dtype.kind in 'iu' and a.shape[0] > 0 and 0 < a.shape[1] <= 30
+    if keyed:
+        top = a.max(axis=0)
+        keyed = a.min() >= 0 and np.prod(top.astype(float) + 1.0) < 2.0**62
+    if not keyed:
+        return np.unique(a, axis=0, **extras)
+    shape = tuple(int(v) + 1 for v in top)
+    keys = np.ravel_multi_index(tuple(a.T), shape)
+    if return_index or return_inverse or return_counts:
+        keys, *rest = np.unique(keys, **extras)
+    else:
+        keys.sort()     # np.unique hashes from numpy 2.3 on, which is slower when most keys differ
+        keys, rest = keys[np.concatenate(([True], keys[1:] != keys[:-1]))], []
+    rows = np.stack(np.unravel_index(keys, shape), axis=1).astype(a.dtype, copy=False)
+    return (rows, *rest) if rest else rows
+
+
 def dilate_bins(bins, nbins, axes, layers=1):
     """Occupied bins plus their axis neighbours (``layers`` steps along each axis in ``axes``),
     clipped to the grid.  The occupied set is built from retained points, so it misses the part
@@ -856,7 +884,7 @@ def dilate_bins(bins, nbins, axes, layers=1):
                 nb = bins.copy()
                 nb[:, ax] += step
                 parts.append(nb[(nb[:, ax] >= 0) & (nb[:, ax] < nb_max[ax])])
-        bins = np.unique(np.vstack(parts), axis=0)
+        bins = unique_rows(np.vstack(parts))
     return bins
 
 
@@ -957,7 +985,7 @@ def unseen_fraction(X, lnw, box_lo, dx, axes):
     w = np.asarray(lnw, dtype=float)
     w = np.exp(w - np.max(w))
     idx = np.floor((X[:, axes] - np.asarray(box_lo)[axes]) / np.asarray(dx)[axes]).astype(np.int64)
-    _, inv, counts = np.unique(idx, axis=0, return_inverse=True, return_counts=True)
+    _, inv, counts = unique_rows(idx, return_inverse=True, return_counts=True)
     return float(np.sum(w[counts[np.asarray(inv).ravel()] == 1]) / np.sum(w))
 
 
@@ -1530,7 +1558,7 @@ class MCSampler(SamplerOutputMixin, object):
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
-            self.binunique, first_in_bin = np.unique(binidx, axis = 0, return_index=True)
+            self.binunique, first_in_bin = unique_rows(binidx, return_index=True)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
 
             self.cycle += 1
@@ -1659,7 +1687,7 @@ class MCSampler(SamplerOutputMixin, object):
         # for a WIDE seed (e.g. a full PE posterior + cover_frac spanning the box).
         nb_int = np.maximum(nbins.astype(np.int64), 1)
         binidx = np.clip(((pts - box_lo) / dx).astype(np.int64), 0, nb_int - 1)
-        binunique = np.unique(binidx, axis=0)
+        binunique = unique_rows(binidx)
         # SAFETY dilation: grow occupied bins by axis-neighbor layers along the
         # adaptive dims, clipped to [0, nbins-1].  Uses a bounded 2*d_adaptive
         # neighborhood per layer (not the full 3^d) so the volume grows linearly.
@@ -2283,7 +2311,7 @@ class MCSampler(SamplerOutputMixin, object):
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
-            self.binunique = np.unique(binidx, axis = 0)
+            self.binunique = unique_rows(binidx)
             if self.d_adaptive > 0:
               self.binunique = dilate_bins(self.binunique, self.nbins, self.indx_adaptive, self.dilate_layers)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
