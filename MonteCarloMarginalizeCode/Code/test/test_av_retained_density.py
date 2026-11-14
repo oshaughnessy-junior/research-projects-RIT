@@ -373,9 +373,9 @@ def test_unique_rows_matches_numpy_row_unique():
 
 
 def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
-    """Everything a seeded AV pass leaves behind, for one of the paths that deduplicate bins:
-    integrate_log cold, with a dilation layer, from a warm seed, and the portfolio's
-    update_sampling_prior_selfish."""
+    """Everything a seeded AV pass leaves behind, for the paths that find occupied bins:
+    integrate_log cold, from a warm seed, run on to 400 effective samples, with a dilation
+    layer on a thin ring, and the portfolio's update_sampling_prior_selfish."""
     np.random.seed(seed)
     names = ['x%d' % i for i in range(ndim)]
     s = mcsamplerAV.MCSampler(n_chunk=n_chunk)
@@ -384,9 +384,14 @@ def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
     for name in names:
         s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0,
                         prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+    widths = []                      # bin widths of the grid each cycle drew from
 
     def lnF(*xs):
-        return -0.5 * np.sum((np.array(xs).T - 0.5)**2, axis=1) / sig**2
+        widths.append(np.array(s.dx))
+        Y = np.array(xs).T - 0.5
+        if mode == 'dilate':         # few points per bin, so one point can open a bin
+            return -0.5 * ((np.hypot(Y[:, 0], Y[:, 1]) - 0.3) / 0.002)**2 - 0.5 * np.sum((Y[:, 2:] / 0.05)**2, axis=1)
+        return -0.5 * np.sum(Y**2, axis=1) / sig**2
 
     if mode == 'selfish':
         s.setup()
@@ -397,29 +402,36 @@ def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
         if mode == 'warm':
             s.setup()
             s.bootstrap_from_samples(0.5 + sig * np.random.default_rng(seed).standard_normal((500, ndim)))
-        out = s.integrate_log(lnF, *names, nmax=200000, neff=50, n=n_chunk, no_protect_names=True,
-                              verbose=False, enforce_bounds=True, dilate_layers=int(mode == 'dilate'))
+        out = s.integrate_log(lnF, *names, nmax=400000, neff={'long': 400, 'dilate': 300}.get(mode, 50),
+                              n=n_chunk, no_protect_names=True, verbose=False, enforce_bounds=True,
+                              dilate_layers=int(mode == 'dilate'))
         stats = out[3]['av_stopping_statistics']
         state = dict(lnZ=out[0], ln_var=out[1], n_eff=out[2], n_drawn=stats['total_draws'],
-                     n_retained=stats['retained_rows'], unseen=out[3]['unseen_frac_final'])
+                     n_retained=stats['retained_rows'], unseen=out[3]['unseen_frac_final'],
+                     X=np.column_stack([s._rvs[name] for name in names]))
         state.update({'rvs ' + str(k): v for k, v in s._rvs.items()})
-    state.update(binunique=s.binunique, ninbin=s.ninbin, dx=s.dx)
+    state.update(binunique=s.binunique, ninbin=s.ninbin, dx=s.dx,
+                 n_same_width=sum(np.array_equal(a, b) for a, b in zip(widths, widths[1:])))
     return state
 
 
-@pytest.mark.parametrize('mode', ['cold', 'dilate', 'warm', 'selfish'])
+@pytest.mark.parametrize('mode', ['cold', 'warm', 'long', 'dilate', 'selfish'])
 def test_av_pass_identical_to_reference_binning(mode, monkeypatch):
     """Protects: for a fixed seed an AV pass gives the same lnZ, sample counts, retained set and
-    final bins whichever way occupied bins are found.
+    final bins whichever way occupied bins are found, and those bins hold the retained points.
     Oracle: reference, the same pass with np.unique(a, axis=0) swapped in for unique_rows and
-    every point binned again for every cycle."""
+    every point binned again for every cycle; and the definition of an occupied bin."""
     keyed = _seeded_av_state(mode)
     monkeypatch.setattr(mcsamplerAV, 'unique_rows', lambda a, **kw: np.unique(a, axis=0, **kw))
     monkeypatch.setattr(mcsamplerAV, '_same_bin_widths', lambda dx, dx_prev: False)
     rows = _seeded_av_state(mode)
     assert len(keyed['binunique']) > 20, 'the grid never left its starting bin'
+    assert mode not in ('long', 'dilate') or keyed['n_same_width'] > 5, 'no cycles shared bin widths'
     assert keyed.keys() == rows.keys()
     for key in keyed:
         got, want = np.asarray(keyed[key]), np.asarray(rows[key])
         assert got.dtype == want.dtype, key
         np.testing.assert_array_equal(got, want, err_msg=key)
+    if mode in ('cold', 'warm', 'long'):      # no dilation: the bins are those of the retained points
+        np.testing.assert_array_equal(keyed['binunique'],
+                                      np.unique((keyed['X'] / keyed['dx']).astype(int), axis=0))

@@ -2153,6 +2153,7 @@ class MCSampler(SamplerOutputMixin, object):
         _keep_dims = np.setdiff1d(np.arange(ndim), _pinned)   # bins of pinned dims are not stored
         allloglkl_prev, allp_prev, allx_prev, allcyc_prev = allloglkl, allp, allx, allcyc
         loglkl_thr_prev = loglkl_thr
+        occupied = occupied_dx = None     # undilated bins of the retained points, and their widths
 
         ntotal_true = 0
         while (stop_eff_samp < neff and ntotal_true < nmax ): #  and (not bConvergenceTests):
@@ -2321,9 +2322,16 @@ class MCSampler(SamplerOutputMixin, object):
               self.nbins = np.floor(self.nbins)
 
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
-            binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
+            # A cycle that dropped no point and kept the bin widths leaves the earlier points in
+            # the bins found last cycle, so only its new points (the tail of allx) are binned.
+            n_binned = nrec - n_new
+            if nrec != ninj or not _same_bin_widths(self.dx, occupied_dx):
+                occupied, n_binned = None, 0
+            binidx = ( (( identity_convert(allx[n_binned:]) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
+            occupied = unique_rows(binidx if occupied is None else np.vstack([occupied, binidx]))
+            occupied_dx = self.dx
 
-            self.binunique = unique_rows(binidx)
+            self.binunique = occupied
             if self.d_adaptive > 0:
               self.binunique = dilate_bins(self.binunique, self.nbins, self.indx_adaptive, self.dilate_layers)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)

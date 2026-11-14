@@ -554,7 +554,8 @@ done
 # EOS rejection adds 13 EOS and 19 waveform regressions to the merged manifest.
 # test_av_retained_density.py: keyed row-unique invariant (1) and seeded AV parity (4) -> 1428.
 # test_av_retained_density.py: direct-sum check of log_retained_density adds 1 -> 1429.
-EXPECTED_TESTS=1429
+# test_av_retained_density.py: a long seeded AV parity case adds 1 -> 1430.
+EXPECTED_TESTS=1430
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -597,7 +598,8 @@ EXPECTED_TESTS=1429
 # EOS and waveform rejection regressions add 32 required passes.
 # test_av_retained_density.py: keyed row-unique invariant and seeded AV parity add 5 passes -> 1402.
 # test_av_retained_density.py: direct-sum check of log_retained_density adds 1 pass -> 1403.
-EXPECTED_PASSED=1403
+# test_av_retained_density.py: a long seeded AV parity case adds 1 pass -> 1404.
+EXPECTED_PASSED=1404
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
