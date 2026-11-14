@@ -113,7 +113,7 @@ def test_pinned_parameter():
     # integral over x0 of exp(lnL(x0, x1)) /(2 BOX), times p(x1)*width(x1) = 1 (AV convention)
     xs = np.linspace(-BOX, BOX, 400001)
     f = np.exp(T(xs, np.full_like(xs, x1)) - T.lnLmax)
-    truth = T.lnLmax + np.log(np.trapezoid(f, xs) / (2 * BOX))
+    truth = T.lnLmax + np.log((getattr(np, 'trapezoid', None) or np.trapz)(f, xs) / (2 * BOX))
     assert abs(lnI - truth) < 5 * d['sigma_lnZ_mc'] + 0.01, (lnI, truth)
 
 

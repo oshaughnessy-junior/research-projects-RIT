@@ -124,7 +124,7 @@ class MCSampler(SamplerOutputMixin, object):
     post_floor = 1e-3          # stall guard: bins with weight > floor*max get >= 1 draw
     defensive_frac = 0.05      # share of refresh draws from the full box (support guarantee)
     adapt_budget_frac = 0.7    # adaptation may use at most this share of nmax
-    max_cycle_draws = 50       # per-cycle draws capped at this many n_chunk... (x neff_gate)
+    max_cycle_draws = 50       # per-cycle draws capped near max_cycle_draws * neff_gate
     verdict_khat = 0.7
     verdict_min_neff = 10.0
 
@@ -427,8 +427,10 @@ class MCSampler(SamplerOutputMixin, object):
         self._rvs_record = None
         nmax = kwargs.get("nmax", float("inf"))
         neff = kwargs.get("neff", float("inf"))
-        if not (np.isfinite(nmax) or np.isfinite(neff)):
-            raise ValueError("mcsamplerVaraha2.integrate_log needs a finite nmax or neff")
+        if not np.isfinite(nmax):
+            raise ValueError("mcsamplerVaraha2.integrate_log needs a finite nmax")
+        if not (0.0 < self.frac < 1.0):
+            raise ValueError("mcsamplerVaraha2: frac must lie in (0, 1), got {}".format(self.frac))
         n = int(kwargs.get("n", min(100000, nmax)))
         self.n_chunk = n
         no_protect = 'no_protect_names' in kwargs
@@ -524,7 +526,8 @@ class MCSampler(SamplerOutputMixin, object):
         print(" [AV2] lnZ={:.4f} (pooled {:.4f}) n_eff={:.1f} ESS={:.0f} khat={} draws adapt/refresh={}/{}"
               " converged={}".format(log_int, lnI_pool, eff_samp, kish,
                                     None if khat is None else round(khat, 3), n_adapt, n_ref, s['converged']))
-        return log_int, np.log(rel_var) + 2 * log_int if rel_var > 0 else -np.inf, eff_samp, dict_return
+        log_var = np.log(rel_var) + 2 * log_int if (rel_var > 0 and np.isfinite(rel_var) and np.isfinite(log_int)) else -np.inf
+        return log_int, log_var, eff_samp, dict_return
 
     def integrate(self, func, *args, **kwargs):
         use_lnL = bool(kwargs.get('use_lnL', False))

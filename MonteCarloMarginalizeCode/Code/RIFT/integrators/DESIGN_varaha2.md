@@ -75,7 +75,8 @@ uses `np.add.at`.
   extrinsic posterior's curved degeneracies leave most of each axis-aligned bin below threshold,
   so per-cycle draws grow to the cap while the volume shrinks a fixed `ln(1/frac)` per cycle.
 - AV-only driver options (`--sampler-warmstart-*`, `--sampler-save-state`, `--sampler-load-state`)
-  are refused with AV2. `--save-deltalnL`/`--save-P` thresholds are not applied to the export.
+  are refused with `--sampler-method AV2`; an AV2 portfolio member is left cold, as for any member
+  without warm-start support. `--save-deltalnL`/`--save-P` thresholds are not applied to the export.
 - A portfolio pass restarts AV2's adaptation (`reset_selfish_state`), so a calibration burn-in pass
   gives an AV2 member nothing. Its selfish step draws at most `n_chunk` per portfolio chunk.
 

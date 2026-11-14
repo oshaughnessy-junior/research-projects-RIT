@@ -982,11 +982,11 @@ def _apply_av2_args(av2_sampler):
     raise ValueError("--sampler-av2-args must be a dict literal, got {!r}".format(opts.sampler_av2_args))
   for _k, _v in _kw.items():
     _default = getattr(mcsamplerVaraha2.MCSampler, _k, None)
-    if isinstance(_default, bool) or not isinstance(_default, (int, float)) or not isinstance(_v, (int, float)):
+    if isinstance(_default, bool) or isinstance(_v, bool) or not isinstance(_default, (int, float)) or not isinstance(_v, (int, float)):
       raise ValueError("--sampler-av2-args: {!r} is not a numeric AV2 parameter".format(_k))
     setattr(av2_sampler, _k, _v)
   print("  AV2 parameters overridden: {}".format(_kw))
-_uses_av2 = opts.sampler_method == 'AV2' or any('AV2' in str(x).split(',') for x in (opts.sampler_portfolio or []))
+_uses_av2 = opts.sampler_method == 'AV2' or any('AV2' in [t.strip() for t in str(x).split(',')] for x in (opts.sampler_portfolio or []))
 if opts.sampler_av2_args and not _uses_av2:
   raise ValueError("--sampler-av2-args acts only with --sampler-method AV2 or an AV2 portfolio member")
 if opts.sampler_method == 'AV2' and (opts.sampler_warmstart_retry_neff or opts.sampler_save_state or opts.sampler_load_state or opts.sampler_warmstart_samples):
