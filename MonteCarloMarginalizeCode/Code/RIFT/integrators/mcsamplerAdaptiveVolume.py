@@ -841,6 +841,39 @@ def sample_from_bins(xrange, dx, bu, ninbin, reject_out_of_range=False):
         return x
 
 
+def unique_rows(a, return_index=False, return_inverse=False, return_counts=False):
+    """np.unique(a, axis=0) for a 2-D integer array, with the same rows, order, dtype and extras
+    (the inverse comes back 1-D).
+
+    Each row is flattened to one int64 key in row-major order over shape = max + 1, so sorted
+    keys decode to the lexicographic row order np.unique returns.  Sorting int64 keys is far
+    cheaper than sorting rows.  np.unique itself handles the cases keys cannot: a negative
+    entry, a key range that would overflow int64, more columns than ravel_multi_index takes,
+    an empty array, or a non-integer dtype."""
+    a = np.asarray(a)
+    extras = dict(return_index=return_index, return_inverse=return_inverse, return_counts=return_counts)
+    keyed = a.ndim == 2 and a.dtype.kind in 'iu' and a.shape[0] > 0 and 0 < a.shape[1] <= 30
+    if keyed:
+        top = a.max(axis=0)
+        keyed = a.min() >= 0 and np.prod(top.astype(float) + 1.0) < 2.0**62
+    if not keyed:
+        return np.unique(a, axis=0, **extras)
+    shape = tuple(int(v) + 1 for v in top)
+    keys = np.ravel_multi_index(tuple(a.T), shape)
+    if return_index or return_inverse or return_counts:
+        keys, *rest = np.unique(keys, **extras)
+    else:
+        keys.sort()     # np.unique hashes from numpy 2.3 on, which is slower when most keys differ
+        keys, rest = keys[np.concatenate(([True], keys[1:] != keys[:-1]))], []
+    rows = np.stack(np.unravel_index(keys, shape), axis=1).astype(a.dtype, copy=False)
+    return (rows, *rest) if rest else rows
+
+
+def _same_bin_widths(dx, dx_prev):
+    """True when two cycles used the same bin widths, so bins found at one hold at the other."""
+    return dx_prev is not None and np.array_equal(dx, dx_prev)
+
+
 def dilate_bins(bins, nbins, axes, layers=1):
     """Occupied bins plus their axis neighbours (``layers`` steps along each axis in ``axes``),
     clipped to the grid.  The occupied set is built from retained points, so it misses the part
@@ -856,7 +889,7 @@ def dilate_bins(bins, nbins, axes, layers=1):
                 nb = bins.copy()
                 nb[:, ax] += step
                 parts.append(nb[(nb[:, ax] >= 0) & (nb[:, ax] < nb_max[ax])])
-        bins = np.unique(np.vstack(parts), axis=0)
+        bins = unique_rows(np.vstack(parts))
     return bins
 
 
@@ -924,14 +957,21 @@ def log_retained_density(X, origin, grids, box_lo, dx0, pinned_dims=()):
         keep[np.asarray(pinned_dims, dtype=int)] = False
     log_dx0_pinned = float(np.sum(np.log(dx0[~keep])))
     acc = np.full(len(X), -np.inf)
+    X_keep, lo_keep, dx_binned = X[:, keep], box_lo[keep], None
     for k, (dx, bins, n_k) in enumerate(grids):
         dx = np.asarray(dx, dtype=float)
         if not isinstance(bins, _BinSet):
             bins = np.asarray(bins).astype(np.int64)
             bins = _BinSet(bins[:, keep], n_bins=len(bins))
         log_vol = np.log(bins.n_bins) + np.sum(np.log(dx[keep])) + log_dx0_pinned
-        idx = np.floor((X[:, keep] - box_lo[keep]) / dx[keep]).astype(np.int64)
-        mult = bins.multiplicity(idx)
+        if not _same_bin_widths(dx[keep], dx_binned):
+            # Bin the points once per bin width (consecutive cycles share it when bin counts
+            # are integers), and keep the distinct point bins so each is looked up once.
+            dx_binned = dx[keep]
+            idx = np.floor((X_keep - lo_keep) / dx_binned).astype(np.int64)
+            point_bins, bin_of_point = unique_rows(idx, return_inverse=True)
+            bin_of_point = np.asarray(bin_of_point).ravel()
+        mult = bins.multiplicity(point_bins)[bin_of_point]
         mult[(mult == 0) & (origin == k)] = 1
         member = mult > 0
         acc[member] = np.logaddexp(acc[member], np.log(n_k) + np.log(mult[member]) - log_vol)
@@ -957,7 +997,7 @@ def unseen_fraction(X, lnw, box_lo, dx, axes):
     w = np.asarray(lnw, dtype=float)
     w = np.exp(w - np.max(w))
     idx = np.floor((X[:, axes] - np.asarray(box_lo)[axes]) / np.asarray(dx)[axes]).astype(np.int64)
-    _, inv, counts = np.unique(idx, axis=0, return_inverse=True, return_counts=True)
+    _, inv, counts = unique_rows(idx, return_inverse=True, return_counts=True)
     return float(np.sum(w[counts[np.asarray(inv).ravel()] == 1]) / np.sum(w))
 
 
@@ -1275,8 +1315,11 @@ class MCSampler(SamplerOutputMixin, object):
         # in integrate_log to build binidx), then test membership in the occupied
         # set.  Points outside the box floor out of range and are excluded below.
         binidx = np.floor((X - box_lo) / dx).astype(np.int64)
-        binset = set(map(tuple, bins.tolist()))
-        inside = np.array([tuple(row) in binset for row in binidx], dtype=bool)
+        if bins.shape[1] <= 30 and bins.min() >= 0:
+            inside = _BinSet(bins).contains(binidx)
+        else:       # bins that _BinSet cannot key
+            binset = set(map(tuple, bins.tolist()))
+            inside = np.array([tuple(row) in binset for row in binidx], dtype=bool)
         inside &= np.all((X >= box_lo) & (X <= box_hi), axis=1)
         q_live = 1.0 / (float(n_bins) * float(np.prod(dx)))
         q = np.zeros(X.shape[0], dtype=float)
@@ -1530,7 +1573,7 @@ class MCSampler(SamplerOutputMixin, object):
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
             binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
 
-            self.binunique, first_in_bin = np.unique(binidx, axis = 0, return_index=True)
+            self.binunique, first_in_bin = unique_rows(binidx, return_index=True)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
 
             self.cycle += 1
@@ -1659,7 +1702,7 @@ class MCSampler(SamplerOutputMixin, object):
         # for a WIDE seed (e.g. a full PE posterior + cover_frac spanning the box).
         nb_int = np.maximum(nbins.astype(np.int64), 1)
         binidx = np.clip(((pts - box_lo) / dx).astype(np.int64), 0, nb_int - 1)
-        binunique = np.unique(binidx, axis=0)
+        binunique = unique_rows(binidx)
         # SAFETY dilation: grow occupied bins by axis-neighbor layers along the
         # adaptive dims, clipped to [0, nbins-1].  Uses a bounded 2*d_adaptive
         # neighborhood per layer (not the full 3^d) so the volume grows linearly.
@@ -2036,7 +2079,7 @@ class MCSampler(SamplerOutputMixin, object):
         if bShowEvaluationLog:
             print(" .... mcsampler : providing verbose output ..... ")
 
-        current_log_aggregate = None
+        n_evaluated = 0   # integrand evaluations so far
         eff_samp = 0  # ratio of max weight to sum of weights
         stop_eff_samp = 0
         maxlnL = -np.inf  # max lnL
@@ -2113,6 +2156,7 @@ class MCSampler(SamplerOutputMixin, object):
         _keep_dims = np.setdiff1d(np.arange(ndim), _pinned)   # bins of pinned dims are not stored
         allloglkl_prev, allp_prev, allx_prev, allcyc_prev = allloglkl, allp, allx, allcyc
         loglkl_thr_prev = loglkl_thr
+        occupied = occupied_dx = None     # undilated bins of the retained points, and their widths
 
         ntotal_true = 0
         while (stop_eff_samp < neff and ntotal_true < nmax ): #  and (not bConvergenceTests):
@@ -2161,12 +2205,8 @@ class MCSampler(SamplerOutputMixin, object):
             # For now: no prior, just duplicate VT algorithm
             log_integrand =lnL  + log_joint_p_prior
 #            log_weights = tempering_exp*lnL + log_joint_p_prior
-            # log aggregate: NOT USED at present, remember the threshold is floating
-            if current_log_aggregate is None:
-              current_log_aggregate = init_log(log_integrand,xpy=xpy,special=xpy_special_default)
-            else:
-              current_log_aggregate = update_log(current_log_aggregate, log_integrand,xpy=xpy,special=xpy_special_default)
-            
+            n_evaluated += len(log_integrand)
+
             loglkl = log_integrand # note we are putting the prior in here
 
             # Admit only FINITE samples above threshold.  A +inf lnL (overflow in a
@@ -2281,13 +2321,20 @@ class MCSampler(SamplerOutputMixin, object):
               self.nbins = np.floor(self.nbins)
 
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
-            binidx = ( (( identity_convert(allx) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
+            # A cycle that dropped no point and kept the bin widths leaves the earlier points in
+            # the bins found last cycle, so only its new points (the tail of allx) are binned.
+            n_binned = nrec - n_new
+            if nrec != ninj or not _same_bin_widths(self.dx, occupied_dx):
+                occupied, n_binned = None, 0
+            binidx = ( (( identity_convert(allx[n_binned:]) - self.my_ranges.T[0]) / self.dx.T).astype(int)  ) #bin indexs of the samples ... sent back to CPU as needed
+            occupied = unique_rows(binidx if occupied is None else np.vstack([occupied, binidx]))
+            occupied_dx = self.dx
 
-            self.binunique = np.unique(binidx, axis = 0)
+            self.binunique = occupied
             if self.d_adaptive > 0:
               self.binunique = dilate_bins(self.binunique, self.nbins, self.indx_adaptive, self.dilate_layers)
             self.ninbin = ((self.n_chunk // self.binunique.shape[0] + 1) * np.ones(self.binunique.shape[0])).astype(int)
-            self.ntotal = current_log_aggregate[0]
+            self.ntotal = n_evaluated
             # accumulate the binomial variance of this cycle's ln(V) update:
             # Var(ln p_hat) ~= (1-p_hat)/(n p_hat) = (1-nrec/ninj)/nrec.  Cycles reuse
             # surviving samples, so this is an approximate (disclosed) budget rather
@@ -2392,14 +2439,6 @@ class MCSampler(SamplerOutputMixin, object):
         rel_var = rel_var_mc + trunc_p**2
         eff_samp = np.sum(np.exp(log_wt - np.max(log_wt)))
         maxval = np.max(allloglkl)  # max of log
-
-        # Integral value: NOT RELIABLE b/c not just using samples in 
-#        outvals = finalize_log(current_log_aggregate,xpy=xpy)
-#        log_wt_tmp = allloglkl[np.isfinite(allloglkl)]  # remove infinite entries
-#        outvals = init_log(log_wt_tmp)
-#        print(outvals, log_int, maxval, current_log_aggregate)
-#        eff_samp = xpy.exp(  outvals[0]+np.log(len(allloglkl)) - maxval)   # integral value minus floating point, which is maximum
-#        rel_var = np.exp(outvals[1]/2  - outvals[0]  - np.log(self.ntotal)/2 )
 
         # Do a fair draw of points, if option is set. CAST POINTS BACK TO NUMPY, IDEALLY
         # (DESIGN_rvs_naming.md) _rvs is the RETAINED set at this point -- pruned,
