@@ -1315,8 +1315,11 @@ class MCSampler(SamplerOutputMixin, object):
         # in integrate_log to build binidx), then test membership in the occupied
         # set.  Points outside the box floor out of range and are excluded below.
         binidx = np.floor((X - box_lo) / dx).astype(np.int64)
-        binset = set(map(tuple, bins.tolist()))
-        inside = np.array([tuple(row) in binset for row in binidx], dtype=bool)
+        if bins.shape[1] <= 30 and bins.min() >= 0:
+            inside = _BinSet(bins).contains(binidx)
+        else:       # bins that _BinSet cannot key
+            binset = set(map(tuple, bins.tolist()))
+            inside = np.array([tuple(row) in binset for row in binidx], dtype=bool)
         inside &= np.all((X >= box_lo) & (X <= box_hi), axis=1)
         q_live = 1.0 / (float(n_bins) * float(np.prod(dx)))
         q = np.zeros(X.shape[0], dtype=float)

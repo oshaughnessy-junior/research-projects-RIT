@@ -147,6 +147,25 @@ def test_density_matches_direct_sum_over_grids():
         np.testing.assert_allclose(got, np.log(want / len(X)), rtol=1e-10, atol=0)
 
 
+def test_sampling_density_is_uniform_over_the_occupied_bins():
+    """Protects: AV sampling_density is 1/(occupied volume) in an occupied bin and 0 elsewhere.
+    Oracle: analytic, bins (0, 0) and (1, 2) of a 2 x 4 grid on the unit square, alone and
+    with a third bin outside the box."""
+    s = mcsamplerAV.MCSampler()
+    for name in ('x', 'y'):
+        s.add_parameter(name, pdf=None, left_limit=0.0, right_limit=1.0,
+                        prior_pdf=lambda x: np.ones(np.shape(x)), adaptive_sampling=True)
+    s.setup()
+    s.dx = np.array([0.5, 0.25])
+    X = np.array([[0.1, 0.1], [0.6, 0.6],                 # in bin (0, 0), in bin (1, 2)
+                  [0.1, 0.6], [0.6, 0.1], [0.4, 0.3],     # bins (0, 2), (1, 0), (0, 1): empty
+                  [1.2, 0.6], [-0.1, 0.1]])               # outside the box, the last in bin (-1, 0)
+    for bins in ([[0, 0], [1, 2]], [[-1, 0], [0, 0], [1, 2]]):
+        s.binunique = np.array(bins)
+        q = 1.0 / (len(bins) * 0.125)
+        np.testing.assert_allclose(s.sampling_density(X), [q, q, 0, 0, 0, 0, 0], rtol=1e-12)
+
+
 def test_bin_set_matches_brute_force_on_both_storage_paths():
     """Sorted-key storage, and the row fallback used when keys would overflow int64."""
     from RIFT.integrators.mcsamplerAdaptiveVolume import _BinSet
