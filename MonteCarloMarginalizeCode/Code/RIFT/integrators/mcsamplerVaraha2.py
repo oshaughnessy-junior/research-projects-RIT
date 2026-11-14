@@ -501,7 +501,7 @@ class MCSampler(SamplerOutputMixin, object):
                 for key in list(self._rvs.keys()):
                     self._rvs[key] = np.asarray(self._rvs[key])[ix]
                 self._rvs_is_fairdraw = True
-                self._rvs_record = RvsRecord.fair_draw(self._rvs, n_retained=nf)
+                self._rvs_record = RvsRecord.fair_draw(self._rvs, n_retained=self._rvs_record.n_retained())
 
         khat = pareto_khat_from_log(lw_f) if nf else None
         kish = ess_from_log_weights(lw_f) if nf else 0.0

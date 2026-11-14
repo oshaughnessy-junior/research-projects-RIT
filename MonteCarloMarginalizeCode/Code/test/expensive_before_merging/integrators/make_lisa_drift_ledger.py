@@ -187,6 +187,11 @@ RULES = [
     (r"^OPTION:--sampler-av-dilate-layers$", "PORT",
      "AV axis-neighbour bin dilation each cycle. Pure AV plumbing (a sampler attribute "
      "set at construction), so it applies to LISA as it does to the ground-based driver."),
+    (r"^(OPTION:--sampler-av2-args|FUNC:_apply_av2_args)$", "PORT",
+     "Construction keywords for the opt-in AV2 (Varaha v2) sampler. Pure sampler plumbing, "
+     "like --sampler-av-dilate-layers, so it would apply to LISA unchanged. Low priority: "
+     "AV2 is not recommended for extrinsic ILE (DESIGN_varaha2.md), and the LISA driver "
+     "does not offer --sampler-method AV2."),
     (r"^OPTION:--sampler-(save|load)-state$", "PORTED",
      "AV live-volume state serialization. AV is wired in LISA; the state is the "
      "sampler's own internal grid, so it carries no LIGO-specific convention."),

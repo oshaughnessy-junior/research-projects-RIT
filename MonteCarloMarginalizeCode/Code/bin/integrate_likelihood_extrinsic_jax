@@ -386,7 +386,7 @@ _ILE_ALL_OPTS = {
     "--sampler-anisotropic-bins", "--sampler-l0-rescue-accept-truncated",
     "--sampler-l0-rescue-puff-factor", "--sampler-l0-rescue-puff-scale",
     "--sampler-l0-rescue-puff-width-frac", "--sampler-l0-rescue-reject-dlnZ",
-    "--sampler-av-dilate-layers",
+    "--sampler-av-dilate-layers", "--sampler-av2-args",
     "--sampler-load-state", "--sampler-method", "--sampler-portfolio",
     "--sampler-portfolio-allow-stratified-density",
     "--sampler-portfolio-args", "--sampler-save-state",
