@@ -120,6 +120,33 @@ def test_density_pinned_dimension_uses_full_width():
     assert np.isclose(out[0], np.log(4 / 0.5))
 
 
+def test_density_matches_direct_sum_over_grids():
+    """Protects: each retained point gets the mixture density of the grids that contain it, for
+    grids that repeat, change and return to a bin width, with no, one and every coordinate pinned.
+    Oracle: analytic, the sum n_k * (bins at the point's location) / volume_k taken point by point."""
+    rng = np.random.default_rng(11)
+    X = rng.random((400, 3))
+    origin = rng.integers(0, 6, size=len(X))
+    widths = [np.array(w) for w in ([0.25, 0.25, 0.5], [0.25, 0.25, 0.5], [0.125, 0.25, 0.5],
+                                    [0.25, 0.25, 0.5], [0.25, 0.125, 0.5], [0.25, 0.125, 0.25])]
+    grids = []
+    for k, dx in enumerate(widths):
+        occupied = np.floor(X[rng.random(len(X)) < 0.3] / dx).astype(int)   # bins of a random subset
+        grids.append((dx, np.unique(occupied, axis=0), 100 * (k + 1)))
+    for pinned in ([], [2], [0, 1, 2]):
+        free = [j for j in range(3) if j not in pinned]
+        want = np.zeros(len(X))
+        for k, (dx, bins, n_k) in enumerate(grids):
+            volume = len(bins) * np.prod(dx[free])            # pinned coordinates span the unit box
+            located = [tuple(b) for b in bins[:, free].tolist()]
+            for i, x in enumerate(X):
+                here = tuple(np.floor(x[free] / dx[free]).astype(int).tolist())
+                want[i] += n_k * max(located.count(here), int(origin[i] == k)) / volume
+        got = log_retained_density(X, origin, grids, np.zeros(3), np.ones(3), pinned_dims=pinned)
+        assert np.all(want > 0) and np.any(want != want[0]) == bool(free)
+        np.testing.assert_allclose(got, np.log(want / len(X)), rtol=1e-10, atol=0)
+
+
 def test_bin_set_matches_brute_force_on_both_storage_paths():
     """Sorted-key storage, and the row fallback used when keys would overflow int64."""
     from RIFT.integrators.mcsamplerAdaptiveVolume import _BinSet
@@ -383,10 +410,12 @@ def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
 @pytest.mark.parametrize('mode', ['cold', 'dilate', 'warm', 'selfish'])
 def test_av_pass_identical_to_reference_binning(mode, monkeypatch):
     """Protects: for a fixed seed an AV pass gives the same lnZ, sample counts, retained set and
-    final bins whichever way occupied bins are deduplicated.
-    Oracle: reference, the same pass with np.unique(a, axis=0) swapped in for unique_rows."""
+    final bins whichever way occupied bins are found.
+    Oracle: reference, the same pass with np.unique(a, axis=0) swapped in for unique_rows and
+    every point binned again for every cycle."""
     keyed = _seeded_av_state(mode)
     monkeypatch.setattr(mcsamplerAV, 'unique_rows', lambda a, **kw: np.unique(a, axis=0, **kw))
+    monkeypatch.setattr(mcsamplerAV, '_same_bin_widths', lambda dx, dx_prev: False)
     rows = _seeded_av_state(mode)
     assert len(keyed['binunique']) > 20, 'the grid never left its starting bin'
     assert keyed.keys() == rows.keys()

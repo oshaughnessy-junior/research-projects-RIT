@@ -869,6 +869,11 @@ def unique_rows(a, return_index=False, return_inverse=False, return_counts=False
     return (rows, *rest) if rest else rows
 
 
+def _same_bin_widths(dx, dx_prev):
+    """True when two cycles used the same bin widths, so bins found at one hold at the other."""
+    return dx_prev is not None and np.array_equal(dx, dx_prev)
+
+
 def dilate_bins(bins, nbins, axes, layers=1):
     """Occupied bins plus their axis neighbours (``layers`` steps along each axis in ``axes``),
     clipped to the grid.  The occupied set is built from retained points, so it misses the part
@@ -952,14 +957,21 @@ def log_retained_density(X, origin, grids, box_lo, dx0, pinned_dims=()):
         keep[np.asarray(pinned_dims, dtype=int)] = False
     log_dx0_pinned = float(np.sum(np.log(dx0[~keep])))
     acc = np.full(len(X), -np.inf)
+    X_keep, lo_keep, dx_binned = X[:, keep], box_lo[keep], None
     for k, (dx, bins, n_k) in enumerate(grids):
         dx = np.asarray(dx, dtype=float)
         if not isinstance(bins, _BinSet):
             bins = np.asarray(bins).astype(np.int64)
             bins = _BinSet(bins[:, keep], n_bins=len(bins))
         log_vol = np.log(bins.n_bins) + np.sum(np.log(dx[keep])) + log_dx0_pinned
-        idx = np.floor((X[:, keep] - box_lo[keep]) / dx[keep]).astype(np.int64)
-        mult = bins.multiplicity(idx)
+        if not _same_bin_widths(dx[keep], dx_binned):
+            # Bin the points once per bin width (consecutive cycles share it when bin counts
+            # are integers), and keep the distinct point bins so each is looked up once.
+            dx_binned = dx[keep]
+            idx = np.floor((X_keep - lo_keep) / dx_binned).astype(np.int64)
+            point_bins, bin_of_point = unique_rows(idx, return_inverse=True)
+            bin_of_point = np.asarray(bin_of_point).ravel()
+        mult = bins.multiplicity(point_bins)[bin_of_point]
         mult[(mult == 0) & (origin == k)] = 1
         member = mult > 0
         acc[member] = np.logaddexp(acc[member], np.log(n_k) + np.log(mult[member]) - log_vol)
