@@ -299,6 +299,7 @@ _ILE_ALL_OPTS = {
     "--internal-ile-inner-product", "--td-solver", "--td-acf-duration",
     "--td-analysis-start", "--td-analysis-end", "--td-gap",
     "--glitch-basis", "--glitch-basis-file", "--glitch-sigma",
+    "--glitch-sigma-grid-snr", "--glitch-uprime",
     "--adapt-adapt", "--adapt-floor-level", "--adapt-intrinsic", "--adapt-log",
     "--adapt-weight-exponent", "--amp-order", "--approximant",
     "--auto-logarithm-offset", "--cache-file", "--calibration-burn-in-neff",
@@ -507,7 +508,8 @@ def check_critical_and_report(opts, optp):
                   "--td-subsample", "--td-calibration-correction-type", "--td-calibration-fir-half-length",
                   "--td-solver", "--td-acf-duration", "--td-analysis-start",
                   "--td-analysis-end", "--td-gap", "--glitch-basis",
-                  "--glitch-basis-file", "--glitch-sigma"):
+                  "--glitch-basis-file", "--glitch-sigma",
+                  "--glitch-sigma-grid-snr", "--glitch-uprime"):
         if is_set(_name):
             fatal.append("%s requires the batchmode TD likelihood; not implemented by JAX"
                          % _name)
