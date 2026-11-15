@@ -154,6 +154,12 @@ try:
 except:
     print(" No mcsamplerAV ")
     mcsampler_AV_ok = False
+try:
+    import RIFT.integrators.mcsamplerVaraha2 as mcsamplerVaraha2   # --sampler-method AV2 (opt-in)
+    mcsampler_AV2_ok = True
+except Exception as _e_av2:
+    print(" No mcsamplerVaraha2 ", _e_av2)
+    mcsampler_AV2_ok = False
 mcsampler_Portfolio_ok=False
 try:
     if not('RIFT_LOWLATENCY' in os.environ):
@@ -557,8 +563,9 @@ integration_params.add_option("--internal-sky-network-coordinates-raw",action='s
 integration_params.add_option("--manual-logarithm-offset",type=float,default=0,help="Target value of logarithm lnL. Integrand is reduced by exp(-manual_logarithm_offset).  Important for high-SNR sources!   Should be set dynamically")
 integration_params.add_option("--auto-logarithm-offset",action='store_true',help="Use the 'guess_snr' field returned in the precompute stage to change --manual-logarithm-offset for each event.")
 integration_params.add_option("--internal-use-lnL",action='store_true',help="likelihood returns lnL, and integrator integrates lnL")
-integration_params.add_option("--sampler-method",default="adaptive_cartesian_gpu",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu")
+integration_params.add_option("--sampler-method",default="adaptive_cartesian_gpu",help="adaptive_cartesian|GMM|adaptive_cartesian_gpu|AV|AV2|portfolio.  AV2 (opt-in) is Varaha v2 with a stall guard and an unbiased refresh pass; see RIFT/integrators/DESIGN_varaha2.md")
 integration_params.add_option("--sampler-portfolio",default=None,action='append',type=str,help="Portfolio member sampler, one of AV / GMM / AC (adaptive_cartesian_gpu) or a discovered plugin. Repeat the option per member, or give one comma-separated list; both forms may be mixed. An unrecognized name is an error.")
+integration_params.add_option("--sampler-av2-args",default=None,type=str,help="AV2 only: a Python dict literal of mcsamplerVaraha2.MCSampler attributes to override, e.g. \"{'frac':0.5}\".  Unknown keys are refused.  See RIFT/integrators/DESIGN_varaha2.md for each parameter.")
 integration_params.add_option("--sampler-portfolio-args",default=None, action='append', type=str, help='eval-able dictionaryo to be passed to that sampler')
 integration_params.add_option("--sampler-portfolio-allow-stratified-density",action='store_true',default=False,help="Accept a portfolio whose members cannot form the balance-heuristic mixture density q_mix -- i.e. run the legacy stratified per-member estimator even when a member has not declared that its sampling density is normalized.  THE EVIDENCE IS THEN BIASED (measured 0.753772 on a constant integrand whose exact ln Z is 1.386294).  Without this the portfolio refuses at setup.  Exists so an unusual member combination, in particular a plugin from RIFT.integrator_plugins, is recoverable without editing RIFT; do not use it for production evidence.")
 # Portfolio freeze-policy knobs (only meaningful with --sampler-method portfolio).  A member
@@ -962,9 +969,28 @@ if opts.internal_waveform_taper and 'TAPER' in opts.internal_waveform_taper:
 #
 # Failure modes
 #
-ok_lnL_methods = ['GMM', 'adaptive_cartesian', 'adaptive_cartesian_gpu','AV','portfolio']
+ok_lnL_methods = ['GMM', 'adaptive_cartesian', 'adaptive_cartesian_gpu','AV','AV2','portfolio']
 if opts.sampler_av_dilate_layers < 0:
   raise ValueError("--sampler-av-dilate-layers must be >= 0")
+def _apply_av2_args(av2_sampler):
+  """--sampler-av2-args: override documented numeric AV2 parameters (class-level settings only)."""
+  if not opts.sampler_av2_args:
+    return
+  import ast as _ast
+  _kw = _ast.literal_eval(opts.sampler_av2_args)
+  if not isinstance(_kw, dict):
+    raise ValueError("--sampler-av2-args must be a dict literal, got {!r}".format(opts.sampler_av2_args))
+  for _k, _v in _kw.items():
+    _default = getattr(mcsamplerVaraha2.MCSampler, _k, None)
+    if isinstance(_default, bool) or isinstance(_v, bool) or not isinstance(_default, (int, float)) or not isinstance(_v, (int, float)):
+      raise ValueError("--sampler-av2-args: {!r} is not a numeric AV2 parameter".format(_k))
+    setattr(av2_sampler, _k, _v)
+  print("  AV2 parameters overridden: {}".format(_kw))
+_uses_av2 = opts.sampler_method == 'AV2' or any('AV2' in [t.strip() for t in str(x).split(',')] for x in (opts.sampler_portfolio or []))
+if opts.sampler_av2_args and not _uses_av2:
+  raise ValueError("--sampler-av2-args acts only with --sampler-method AV2 or an AV2 portfolio member")
+if opts.sampler_method == 'AV2' and (opts.sampler_warmstart_retry_neff or opts.sampler_save_state or opts.sampler_load_state or opts.sampler_warmstart_samples):
+  raise ValueError("--sampler-method AV2 has no warm start, rescue or saved state; drop --sampler-warmstart-*/--sampler-save-state/--sampler-load-state")
 if opts.sampler_av_dilate_layers and opts.sampler_method != 'AV':
   # portfolio AV members contract through update_sampling_prior_selfish, which does not dilate
   raise ValueError("--sampler-av-dilate-layers acts only under --sampler-method AV, not {}".format(opts.sampler_method))
@@ -2711,6 +2737,19 @@ elif opts.sampler_method == 'AV':
       mcsampler.set_xpy_to_numpy()
       sampler.xpy= numpy
       sampler.identity_convert= lambda x: x
+elif opts.sampler_method == 'AV2':
+    print(" ILE: {}".format(opts.sampler_method))
+    if not mcsampler_AV2_ok:
+      raise Exception(" --sampler-method AV2 requested but RIFT.integrators.mcsamplerVaraha2 failed to import")
+    opts.internal_use_lnL=True
+    sampler = mcsamplerVaraha2.MCSampler(n_chunk=opts.n_chunk)
+    _apply_av2_args(sampler)
+    sampler.xpy = xpy_default
+    sampler.identity_convert=identity_convert
+    xpy_asarray_already = lambda x: x
+    if opts.sampler_xpy == "numpy":
+      sampler.xpy= numpy
+      sampler.identity_convert= lambda x: x
 elif opts.sampler_method == "portfolio":
     # NB the `and mcsampler_Portfolio_ok` that used to be part of this test made the raise
     # below dead code AND sent an unavailable portfolio to the `else` fallback at the end of
@@ -2745,6 +2784,11 @@ elif opts.sampler_method == "portfolio":
     for name in sampler_types:
         if name =='AV':
             sampler = mcsamplerAdaptiveVolume.MCSampler(n_chunk=opts.n_chunk) # enforce now, so provided for setup phase
+        elif name =='AV2':
+            if not mcsampler_AV2_ok:
+              raise Exception(" --sampler-portfolio AV2 requested but RIFT.integrators.mcsamplerVaraha2 failed to import")
+            sampler = mcsamplerVaraha2.MCSampler(n_chunk=opts.n_chunk)
+            _apply_av2_args(sampler)
         elif name =='GMM':
             sampler = mcsamplerEnsemble.MCSampler()
             # A GMM member needs the GMM-specific argument blocks below to run so its config is
@@ -2765,7 +2809,7 @@ elif opts.sampler_method == "portfolio":
             # previous value -- the plain MCSampler built before this chain, or, on the second
             # and later iterations, the PREVIOUS member -- and appended it silently.  The
             # portfolio then ran with a member the user never asked for.
-            raise Exception(" --sampler-portfolio: unknown member '{}'.  Known: AV, GMM, AC/adaptive_cartesian_gpu, {}".format(name, sorted(mcsamplerPortfolio.known_pipelines)))
+            raise Exception(" --sampler-portfolio: unknown member '{}'.  Known: AV, AV2, GMM, AC/adaptive_cartesian_gpu, {}".format(name, sorted(mcsamplerPortfolio.known_pipelines)))
         print('PORTFOLIO: adding {} '.format(name))
         # enable xpy for low level sampler as needed 
         if hasattr(sampler, 'xpy'):
@@ -2862,7 +2906,7 @@ if not (opts.distance_marginalization and lookup_table["phase_marginalization"])
 #
 
 adapt_extra_extrinsic=False
-if (opts.sampler_method == "adaptive_cartesian_gpu"  or opts.sampler_method == 'AV' ) or use_portfolio or opts.force_adapt_all:  # this is a better/more stable/faster adaptive code, trust it to adapt in more extrinsic dimensions
+if (opts.sampler_method in ("adaptive_cartesian_gpu", 'AV', 'AV2')) or use_portfolio or opts.force_adapt_all:  # this is a better/more stable/faster adaptive code, trust it to adapt in more extrinsic dimensions
   adapt_extra_extrinsic=True
 
 if not opts.inclination_cosine_sampler:
@@ -3269,7 +3313,7 @@ if (opts.sampler_method=="GMM") and opts.internal_use_lnL:
 if opts.sampler_method =="adaptive_cartesian_gpu" and opts.internal_use_lnL:
   return_lnL=True
   pinned_params.update({"use_lnL":True})
-if opts.sampler_method =="AV" and opts.internal_use_lnL:
+if opts.sampler_method in ("AV", "AV2") and opts.internal_use_lnL:
   # AV integrates in log space natively (integrate() is a thin wrapper over integrate_log);
   # without this, --internal-use-lnL --sampler-method AV passed the ok_lnL_methods check but
   # silently did nothing, so exp(lnL) overflowed at high SNR when no logarithm offset was set.
@@ -3466,6 +3510,8 @@ if use_gmm_args:   # standalone GMM, or a portfolio carrying a GMM member (see u
       print("GMM adaptive components (BIC, cap {}, defensive {}, inflate {}): groups {}".format(
           k_cap, opts.internal_gmm_defensive_frac, opts.internal_gmm_inflate, list(gmm_adaptive.keys())))
     pinned_params.update(extra_args)
+if opts.sampler_method == "AV2":
+  return_lnL=True
 if opts.sampler_method == "AV":
   return_lnL=True
   pinned_params.update( { 'enforce_bounds':True})  # don't go out of range : choose integer bin sizes
@@ -7454,8 +7500,8 @@ for indx in numpy.arange(len(P_list)):
       # reset the GMM dictionary
       for component in gmm_dict:
           gmm_dict[component] = None
-    elif opts.sampler_method == 'AV':
-      print(" AV always resets every iteration ! ")
+    elif opts.sampler_method in ('AV', 'AV2'):
+      print(" {} always resets every iteration ! ".format(opts.sampler_method))
     else:
       print(" force-reset-all not defined for this integrator ")
       sys.exit(1)

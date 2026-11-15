@@ -383,7 +383,7 @@ def shape_metrics(target, X, ln_wt, rng):
 # ----------------------------------------------------------------------------
 # Sampler adapter (production API, tolerant of older branches)
 # ----------------------------------------------------------------------------
-KNOWN_SAMPLERS = ("AV", "GMM", "NF", "portfolio", "AC", "default")
+KNOWN_SAMPLERS = ("AV", "AV2", "GMM", "NF", "portfolio", "portfolio_AV2", "AC", "default")
 
 
 def _gpu_available():
@@ -420,7 +420,7 @@ def _force_cpu_modules():
     import scipy.special as _sp
     for name in ("mcsampler", "mcsamplerEnsemble", "MonteCarloEnsemble",
                  "gaussian_mixture_model", "mcsamplerGPU",
-                 "mcsamplerAdaptiveVolume", "mcsamplerPortfolio",
+                 "mcsamplerAdaptiveVolume", "mcsamplerVaraha2", "mcsamplerPortfolio",
                  "mcsamplerNFlow"):
         try:
             mod = importlib.import_module("RIFT.integrators." + name)
@@ -460,9 +460,22 @@ def build_sampler(kind, target, n_chunk):
             s = mcsamplerAdaptiveVolume.MCSampler(n_chunk=n_chunk)
         except TypeError:   # older signature
             s = mcsamplerAdaptiveVolume.MCSampler()
+    elif kind == "AV2":
+        from RIFT.integrators import mcsamplerVaraha2   # absent on older branches: run_one records the error
+        s = mcsamplerVaraha2.MCSampler(n_chunk=n_chunk)
     elif kind == "NF":
         from RIFT.integrators import mcsamplerNFlow
         s = mcsamplerNFlow.MCSampler()
+    elif kind == "portfolio_AV2":
+        from RIFT.integrators import mcsamplerPortfolio, mcsamplerVaraha2, mcsamplerEnsemble
+        m1 = mcsamplerVaraha2.MCSampler(n_chunk=n_chunk)
+        m2 = mcsamplerEnsemble.MCSampler()
+        if not _gpu_available():
+            _force_cpu(m1)
+            _force_cpu(m2)
+        s = mcsamplerPortfolio.MCSampler(portfolio=[m1, m2])
+        if not _gpu_available():
+            _force_cpu(s)
     elif kind == "portfolio":
         from RIFT.integrators import (mcsamplerPortfolio,
                                       mcsamplerAdaptiveVolume, mcsamplerEnsemble)

@@ -606,8 +606,9 @@ def test_all_seven_rebind_sites_are_wired_the_same_way():
         total_fd += src.count('RvsRecord.fair_draw(')
         total_ret += src.count('RvsRecord.retained(')
         total_reset += n_sites
-    assert total_fd == total_ret == total_reset == 7, \
-        'expected 7 rebind sites wired, got {}/{}/{}'.format(total_fd, total_ret, total_reset)
+    # 7 from the PR #87 patcher, plus mcsamplerVaraha2 (AV2), wired by hand to the same pattern.
+    assert total_fd == total_ret == total_reset == 8, \
+        'expected 8 rebind sites wired, got {}/{}/{}'.format(total_fd, total_ret, total_reset)
 
 
 _INTEGRATORS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
