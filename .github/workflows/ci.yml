@@ -988,7 +988,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
-      # pygsl_lite 0.1.8 uses the pre-84 distutils.spawn calling convention.
+      # pygsl_lite 0.1.8 needs setuptools<84 and swig<4.5 to build; see the file.
       # This affects only PEP 517 build backends, not the unpinned runtime solve.
       PIP_BUILD_CONSTRAINT: ${{ github.workspace }}/containers/constraints-container-build.txt
     steps:
