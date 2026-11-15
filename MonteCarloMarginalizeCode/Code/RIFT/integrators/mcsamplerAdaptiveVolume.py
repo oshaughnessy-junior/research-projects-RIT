@@ -2402,8 +2402,9 @@ class MCSampler(SamplerOutputMixin, object):
         # biased high whenever a cycle's occupied bins miss part of the previous live
         # region, because the missed part is its low-likelihood rim; V now only sizes bins.
         # Result is put on allloglkl's backend so the arithmetic below stays on one backend.
-        _log_ps = log_retained_density(identity_convert(allx), allcyc, draw_grids,
-                                       self.my_ranges.T[0], self.dx0, pinned_dims=_pinned)
+        # EXPERIMENT ONLY: restore the pre-412 scalar retained density.
+        # Keep all modern drawing, bounds, stopping and diagnostics unchanged.
+        _log_ps = np.full(len(allx), np.log(1.0 / V) - np.sum(np.log(self.dx0)))
         self._rvs['log_joint_s_prior'] = xpy_here.ones_like(allloglkl)*(identity_convert_togpu(_log_ps) if cupy_ok else _log_ps)
 
         # WARM-SEED RESERVE: keep a bounded copy of the points this pass actually RETAINED,
