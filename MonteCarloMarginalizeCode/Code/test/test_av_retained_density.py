@@ -397,6 +397,8 @@ def _seeded_av_state(mode, seed=7, ndim=4, n_chunk=2000, sig=0.01):
     chunk, with a dilation layer on a thin ring, and the portfolio's
     update_sampling_prior_selfish."""
     np.random.seed(seed)
+    if mcsamplerAV.cupy_ok:     # the sampler draws from CuPy's generator when CuPy imports
+        mcsamplerAV.cupy.random.seed(seed)
     names = ['x%d' % i for i in range(ndim)]
     s = mcsamplerAV.MCSampler(n_chunk=n_chunk)
     s.xpy = np
@@ -452,7 +454,8 @@ def test_av_pass_identical_to_reference_binning(mode, monkeypatch):
     assert mode not in ('long', 'dilate') or keyed['n_same_width'] > 5, 'no cycles shared bin widths'
     assert keyed.keys() == rows.keys()
     for key in keyed:
-        got, want = np.asarray(keyed[key]), np.asarray(rows[key])
+        to_host = lambda v: np.asarray(mcsamplerAV.identity_convert(v))   # selfish state is on the device
+        got, want = to_host(keyed[key]), to_host(rows[key])
         assert got.dtype == want.dtype, key
         np.testing.assert_array_equal(got, want, err_msg=key)
     assert mode == 'selfish' or keyed['ntotal'] == keyed['n_drawn'] > 0
