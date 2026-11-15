@@ -227,11 +227,12 @@ class MCSampler(SamplerOutputMixin, object):
             CYC=np.zeros(0, dtype=int), pinside=1.0, n_drawn=0, nfail_alloc=0,
             n_forced_floor=0, converged=False)
 
-    def _cycle(self, lnF, no_protect_names=True, max_draws=None):
+    def _cycle(self, lnF, no_protect_names=True, max_draws=None, draw_budget=None):
         """One Varaha-v2 cycle: draw the current grid, evaluate, update densities, threshold, and
         build the next grid.  Returns the number of likelihood evaluations made.  max_draws caps the
         NEXT grid's planned draws (portfolio selfish steps, whose calls fall outside the portfolio's
-        nmax); the density uses the planned counts, so the cap changes efficiency, not the estimate."""
+        nmax); draw_budget caps the total draws so far plus the next grid's (standalone adaptation).
+        The density uses the planned counts, so either cap changes efficiency, not the estimate."""
         s = self._state
         f = self.frac
         nback = int(-np.log(2.0) / np.log(f))
@@ -308,7 +309,13 @@ class MCSampler(SamplerOutputMixin, object):
         injneff2 = iw.sum() ** 2 / np.sum(iw ** 2)
         nsamp = (1 - f) * live.sum() / max(eff, 1e-3) / 0.9 * (self.neff_gate / injneff2)
         nsamp = min(nsamp, self.max_cycle_draws * self.neff_gate)
+        if draw_budget is not None:
+            left = draw_budget - s['n_drawn']
+            max_draws = left if max_draws is None else min(max_draws, left)
         if max_draws is not None:
+            if max_draws < 1:
+                s['cycle'] = cyc + 1      # budget spent: no next grid, the caller stops adapting
+                return nd
             nsamp = min(nsamp, float(max_draws))
         s['cycle'] = cyc = cyc + 1
         nb = _get_bins(s['logdV'][lc], self._adaptive_mask(), cyc)
@@ -444,9 +451,19 @@ class MCSampler(SamplerOutputMixin, object):
         s = self._state
 
         # --- adaptation
-        n_adapt_max = self.adapt_budget_frac * nmax
-        while not s['converged'] and s['n_drawn'] < n_adapt_max and s['cycle'] < 5000:
-            self._cycle(lnF, no_protect_names=no_protect)
+        # Every grid is sized before it is drawn, so adaptation never spends more than
+        # n_adapt_max calls and the refresh keeps the rest of nmax.
+        n_adapt_max = int(self.adapt_budget_frac * nmax)
+        g0 = s['grids'][1]
+        if g0.counts[0] > n_adapt_max:
+            s['grids'][1] = _Grid(g0.nbins, g0.bins, [max(n_adapt_max, 1)], self.coef)
+        while not s['converged'] and s['cycle'] < 5000:
+            cur = s['grids'].get(s['cycle'])
+            # a redraw path (no finite draws, or pruning emptied the live set) can leave a grid
+            # larger than what is left; stop rather than overrun
+            if cur is None or s['n_drawn'] + cur.counts.sum() > n_adapt_max:
+                break
+            self._cycle(lnF, no_protect_names=no_protect, draw_budget=n_adapt_max)
             if verbose:
                 print("  [AV2] cycle {} N={} pinside={:.4f} logV={:.3f} kept={} grids={}".format(
                     s['cycle'], s['n_drawn'], s['pinside'], s['logV'][s['lkl_cycle']], len(s['G']), len(s['grids'])))
@@ -464,7 +481,7 @@ class MCSampler(SamplerOutputMixin, object):
         n_ref = 0
         eff_samp = 0.0
         while True:
-            U = self._draw_mixture_u(n)
+            U = self._draw_mixture_u(max(1, min(n, int(nmax) - n_adapt - n_ref)))
             X = self._to_x(U)
             lnL = self._eval(lnF, X, no_protect)
             lp = self._log_prior(X)

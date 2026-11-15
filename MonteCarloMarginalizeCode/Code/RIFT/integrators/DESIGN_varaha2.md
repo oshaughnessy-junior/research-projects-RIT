@@ -21,7 +21,8 @@ Source: Tiwari, arXiv:2405.16568; `github.com/vaibhavtewari/Varaha` `v2/` at `23
    Every bin with weight above `post_floor` times the maximum gets at least one draw.
 6. Cycles far below the posterior bulk are removed, with their draws and density terms.
 7. Adaptation stops when the posterior mass above the threshold is below `stop_pinside`, or at
-   `adapt_budget_frac * nmax` draws.
+   `adapt_budget_frac * nmax` draws. Each grid is sized to fit the remaining adaptation budget
+   before it is drawn, so adaptation never takes the refresh pass's share.
 8. Refresh: draw from the frozen mixture, with a share `defensive_frac` uniform over the box, until
    `n_eff >= neff` or `nmax`. lnZ, its error and the exported rows come from these draws alone.
 

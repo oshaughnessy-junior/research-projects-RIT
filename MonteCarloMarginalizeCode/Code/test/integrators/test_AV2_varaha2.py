@@ -11,6 +11,7 @@ analyses/varaha_v2_evaluation_20261114 (see DESIGN_varaha2.md).
   3. A stalled pass is reported as collapsed, not as a quiet number.
   4. A pinned parameter integrates over the others only.
   5. A portfolio [AV2, AV] recovers a known lnZ.
+  6. Likelihood calls never exceed nmax, and the refresh keeps its share.
 
 Usage:
   CUDA_VISIBLE_DEVICES= python -m pytest -q MonteCarloMarginalizeCode/Code/test/integrators/test_AV2_varaha2.py
@@ -67,7 +68,7 @@ def test_known_answer_needle():
     # the exported rows reproduce the estimate under the RIFT convention
     lw = s._rvs['log_integrand'] + s._rvs['log_joint_prior'] - s._rvs['log_joint_s_prior']
     assert abs(logsumexp(lw) - np.log(len(lw)) - lnI) < 1e-8
-    assert s.ntotal <= 8e5 + 5000
+    assert s.ntotal <= 8e5
 
 
 def test_sampling_density_normalized_and_reported():
@@ -133,3 +134,21 @@ def test_portfolio_member():
     lnI = float(np.asarray(lnI))
     err = 0.5 * (float(np.asarray(logvar)) - 2 * lnI)
     assert abs(lnI - T.lnZ) < 5 * np.exp(err) + 0.02, (lnI, T.lnZ)
+
+
+@pytest.mark.parametrize("nmax,n", [(1000, 100), (3000, 1000), (20000, 5000)])
+def test_nmax_bounds_likelihood_calls(nmax, n):
+    """Adaptation is capped at adapt_budget_frac*nmax before each grid is drawn, so it cannot
+    eat the refresh pass (default first grid alone is neff_gate/frac+1 = 2501 draws)."""
+    np.random.seed(2)
+    T = Needle(ndim=3, sigma=0.05)
+    calls = [0]
+
+    def lnF(*cols):
+        calls[0] += len(cols[0])
+        return T(*cols)
+    s = _build(3)
+    lnI, logvar, neff, d = s.integrate_log(lnF, "x0", "x1", "x2", no_protect_names=True,
+                                           n=n, nmax=nmax, neff=1e9)
+    assert calls[0] == s.ntotal <= nmax, (calls[0], s.ntotal, nmax)
+    assert calls[0] - s._state['n_drawn'] >= (1 - s.adapt_budget_frac) * nmax - 1

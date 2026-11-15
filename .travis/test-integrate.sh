@@ -324,9 +324,9 @@ if [ "${_NFCONTRACT_PASSED:-0}" -ne "$_NFCONTRACT_EXPECTED" ]; then
 fi
 
 # AV2 (mcsamplerVaraha2, opt-in --sampler-method AV2): known answer, normalized member density,
-# stall reported as collapse, pinned parameter, portfolio member.  ~15 s.
+# stall reported as collapse, pinned parameter, portfolio member, nmax bound (3 cases).  ~20 s.
 _AV2_TESTS=MonteCarloMarginalizeCode/Code/test/integrators/test_AV2_varaha2.py
-_AV2_EXPECTED=5
+_AV2_EXPECTED=8
 _AV2_OUT=$(python -m pytest -q "$_AV2_TESTS" 2>&1 | tee >(cat >&2)) \
     || { echo "AV2 gate FAILED" >&2; exit 1; }
 _AV2_PASSED=$(printf '%s\n' "$_AV2_OUT" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '^[0-9]+')
