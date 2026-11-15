@@ -1230,6 +1230,18 @@ an angle in radians must not get different tolerances.</p></li>
 <dd></dd></dl>
 
 <dl class="py function">
+<dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.unique_rows">
+<span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">unique_rows</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">a</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">return_index</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">return_inverse</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">return_counts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.unique_rows" title="Link to this definition"></a></dt>
+<dd><p>np.unique(a, axis=0) for a 2-D integer array, with the same rows, order, dtype and extras
+(the inverse comes back 1-D).</p>
+<p>Each row is flattened to one int64 key in row-major order over shape = max + 1, so sorted
+keys decode to the lexicographic row order np.unique returns.  Sorting int64 keys is far
+cheaper than sorting rows.  np.unique itself handles the cases keys cannot: a negative
+entry, a key range that would overflow int64, more columns than ravel_multi_index takes,
+an empty array, or a non-integer dtype.</p>
+</dd></dl>
+
+<dl class="py function">
 <dt class="sig sig-object py" id="RIFT.integrators.mcsamplerAdaptiveVolume.unseen_fraction">
 <span class="sig-prename descclassname"><span class="pre">RIFT.integrators.mcsamplerAdaptiveVolume.</span></span><span class="sig-name descname"><span class="pre">unseen_fraction</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">X</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lnw</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">box_lo</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">axes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#RIFT.integrators.mcsamplerAdaptiveVolume.unseen_fraction" title="Link to this definition"></a></dt>
 <dd><p>Good-Turing estimate of the posterior mass the grid does not cover: the weight exp(lnw)
