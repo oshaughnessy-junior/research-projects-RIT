@@ -1,4 +1,5 @@
 name: CI
+run-name: ${{ github.workflow }} / ${{ inputs.canary_id || github.event_name }} / ${{ inputs.runner || 'ubuntu-26.04' }}
 
 on:
   push:
@@ -6,19 +7,27 @@ on:
   pull_request:
     branches: [rift_O4d, rift_O4d_junior, rift_O4d_gmm_gpu]
   workflow_dispatch:
-  schedule:
-    # Weekly canary so a fresh UPSTREAM release (e.g. swig>=4.4.0 -- see #136)
-    # is caught even when there is no RIFT commit. Mondays 06:00 UTC.
-    - cron: '0 6 * * 1'
+    inputs:
+      runner:
+        description: Ubuntu runner (latest is the upstream migration canary)
+        type: choice
+        default: ubuntu-26.04
+        options:
+          - ubuntu-26.04
+          - ubuntu-latest
+      canary_id:
+        description: Correlation ID supplied by the default-branch scheduler
+        type: string
+        default: ''
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.canary_id || github.event_name }}
   cancel-in-progress: true
 
 jobs:
   install:
     # Python 3.9 has no setup-python build for Ubuntu 26.04.
-    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || inputs.runner || 'ubuntu-26.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +55,7 @@ jobs:
 
   help-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,7 +77,7 @@ jobs:
   import-check:
     needs: install
     # Python 3.9 has no setup-python build for Ubuntu 26.04.
-    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || inputs.runner || 'ubuntu-26.04' }}
     # Verify every declared module imports cleanly under both the pinned
     # legacy lane (py3.9 + numpy 1.24.4) and the modern lane (py3.12 +
     # numpy 2.x). Catches platform-portability regressions like the
@@ -112,7 +121,7 @@ jobs:
   dependency-compat-check:
     needs: install
     # Python 3.9 has no setup-python build for Ubuntu 26.04.
-    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || inputs.runner || 'ubuntu-26.04' }}
     # Focused upstream-library smoke test for scipy/h5py/numba/matplotlib plus
     # RIFT's portable precision dtype. This complements the broader import and
     # test-run jobs with a compact version matrix and small functional probes.
@@ -186,7 +195,7 @@ jobs:
 
   sim-manager-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -213,7 +222,7 @@ jobs:
 
   integrator-gate-accounting-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     # The shape-recovery gate and its opt-in flag probe are far too expensive for CI and stay out
     # of it. The ACCOUNTING that decides whether one of their rows BLOCKS a merge is neither: it is
     # pure logic, runs in seconds (no sampler is ever built -- the gate seams are stubbed), and a
@@ -265,7 +274,7 @@ jobs:
 
   q-window-stencil-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -319,7 +328,7 @@ jobs:
         run: bash .travis/test-q-window-stencil.sh
 
   ci-roster-check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     # Census, one level above every other gate in this file.  CI membership here is per-file and
     # hand-listed -- ci.yml and .gitlab-ci.yml name individual files, .travis/*.sh name individual
     # files, and three directories are handed to pytest whole.  Two mechanisms already defend a
@@ -344,7 +353,7 @@ jobs:
 
   roster-verify-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     # Companion to ci-roster-check, and the answer to a gap that job cannot close: it enforces
     # that every ungated test file carries a REASON, but not that the reason is TRUE.  That was
     # not hypothetical -- the roster asserted "skips cleanly without them" for two jax_gp files
@@ -385,7 +394,7 @@ jobs:
 
   core-unit-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     # The tests the census found unrun and that SHOULD run: ordinary pytest suites, numpy /
     # scipy / lal / sklearn only, that collect and pass in ~50 s, spanning calmarg, likelihood
     # dispatch, integrator seeding and allocation, CIP evidence, distance export, hyperpipe, and
@@ -444,7 +453,7 @@ jobs:
 
   slowrot-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     # RIFT/likelihood/test_slowrot_*.py was run by NOTHING in this workflow until this
     # job landed: `grep -rn slowrot .github/workflows/ci.yml` returned a single hit and
     # it was a comment (issue #169).  That gap is worse than an ordinary one, because
@@ -491,7 +500,7 @@ jobs:
 
   jax-ile-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     # Sharded 2026-09-08: the suite outgrew the 60-minute cap below.  Only the
     # execute step splits; the FILES manifest, the collection floor against
     # EXPECTED_TESTS and the deselect-resolution check run in full in every
@@ -626,7 +635,7 @@ jobs:
   # job in .gitlab-ci.yml.
   lisa-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -647,7 +656,7 @@ jobs:
 
   calmarg-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -675,7 +684,7 @@ jobs:
 
   integration-check:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -696,7 +705,7 @@ jobs:
 
   asimov-integration:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -735,7 +744,7 @@ jobs:
 
   rimsky-integration:
     needs: install
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     env:
       # Job-wide: later --upgrade installs must retain the qualified SGN API.
       PIP_CONSTRAINT: ${{ github.workspace }}/.travis/rimsky-constraints.txt
@@ -806,7 +815,7 @@ jobs:
   test-run:
     needs: install
     # Python 3.9 has no setup-python build for Ubuntu 26.04.
-    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || inputs.runner || 'ubuntu-26.04' }}
     # Integrator + posterior gate. We run this in two CI lanes:
     #   - legacy : py3.9 + numpy 1.24.4 -- the historically known-good
     #              configuration on Linux x86_64 where np.float128 is real.
@@ -981,12 +990,12 @@ jobs:
     # RIFT and only surface when a container rebuild fails (e.g. swig>=4.4.0,
     # issue #136). This job installs that same unpinned set + exercises the pixi
     # swig-post44 deployment lane and runs the import check, so we get an early
-    # warning. Runs on push/PR AND weekly (see on.schedule).
+    # warning. Runs on push/PR and via the default-branch weekly dispatcher.
     #
     # Non-blocking: it tracks UPSTREAM changes outside any PR author's control,
-    # so a red run should alert maintainers, not block unrelated PRs.
+    # so failures do not block unrelated PRs. Weekly ubuntu-latest runs fail loudly.
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: ${{ inputs.runner != 'ubuntu-latest' }}
     env:
       # pygsl_lite 0.1.8 needs setuptools<84 and swig<4.5 to build; see the file.
       # This affects only PEP 517 build backends, not the unpinned runtime solve.
@@ -1021,9 +1030,9 @@ jobs:
     # Companion to container-dep-canary: exercise the pixi swig-post44 lane,
     # which is the direct issue-#136 detector (swig>=4.4.0 breaking RIFT's
     # generated bindings). Kept as its own job so a swig failure is distinct
-    # from a general dependency-resolution failure. Also non-blocking.
+    # from a general dependency-resolution failure. Blocking in weekly canary runs.
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: ${{ inputs.runner != 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
@@ -1039,7 +1048,7 @@ jobs:
         run: pixi run -e swig-post44 import-check
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-26.04' }}
     permissions:
       contents: write
     steps:
