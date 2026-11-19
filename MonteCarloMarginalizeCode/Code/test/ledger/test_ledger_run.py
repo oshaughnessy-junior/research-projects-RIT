@@ -190,3 +190,15 @@ def test_ile_arguments_off_the_supported_path_are_refused(change, named):
     with pytest.raises(SystemExit) as err:
         rundir.check_ile_tokens(ILE.replace(*change).split())
     assert named in str(err.value)
+
+
+def test_an_engine_that_cannot_start_stops_the_run(tmp_path):
+    """Protects: a broken engine is reported as such, and does not turn the points of a version
+    into failed rows with weight zero one after another.  Oracle: analytic (exit status 6 and
+    at most one key marked failed)."""
+    run_dir = str(tmp_path / "broken")
+    cmd, env = _command(run_dir)
+    cmd[cmd.index("--engine-command") + 1] = "exit 7"
+    assert subprocess.run(cmd, env=env).returncode == 6
+    rows, _ = controller.Run(run_dir).ledger()
+    assert len(rows) <= 1

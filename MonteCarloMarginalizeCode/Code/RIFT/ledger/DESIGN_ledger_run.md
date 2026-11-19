@@ -108,6 +108,7 @@ left running on the same host.
 | 3 | time budget spent; start again to resume |
 | 4 | stopped without a certificate |
 | 5 | an engine left the NoLoop path |
+| 6 | three engine launches in a row failed before their first row |
 
 ## Hyperpipe stage
 

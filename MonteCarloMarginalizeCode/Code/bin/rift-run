@@ -12,7 +12,8 @@ until the proposal freezes, then one frozen round until the stop rule holds, and
 DIR/certificate.json and DIR/posterior_samples.dat.
 
 Exit status: 0 certified; 3 time budget spent (start again to resume); 4 stopped without
-a certificate; 5 an engine left the NoLoop likelihood path.
+a certificate; 5 an engine left the NoLoop likelihood path; 6 the engine fails before its
+first row.
 """
 import argparse
 import json
@@ -76,6 +77,7 @@ def first_start(opts):
             + ["--sim-grid", "{lease}", "--n-events-to-analyze", "{n}", "--event=0",
                "--output-file=" + shlex.quote(tmp) + "/{base}"])
         engine["ile_args"] = tokens
+        engine["cleanup"] = os.path.join(tmp, "{base}_*")     # ILE's own per-point files; the shard is the record
         os.makedirs(tmp, exist_ok=True)
     controller.init(opts.run_dir, box, header, **overrides)
     controller.write_atomic(os.path.join(opts.run_dir, "engine.json"), json.dumps(engine, indent=1, sort_keys=True))
@@ -90,7 +92,7 @@ def main():
         engine = json.load(open(os.path.join(opts.run_dir, "engine.json")))
         gpus = [g for g in (opts.engine_gpus or "").split(",") if g]
         return inproc.run(os.path.abspath(opts.run_dir), engine["command"], cwd=engine["cwd"], engines=opts.engines,
-                          gpus=gpus, budget=opts.budget, chaos=opts.chaos)
+                          gpus=gpus, budget=opts.budget, chaos=opts.chaos, cleanup=engine.get("cleanup"))
     run = controller.Run(os.path.abspath(opts.run_dir))
     if opts.command == "status":
         print(json.dumps(controller.status(run), indent=1))

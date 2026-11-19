@@ -10,11 +10,16 @@ After an engine exits:
   its own non-zero exit            a strike against the first missing key; two strikes make it FAILED
   killed (budget or chaos)         nothing is recorded; the next lease covers the missing rows
 
+Three launches in a row that fail without writing a row end the supervisor with exit
+status 6: the engine cannot start, and marking one point after another as failed would
+be wrong.
+
 `chaos` kills engines on purpose, for tests: `engine=N` engine processes, each after a
 random delay between `lo` and `hi` seconds, on alternate launches.  Every kill is logged
 in ctl/chaos.jsonl.
 """
 import fcntl
+import glob
 import json
 import os
 import signal
@@ -26,7 +31,8 @@ import numpy as np
 
 from . import controller
 
-EXIT_DONE, EXIT_BUDGET, EXIT_FAILED, EXIT_REDLINE = 0, 3, 4, 5
+EXIT_DONE, EXIT_BUDGET, EXIT_FAILED, EXIT_REDLINE, EXIT_ENGINE = 0, 3, 4, 5, 6
+BARREN_LIMIT = 3      # consecutive engine launches that fail before writing any row
 # Lines that mean an engine was not on the NoLoop likelihood (RIFT AGENTS.md, REDLINE).
 # `Override --gpu` is expected on a host without cupy once --force-xpy is given, which the engine requires.
 OFF_NOLOOP = ("this is the old vectorized code path not the xpy path", "NOT APPLIED -- this configuration cannot honour")
@@ -79,8 +85,10 @@ def _reap_orphans(run_dir):
     os.remove(path)
 
 
-def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("inf"), chaos="", min_left=30.0):
-    """Drive the run.  engine_command is a shell template with {lease} {keys} {shard} {n} {log} {base}."""
+def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("inf"), chaos="", min_left=30.0,
+        cleanup=None):
+    """Drive the run.  engine_command is a shell template with {lease} {keys} {shard} {n} {log} {base}.
+    cleanup is a glob template in {base}: files an engine leaves that are removed after its lease."""
     os.makedirs(os.path.join(run_dir, "ctl"), exist_ok=True)
     os.makedirs(os.path.join(run_dir, "logs"), exist_ok=True)
     lock = open(os.path.join(run_dir, "ctl", "lock"), "w")
@@ -94,6 +102,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     spec.update({k: float(v) for k, v in (kv.split("=") for kv in chaos.split(",") if kv)})
     state_file = os.path.join(run_dir, "ctl", "supervisor_state.json")
     state = json.load(open(state_file)) if os.path.exists(state_file) else dict(engine_kills=0, launches=0, strikes={})
+    barren = 0
     rng = np.random.default_rng([int(spec["seed"]), state["launches"]])
     live = []
 
@@ -176,6 +185,14 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 rec = dict(lease=base, rows=len(have), missing=len(missing), status=eng.returncode,
                            killed=bool(killed), wall=time.time() - t0, off_noloop=_off_noloop(logf))
                 off += rec["off_noloop"]
+                if cleanup:
+                    for f in glob.glob(cleanup.format(base=base)):
+                        try:
+                            os.remove(f)
+                        except OSError:
+                            pass
+                if not killed:
+                    barren = barren + 1 if (eng.returncode != 0 and not have) else 0
                 failed = []
                 if not killed and missing:
                     if eng.returncode == 0:
@@ -200,6 +217,11 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 r.set_head(**dict(r.head(), state="FAILED", reason="an engine left the NoLoop likelihood path"))
                 print("ledger run: %d engine log lines show the likelihood off the NoLoop path; stopping" % off, flush=True)
                 return EXIT_REDLINE
+            if barren >= BARREN_LIMIT:
+                print("ledger run: %d engine launches in a row failed before their first row; see %s. "
+                      "A key marked FAILED by these launches is in a ledger/*-ctl.jsonl file." % (
+                          barren, os.path.join(run_dir, "logs")), flush=True)
+                return EXIT_ENGINE
             if why == "budget":
                 print("ledger run: budget spent; the run resumes on the next start", flush=True)
                 return EXIT_BUDGET
