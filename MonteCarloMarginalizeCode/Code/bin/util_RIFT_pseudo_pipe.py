@@ -531,6 +531,8 @@ parser.add_argument("--use-subdags",action='store_true',help="Use CEPP_Alternate
 parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration","AlternateIteration","BasicMultiApproxIteration","Hyperpipe"],help="Explicitly select the low-level iteration builder, as a drop-in hot-swap for side-by-side A/B testing. The create_event_parameter_pipeline_* names select those builders directly; Hyperpipe is opt-in and uses the generic .dat pipeline with ILE as its indexed-grid MARG evaluator. Overrides the implicit --use-subdags routing. If unset, the builder is chosen by --use-subdags (Alternate) vs. the default (Basic).")
 parser.add_argument("--hyperpipe-eos-post-condor-commands", default=None, help="JSON native runtime/resource policy for Hyperpipe posterior and prior workers; transport/placement keys are reserved")
 parser.add_argument("--terminal-stage-extra-file",default=None,type=str,help="Path to a user terminal-stage manifest (version 1, same schema as the generated terminal_stage_specs.json) whose stages are appended to the ones this pipeline generates. Its stages may name generated stages in depends_on; see RIFT.misc.terminal_stage_products for the stable stage names and the file each writes. Relative paths resolve against the run directory. Requires --pipeline-builder Hyperpipe.")
+parser.add_argument("--ledger-run",action='store_true',help="Replace the iteration loop by one ledger run (RIFT/ledger/DESIGN_ledger_run.md): the workflow has no iterations and one terminal stage, ledger_run, which runs rift-run on this run directory's ILE arguments and on the prior of the last posterior argument line. It writes ledger/certificate.json and ledger/posterior_samples.dat. Requires --pipeline-builder Hyperpipe and --ile-sampler-method AV; one prior is implemented and rift-run refuses the rest when it starts.")
+parser.add_argument("--ledger-run-args",default="",type=str,help="Extra arguments for rift-run under --ledger-run, as one string (for example '--budget 3300 --engines 2').")
 parser.add_argument("--use-ile-subdags",action='store_true',help="Use ILE subdag system (new)")
 parser.add_argument("--bilby-ini-file",default=None,type=str,help="Pass ini file for parsing. Intended to use for calibration reweighting. Full path recommended")
 parser.add_argument("--bilby-pickle-file",default=None,type=str,help="Bilby Pickle file with event settings. Intended to use for calibration reweighting. Full path recommended")
@@ -1134,6 +1136,17 @@ if opts.pipeline_builder == "Hyperpipe":
          "--export-distance-slices without --add-extrinsic"),
         (opts.ile_zero_likelihood_data_free and opts.add_extrinsic,
          "--ile-zero-likelihood-data-free with --add-extrinsic"),
+        # A ledger run has no final iteration grid for the extrinsic fan-out
+        # to read, and no stage yet turns its weighted rows into one.
+        (opts.ledger_run and opts.add_extrinsic,
+         "--ledger-run with --add-extrinsic"),
+        (opts.ledger_run and opts.use_jax_ile,
+         "--ledger-run with --use-jax-ile"),
+        (opts.ledger_run and opts.ile_zero_likelihood_data_free,
+         "--ledger-run with --ile-zero-likelihood-data-free"),
+        (opts.ledger_run and opts.use_osg,
+         "--ledger-run with --use-osg (the in-process transport runs its "
+         "engines on one host)"),
     ]
     for active, label in _hyperpipe_feature_checks:
         if active:
@@ -1193,6 +1206,15 @@ if _wt_requested:
             os.path.expanduser(opts.internal_ile_supplementary_waveform_transform_ini))
     print(" Extra-parameter waveform transform: {} with extra parameters {}".format(
         opts.internal_ile_supplementary_waveform_transform_code, _wt_names))
+
+if ((opts.ledger_run or opts.ledger_run_args)
+        and opts.pipeline_builder != "Hyperpipe"):
+    # Same reasoning as --terminal-stage-extra-file below: the other builders
+    # would build their usual pipeline without the stage and exit zero.
+    raise SystemExit(
+        "pseudo_pipe: --ledger-run requires --pipeline-builder Hyperpipe")
+if opts.ledger_run_args and not opts.ledger_run:
+    raise SystemExit("pseudo_pipe: --ledger-run-args requires --ledger-run")
 
 if (opts.terminal_stage_extra_file
         and opts.pipeline_builder != "Hyperpipe"):
@@ -3934,6 +3956,39 @@ if opts.pipeline_builder == "Hyperpipe":
                             terminal_extrinsic_dir, postfix,
                             os.getcwd(), output)),
                 }, **terminal_command_common))
+    if opts.ledger_run:
+        # One command stage replaces the iteration loop.  rift-run reads the
+        # ILE argument line and the prior of the last posterior line from the
+        # files this build wrote, and refuses at start what it cannot honour.
+        # It keeps its whole state under ledger/, so a retry resumes the run.
+        ledger_log_dir = os.path.abspath("ledger_logs")
+        os.makedirs(ledger_log_dir, exist_ok=True)
+        terminal_stages.append({
+            "name": "ledger_run",
+            "kind": "command-v1",
+            "exe": shutil.which("rift-run") or "rift-run",
+            "args": " ".join([
+                "--transport inproc",
+                "--run-dir", os.path.abspath("ledger"),
+                "--ile-args-file", os.path.abspath("args_ile.txt"),
+                "--prior-args-file", os.path.abspath("args_cip_list.txt"),
+                "--grid-template", os.path.abspath("proposed-grid.dat"),
+                "--ile-exe", hyperpipe_ile_exe,
+                opts.ledger_run_args]).strip(),
+            "initial_dir": os.getcwd(),
+            "log_dir": ledger_log_dir,
+            "universe": "vanilla",
+            "no_grid": bool(opts.condor_nogrid_nonworker),
+            "execution": {
+                "request_memory": int(ile_mem),
+                "request_disk": general_request_disk,
+                "request_gpu": not opts.ile_no_gpu,
+                "retries": int(opts.general_retries),
+                # The default removes a command job after two hours; a ledger
+                # run is the whole analysis.  A retry resumes it.
+                "max_runtime_minutes": 2880,
+            },
+        })
     # The user's stages come last and are never reordered among themselves, so
     # a manifest read on its own runs in the order it is written.  They are
     # merged outside the --add-extrinsic block on purpose: a stage that only
@@ -3981,13 +4036,20 @@ if opts.pipeline_builder == "Hyperpipe":
         "--request-memory-marg", str(cip_mem),
         "--general-request-disk", str(general_request_disk),
         "--n-samples-per-job", str(npts_it),
-        "--n-iterations", str(n_iterations),
+        # A ledger run replaces every iteration; the builder then writes the
+        # terminal stages alone.
+        "--n-iterations", str(0 if opts.ledger_run else n_iterations),
         "--n-iterations-subdag-max",
         str(opts.internal_n_iterations_subdag_max),
         "--eos-post-explode-jobs", str(opts.cip_explode_jobs or 1),
         "--eos-post-explode-jobs-last", str(opts.cip_explode_jobs_last or opts.cip_explode_jobs or 1),
         "--general-retries", str(opts.general_retries),
-        "--terminal-evidence",
+    ]
+    if not opts.ledger_run:
+        # Terminal evidence divides the last iteration's posterior integral by
+        # a prior integral; a ledger run reports its own evidence.
+        hyperpipe_cmd.append("--terminal-evidence")
+    hyperpipe_cmd += [
         # Mirror BasicIteration's unconditional ABORT-DAG-ON wiring: a live
         # convergence test exits 1 on success, and without the abort wiring
         # DAGMan reads that as a plain node failure -- convergence and crash
