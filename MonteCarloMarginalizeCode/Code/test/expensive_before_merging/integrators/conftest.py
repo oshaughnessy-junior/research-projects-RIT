@@ -11,6 +11,11 @@ here on purpose:
                             (cupy installed, no device -- the worker layout that has repeatedly
                             bitten production).  Left unset, a pytest run on a GPU box measures a
                             different code path than the gate does.
+                            NOT sufficient on its own: CUDA reads this once, at driver init, and
+                            a pytest plugin may import cupy and initialise CUDA before this file
+                            runs (seen on ldas-pcdev2: var "" yet cupy saw 3 devices).  So
+                            shape_recovery._gpu_available() treats "" / "-1" as an explicit CPU
+                            request regardless of what cupy reports.
 
   OMP/MKL/OPENBLAS threads  set here, to the shell driver's default of 4, and only if the caller
                             has not chosen.  Best effort: this binds only if no BLAS has been
