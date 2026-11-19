@@ -126,6 +126,10 @@ example: `RIFT/calmarg/DESIGN_calmarg_in_loop.md`, "Phase-sign trap".
   intrinsic parameters and draws the posterior.
 - `util_RIFT_hyperpipe.py`: hyperparameter pipeline (EOS, population, and similar):
   the iterative marginalize/fit/puff loop over hyperparameters.
+- `rift-run`: one ledger run on one host: adaptive importance sampling of the intrinsic
+  posterior with a stop rule. `util_RIFT_pseudo_pipe.py --pipeline-builder Hyperpipe
+  --ledger-run` builds it as the only stage of a workflow. Its engine runs ILE and
+  enforces the REDLINE above.
 - `plot_posterior_corner.py`: visualization.
 
 ## Design docs: read before changing a module
@@ -143,6 +147,7 @@ directory as the first entry in its row. List the current set with
 | Slow rotation, finite-size response | `likelihood/SLOWROT_HANDOFF.md`, `DESIGN_rotating_freqresponse.md` |
 | GP interpolators | `interpolators/jax_gp/DESIGN.md`, `HANDOFF.md` |
 | Simulation manager | `simulation_manager/DESIGN.md`, `BACKENDS.md` |
+| Ledger runs (`rift-run`, the `ledger_run` Hyperpipe stage) | `ledger/DESIGN_ledger_run.md` |
 
 CI tiers, and the GPU checks to run by hand before merging likelihood or JAX
 changes: `.travis/PRECOMMIT.md`.

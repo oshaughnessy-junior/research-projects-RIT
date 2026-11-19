@@ -109,23 +109,47 @@ def test_the_recorded_plan_is_the_record(clean_run, monkeypatch):
     assert all(check["plans_match"].values())
 
 
-@pytest.mark.parametrize("kind", ["prior", "block"])
+def _correlated_proposal():
+    sd = np.array([1.5, 0.08, 0.10, 0.12])
+    corr = np.array([[1.0, 0.3, 0.8, -0.2], [0.3, 1.0, 0.1, -0.7], [0.8, 0.1, 1.0, 0.0], [-0.2, -0.7, 0.0, 1.0]])
+    cov = corr * np.outer(sd, sd)
+    mu = np.array([30.0, 0.25, 0.30, -0.30])
+    near_equal_mass = mu + [1.0, -0.22, 0.05, 0.1]          # delta 0.03: half of this component folds
+    return mu, sd, proposal.BlockProposal.from_covariances(
+        [0.6, 0.4], [mu, near_equal_mass], [cov, 0.5 * cov], mu, 2.25 * cov, a=0.2, seed=5)
+
+
+@pytest.mark.parametrize("kind", ["prior", "block shape", "block tail", "block fold"])
 def test_a_proposal_density_is_the_density_of_its_draws(kind):
     """Protects: importance weights p L / q are valid, since q is the density the points were
-    drawn from.  Oracle: calibration.  E_q[1_S / (V_S q)] = 1 for a box S inside the support."""
+    drawn from.  Oracle: calibration.  E_q[g / q] = 1 for a normalised test density g inside
+    the support; the four g probe the prior's normalisation, the correlations of a component,
+    the Student-t tail and the fold in delta."""
     box = Box.from_json(fake_engine.BOX)
+    mu, sd, block = _correlated_proposal()
+    cov = block.chols[0] @ block.chols[0].T
     if kind == "prior":
-        prop = proposal.PriorProposal(box, 5)
-        lo, hi = np.array([25.0, 0.05, 0.1, -0.6]), np.array([35.0, 0.45, 0.7, -0.1])
+        prop, n = proposal.PriorProposal(box, 5), 120000
+        lo, hi = np.array([22.0, 0.02, 0.02, -0.60]), np.array([41.0, 0.60, 0.60, -0.02])
+
+        def ln_g(a):
+            return np.where(np.all((a > lo) & (a < hi), axis=1), -np.log(np.prod(hi - lo)), -np.inf)
     else:
-        cov = np.array(fake_engine.COV) * 4.0
-        prop = proposal.BlockProposal.from_covariances([0.7, 0.3], [fake_engine.MU, fake_engine.MU + [1.0, 0.05, 0.0, 0.1]],
-                                                       [cov, 0.5 * cov], fake_engine.MU, 2.25 * cov, a=0.2, seed=5)
-        lo, hi = fake_engine.MU - 1.5 * fake_engine.SD, fake_engine.MU + 1.5 * fake_engine.SD
-    a = np.array([prop.draw(0, i)[0] for i in range(6000)])
-    inside = np.all((a > lo) & (a < hi), axis=1)
-    val = np.where(inside, np.exp(-prop.ln_q(a)) / np.prod(hi - lo), 0.0)
-    assert abs(val.mean() - 1.0) < 4 * val.std(ddof=1) / np.sqrt(len(val))
+        prop, n = block, 40000
+        centre, scale = {"block shape": (mu + 0.3 * sd * [1, -1, -1, 1], 0.5),
+                         "block tail": (mu, 9.0),         # wider than the Student-t's own shape
+                         "block fold": (block.means[1], 0.3)}[kind]
+        if kind == "block tail":
+            prop.a = 0.5
+        chol = np.linalg.cholesky(scale * cov)
+
+        def ln_g(a):       # a Gaussian folded in delta, as the proposal is
+            return np.logaddexp(proposal.ln_normal(a, centre, chol), proposal.ln_normal(a * [1, -1, 1, 1], centre, chol))
+    a = np.array([prop.draw(0, i)[0] for i in range(n)])
+    val = np.exp(ln_g(a) - prop.ln_q(a))
+    err = val.std(ddof=1) / np.sqrt(len(val))
+    assert err < 0.02, "this test density is too rarely hit for the check to mean anything"
+    assert abs(val.mean() - 1.0) < 4 * err
 
 
 def test_one_extension_is_limited():
