@@ -41,15 +41,31 @@ jobs:
           gh workflow run "$WORKFLOW" --repo "$GH_REPO" --ref "$TARGET_REF" \
             --field runner=ubuntu-latest --field canary_id="$canary_id"
           run_id=""
+          discovery_error=$(mktemp)
+          trap 'rm -f "$discovery_error"' EXIT
           for attempt in $(seq 1 18); do
-            run_id=$(gh run list --repo "$GH_REPO" --workflow "$WORKFLOW" \
+            if run_id=$(gh run list --repo "$GH_REPO" --workflow "$WORKFLOW" \
               --branch "$TARGET_REF" --event workflow_dispatch --limit 100 \
               --json databaseId,displayTitle \
-              --jq ".[] | select(.displayTitle == \"${expected_title}\") | .databaseId")
-            if [ -n "$run_id" ]; then
-              break
+              --jq ".[] | select(.displayTitle == \"${expected_title}\") | .databaseId" \
+              2>"$discovery_error"); then
+              if [ -n "$run_id" ]; then
+                break
+              fi
+            else
+              discovery_status=$?
+              run_id=""
+              cat "$discovery_error" >&2
+              # Retry transient API/transport errors within the same poll budget.
+              # Authentication, permission, malformed-query and other errors fail now.
+              if ! grep -Eiq 'HTTP (408|429|5[0-9]{2})([^0-9]|$)|error connecting to|connection (reset|refused)|TLS handshake timeout|i/o timeout|context deadline exceeded|temporary failure in name resolution' "$discovery_error"; then
+                exit "$discovery_status"
+              fi
+              echo "::warning::Transient run-discovery error (attempt ${attempt}/18)"
             fi
-            sleep 10
+            if [ "$attempt" -lt 18 ]; then
+              sleep 10
+            fi
           done
           if [ -z "$run_id" ] || [[ "$run_id" == *$'\n'* ]]; then
             echo "::error::Expected exactly one dispatched canary run for ${canary_id}"
