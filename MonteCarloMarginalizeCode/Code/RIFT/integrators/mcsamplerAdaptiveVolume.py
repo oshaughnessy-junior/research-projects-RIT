@@ -1090,6 +1090,8 @@ class MCSampler(SamplerOutputMixin, object):
         # Axis-neighbour layers added to the occupied bins each cycle in integrate_log (see
         # dilate_bins).  0 draws only from bins that hold a retained point.
         self.dilate_layers = 0
+        # Opt-in O4c coverage guard; see DESIGN_av_coverage_diagnostic.md.
+        self.coverage_unseen_tol = 0.0
 
 
     def setup(self, **kwargs):
@@ -1325,6 +1327,43 @@ class MCSampler(SamplerOutputMixin, object):
         q = np.zeros(X.shape[0], dtype=float)
         q[inside] = q_live
         return q
+
+    def _coarsen_for_coverage(self, X, lnw, nbins, enforce_bounds):
+        """Coarsen sparsely occupied flat axes when another adaptive axis is unresolved.
+
+        Returns bin counts, weighted singleton fraction and number of coarsening steps.
+        This changes proposals, not the retained-density estimator.
+        """
+        tol = float(getattr(self, 'coverage_unseen_tol', 0) or 0)
+        nbins = np.array(nbins, dtype=float)
+        X = np.asarray(identity_convert(X), dtype=float)
+        ax = np.array(self.indx_adaptive, dtype=int)
+        if len(X) == 0 or len(ax) == 0:
+            return nbins, 0.0, 0
+        w = np.asarray(identity_convert(lnw), dtype=float)
+        w = np.exp(w - np.max(w))
+        w /= np.sum(w)
+        lo = self.my_ranges.T[0]
+        width = np.diff(self.my_ranges, axis=1).flatten()
+        steps = 0
+        while True:
+            idx = ((X[:, ax] - lo[ax]) / (width[ax] / nbins[ax])).astype(np.int64)
+            idx -= idx.min(axis=0)
+            shape = idx.max(axis=0) + 1
+            if np.prod(shape.astype(float)) < 2.0**62:
+                _, inv, counts = np.unique(np.ravel_multi_index(tuple(idx.T), shape),
+                                           return_inverse=True, return_counts=True)
+            else:
+                _, inv, counts = np.unique(idx, axis=0, return_inverse=True, return_counts=True)
+            unseen = float(np.sum(w[counts[np.asarray(inv).ravel()] == 1]))
+            span = np.array([len(np.unique(idx[:, j])) for j in range(len(ax))])
+            if tol <= 0 or unseen <= tol or span.min() > 2 or span.max() <= 2:
+                return nbins, unseen, steps
+            pick = ax[(span == span.max()) & (nbins[ax] > 1)]
+            nbins[pick] = np.maximum(1.0, nbins[pick] * 0.8)
+            if enforce_bounds:
+                nbins[pick] = np.floor(nbins[pick])
+            steps += 1
 
     def _allocate_nbins(self, live_pts, delta_V, ndim):
         """Per-axis bin counts whose product over adaptive dims equals 1/delta_V (the same
@@ -2047,6 +2086,8 @@ class MCSampler(SamplerOutputMixin, object):
             self.anisotropic_bins = bool(kwargs["anisotropic_bins"])
         if kwargs.get("dilate_layers") is not None:
             self.dilate_layers = int(kwargs["dilate_layers"])
+        if kwargs.get("coverage_unseen_tol") is not None:
+            self.coverage_unseen_tol = float(kwargs["coverage_unseen_tol"])
         # FIXME: The adaptive step relies on the _rvs cache, so this has to be
         # on in order to work
         if n_adapt > 0 and tempering_exp > 0.0:
@@ -2147,6 +2188,7 @@ class MCSampler(SamplerOutputMixin, object):
 
         # live-volume health bookkeeping (reported at the end and in dict_return)
         n_empty_cycles = 0      # cycles in which NO finite sample fell inside the live volume
+        n_coarsen_cycles = 0
         n_live_collapses = 0    # cycles in which the threshold would have emptied the live set
         collapse_reported = False
         nrec = 0
@@ -2338,6 +2380,11 @@ class MCSampler(SamplerOutputMixin, object):
             # bin sizes integers?  May slow us down
             if enforce_bounds:
               self.nbins = np.floor(self.nbins)
+
+            if self.d_adaptive > 0 and self.coverage_unseen_tol > 0:
+              self.nbins, _coverage_unseen, _coarsen_steps = self._coarsen_for_coverage(
+                  allx, allloglkl, self.nbins, enforce_bounds)
+              n_coarsen_cycles += int(_coarsen_steps > 0)
 
             self.dx = np.diff(self.my_ranges, axis = 1).flatten() / self.nbins   # update bin widths
             # A cycle that dropped no point and kept the bin widths leaves the earlier points in
@@ -2567,6 +2614,7 @@ class MCSampler(SamplerOutputMixin, object):
         dict_return['n_empty_cycles'] = int(n_empty_cycles)
         dict_return['n_live_collapses'] = int(n_live_collapses)
         dict_return['unseen_frac_final'] = float(unseen_frac)
+        dict_return['n_coarsen_cycles'] = int(n_coarsen_cycles)
         if unseen_frac > COVERAGE_UNSEEN_WARN:
             print(" [AV coverage] {:.3f} of the live weight sits in bins holding one point (warn above"
                   " {:.2f}): the grid misses part of the posterior and lnZ may read low.".format(

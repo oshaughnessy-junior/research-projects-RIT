@@ -650,7 +650,8 @@ done
 # direct-sum check of log_retained_density (1), analytic sampling_density check (1): +8 tests.
 # PR #549: two out-of-box known-answer tests and an empty-chunk test: +3 tests. No skips ->
 # PROVISIONAL 1783 (1772 CIT measurement plus +8 and +3, not re-measured).
-EXPECTED_TESTS=1783
+# Opt-in O4c AV coverage guard adds one analytic normalization test, no skips.
+EXPECTED_TESTS=1784
 # Outcomes, not just exit status: a collection floor cannot see a test that collects, runs and
 # asserts nothing, and a pytest.skip can quietly absorb a lost gate.  The 13 skips are
 # environment legs -- cupy in test_seeding_reproducibility, device legs in
@@ -701,7 +702,7 @@ EXPECTED_TESTS=1783
 # PR #518 at rift_O4d 93305ba0 plus both review rounds: measured locally, see EXPECTED_TESTS.
 # test_av_retained_density.py: PR #547 +8 passes, PR #549 +3 passes -> PROVISIONAL 1750
 # (see EXPECTED_TESTS).
-EXPECTED_PASSED=1750
+EXPECTED_PASSED=1751
 # PR #382: +1 skip, the CuPy leg of test_cached_matern_gp.py (no GPU on the CI runner).
 # The six solver="gs" tests in test_td_inner_product.py need tdanalysis >= 1.1, which this
 # job does not install, so they skip here; ci.yml's time-domain likelihood step runs them
