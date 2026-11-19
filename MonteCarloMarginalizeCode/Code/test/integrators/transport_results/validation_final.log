@@ -1,0 +1,34 @@
+...................................................................      [100%]
+=============================== warnings summary ===============================
+MonteCarloMarginalizeCode/Code/RIFT/integrators/gaussian_mixture_model.py:41
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/gaussian_mixture_model.py:41: DeprecationWarning: `scipy.stats.mvn.mvnun` is deprecated along with the `scipy.stats.mvn` namespace. `scipy.stats.mvn.mvnun` will be removed in SciPy 1.14.0, and the `scipy.stats.mvn` namespace will be removed in SciPy 2.0.0.
+    from scipy.stats.mvn import mvnun
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py: 1 warning
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py: 10 warnings
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:136: RuntimeWarning: divide by zero encountered in log
+    log_M2 = logsumexp( 2*xpy_here.log(xpy_here.abs(dat - xpy_here.exp(log_mean) )))
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_wrong_collapsed_oracle_never_enters_evidence_cache_or_fairdraw
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:166: RuntimeWarning: divide by zero encountered in log
+    log_M2B = logsumexp( 2*xpy_here.log(xpy_here.abs(xpy_here.exp(newLogValues-log_refB) - xpy_here.exp(log_xBmean) )))
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_wrong_collapsed_oracle_never_enters_evidence_cache_or_fairdraw
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:178: RuntimeWarning: divide by zero encountered in log
+    log_delta = xpy_here.log(xpy_here.abs(xpy_here.exp(log_xAmean)- xpy_here.exp(log_xBmean))) # sign irrelevant
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_gpu_sampling_density_integrates_to_one
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_gpu_sampling_density_integrates_to_one
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py:167: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+    total = np.trapz(np.trapz(q, yg, axis=1), xg)
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_sampling_density_works_in_one_dimension
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py:404: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+    assert np.isclose(np.trapz(q, xg), 1.0, rtol=1e-5), \
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_supplied_cdf_inv_with_unnormalized_pdf_is_the_known_hole
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py:438: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+    total = float(np.trapz(s.sampling_density(xg.reshape(-1, 1)), xg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+67 passed, 18 warnings in 6.45s

@@ -10,6 +10,7 @@ from RIFT.precision import RiftFloat  # platform-portable replacement for np.flo
 from scipy import integrate, interpolate, special
 import itertools
 import functools
+from RIFT.integrators.evaluation_cost import cost_phase
 
 from copy import deepcopy, copy as shallow_copy
 
@@ -924,8 +925,7 @@ class MCSampler(SamplerOutputMixin, object):
         _kw_keep('portfolio_varaha_max_frac')
         _kw_keep('portfolio_warmstart_backstop_cold')
         if 'oracle_realizations' in kwargs:
-          if kwargs['oracle_realizations']: 
-            self.oracle_realizations = kwargs['oracle_realizations']  # might not have been initialized earlier
+          self.oracle_realizations = list(kwargs['oracle_realizations'] or [])
         if (not('portfolio_breakpoints') in kwargs) or not(self.portfolio_breakpoints):
           self.portfolio_breakpoints = np.zeros(len(self.portfolio)) # always use all of them
         if 'portfolio_breakpoints' in kwargs:
@@ -1106,15 +1106,18 @@ class MCSampler(SamplerOutputMixin, object):
                   " whose joint_p_s is NOT a normalized density.  THE EVIDENCE FROM THIS RUN IS"
                   " BIASED.".format(sorted({_mod(m) for m in _no_density}),
                                     sorted({_mod(m) for m in _bad_scale})))
+        # Oracle configs are independent of density-member configs (and counts).
+        oracle_args = kwargs.get('oracle_args', [{} for _ in self.oracle_realizations])
+        if len(oracle_args) != len(self.oracle_realizations):
+            raise ValueError("oracle_args must have one dict per oracle")
         for indx, member in enumerate(self.oracle_realizations):
             if hasattr(member, 'setup'):
-              print(" PORTFOLIO ORACLE setup ", member, portfolio_extra_args[indx])
-              args_here = {}
-              args_here.update(kwargs)
-              args_here.update(portfolio_extra_args[indx])
+              member.params_ordered = list(self.params_ordered)
+              args_here = dict(kwargs)
+              args_here.update(oracle_args[indx])
               self._oracle_setup_args[indx] = self._snapshot_setup_args(args_here)
-              member.setup(**args_here)
-              member.params_ordered = list(self.params_ordered)  # enforce parameters for oracle being sane
+              with cost_phase('setup'):
+                member.setup(**args_here)
 
     def _adaptive_allocation(self, ness_now, frac_now, iteration):
         """Adaptive-probe draw allocation (see __init__).  Returns the next chunk's per-member
@@ -1466,14 +1469,15 @@ class MCSampler(SamplerOutputMixin, object):
                 if 'no_protect_names' in kwargs:
                     return lnF(*cols)
                 return lnF(**dict(list(zip(params, cols))))
-            if getattr(self, '_integrand_wants_host', False) or not cupy_ok:
-                lnL = _eval_integrand(rv)
-            else:
-                try:
-                    lnL = _eval_integrand(identity_convert_togpu(rv))
-                except (TypeError, ValueError):
-                    self._integrand_wants_host = True
-                    lnL = _eval_integrand(rv)
+            with cost_phase('sampling', getattr(lnF, 'evaluation_ledger', None)):
+              if getattr(self, '_integrand_wants_host', False) or not cupy_ok:
+                  lnL = _eval_integrand(rv)
+              else:
+                  try:
+                      lnL = _eval_integrand(identity_convert_togpu(rv))
+                  except (TypeError, ValueError):
+                      self._integrand_wants_host = True
+                      lnL = _eval_integrand(rv)
             # bring lnL back to the host for the host-side aggregation
             lnL = identity_convert(lnL)
 
@@ -1935,8 +1939,9 @@ class MCSampler(SamplerOutputMixin, object):
               if n_samples_per_oracle > 0:
                 print(" ORACLE: attempting updates ")
                 # update each oracle from the current (host) history
-                for member in self.oracle_realizations:
-                  member.update_sampling_prior(log_weights_adapt, n_history, external_rvs=rvs_train, log_scale_weights=True)
+                with cost_phase('oracle_training', getattr(lnF, 'evaluation_ledger', None)):
+                  for member in self.oracle_realizations:
+                    member.update_sampling_prior(log_weights_adapt, n_history, external_rvs=rvs_train, log_scale_weights=True)
                 # generate proposals from oracles (oracles are host/numpy)
                 rv_list = []
                 for member in self.oracle_realizations:
@@ -1946,18 +1951,19 @@ class MCSampler(SamplerOutputMixin, object):
                 # evaluate the true integrand at the proposals; feed it device-first
                 # (real GPU ILE likelihood) with host fallback, mirroring the main loop
                 _cols = rv_oracle.T
-                if getattr(self, '_integrand_wants_host', False) or not cupy_ok:
-                  _lnLo = lnF(*_cols) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _cols)))
-                else:
-                  try:
-                    _colsg = identity_convert_togpu(_cols)
-                    _lnLo = lnF(*_colsg) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _colsg)))
-                  except (TypeError, ValueError):
-                    self._integrand_wants_host = True
+                with cost_phase('oracle_scoring', getattr(lnF, 'evaluation_ledger', None)):
+                  if getattr(self, '_integrand_wants_host', False) or not cupy_ok:
                     _lnLo = lnF(*_cols) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _cols)))
+                  else:
+                    try:
+                      _colsg = identity_convert_togpu(_cols)
+                      _lnLo = lnF(*_colsg) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _colsg)))
+                    except (TypeError, ValueError):
+                      self._integrand_wants_host = True
+                      _lnLo = lnF(*_cols) if 'no_protect_names' in kwargs else lnF(**dict(zip(self.params_ordered, _cols)))
                 lnL_oracles = numpy.asarray(identity_convert(_lnLo))
-                # training weight for a proposal = its lnL (same log scale as
-                # log_weights up to the shared normalization the members remove)
+                # Raw lnL is a HEURISTIC proposal-training score, not an
+                # unbiased posterior importance weight (there is no oracle q).
                 log_w_oracle = lnL_oracles
                 # ACTUALLY append (numpy.append is not in-place -- must reassign)
                 for indx, p in enumerate(self.params_ordered):
@@ -2003,7 +2009,8 @@ class MCSampler(SamplerOutputMixin, object):
                 elif (len(self.oracle_realizations) > 0 and it_now <it_max_oracle) or (self.portfolio_weights[indx] > self.portfolio_freeze_wt) or _in_grace or _revive or _varaha_exempt or _climbing:
                   if not(_is_varaha):
                     # log_weights_train / rvs_train include any oracle proposals appended above
-                    member.update_sampling_prior(log_weights_train, n_history,external_rvs=rvs_train,log_scale_weights=True, **update_dict)
+                    with cost_phase('member_training', getattr(lnF, 'evaluation_ledger', None)):
+                      member.update_sampling_prior(log_weights_train, n_history,external_rvs=rvs_train,log_scale_weights=True, **update_dict)
                   else:
                     # just do a single VARAHA step, independent of others.
                     # The member evaluates the SAME lnF, and the common integration block
@@ -2024,7 +2031,8 @@ class MCSampler(SamplerOutputMixin, object):
                     else:
                       _names_m = list(member.params_ordered)
                       member_lnF = lambda *cols, _n=_names_m: lnF(**dict(zip(_n, cols)))
-                    member.update_sampling_prior_selfish(member_lnF)
+                    with cost_phase('member_training', getattr(lnF, 'evaluation_ledger', None)):
+                      member.update_sampling_prior_selfish(member_lnF)
                 else:
                   if self.portfolio_draw_iteration > self.portfolio_breakpoints[indx]:  
                     print("   - frozen sampling for member {} {}".format(indx, self.portfolio_weights[indx]))

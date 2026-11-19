@@ -1,0 +1,46 @@
+{
+  "exit_code": 0,
+  "sampler_callback_cost": {
+    "records": {
+      "true:member_training": {
+        "rows": 3600000,
+        "calls": 9,
+        "failures": 0,
+        "seconds": 0.0003108000091742724
+      },
+      "true:oracle_scoring": {
+        "rows": 40,
+        "calls": 4,
+        "failures": 0,
+        "seconds": 1.2641976354643703e-05
+      },
+      "true:oracle_training": {
+        "rows": 18,
+        "calls": 18,
+        "failures": 0,
+        "seconds": 4.279997665435076e-05
+      },
+      "true:sampling": {
+        "rows": 46600,
+        "calls": 29,
+        "failures": 0,
+        "seconds": 0.0001016710011754185
+      },
+      "true:unclassified": {
+        "rows": 28000,
+        "calls": 28,
+        "failures": 0,
+        "seconds": 0.0001377939770463854
+      }
+    },
+    "phase_seconds": {
+      "sampling": 0.0005673229461535811,
+      "member_training": 2.780583504063543,
+      "oracle_training": 0.0008059230167418718,
+      "oracle_scoring": 2.6680005248636007e-05
+    },
+    "true_rows": 3674658,
+    "surrogate_rows": 0
+  },
+  "wall_seconds": 10.467315438989317
+}

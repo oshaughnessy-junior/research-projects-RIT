@@ -37,6 +37,7 @@ from __future__ import print_function
 import sys
 import time
 import json
+import copy
 
 import numpy as np
 from scipy.stats import multivariate_normal, norm
@@ -318,6 +319,7 @@ def run(kind, target, nmax=200000, neff=1000, n_chunk=10000, tempering_exp=0.1,
     warm_start : optional callable(sampler, target) invoked after setup() and
                  before integrate(), used to seed prior information (cold-vs-warm).
     """
+    total_start = time.perf_counter()
     if seed is not None:
         # The sampler built below draws through its array backend, which is cupy
         # on a GPU host ("AC"/"AV" resolve to cupy whenever it is available), and
@@ -329,7 +331,14 @@ def run(kind, target, nmax=200000, neff=1000, n_chunk=10000, tempering_exp=0.1,
         # lazy (see build_sampler) so the targets can be used without RIFT.
         from RIFT.integrators.seeding import seed_everything
         seed_everything(seed, verbose=False)
-    s, backend = build_sampler(kind, target, n_chunk=n_chunk)
+    from RIFT.integrators.evaluation_cost import EvaluationLedger, cost_phase
+    ledger = EvaluationLedger()
+    # A shallow view lets warm_start use the SAME metered evaluator as integration
+    # without modifying the caller's target or counting truth diagnostics.
+    target = copy.copy(target)
+    target.lnL = ledger.wrap(target.lnL, layout="matrix")
+    with cost_phase('setup'):
+        s, backend = build_sampler(kind, target, n_chunk=n_chunk)
     ln_f = target.as_lnfunc()
     f = target.as_func()
     params = target.params
@@ -337,40 +346,48 @@ def run(kind, target, nmax=200000, neff=1000, n_chunk=10000, tempering_exp=0.1,
                  tempering_exp=tempering_exp, neff=neff, nmax=nmax,
                  save_intg=True, verbose=verbose)
 
-    # setup + optional warm start
-    if hasattr(s, "setup"):
-        try:
-            s.setup()
-        except TypeError:
-            pass
+    # Count and time setup and warm-start work, not only integrate().
+    with cost_phase('setup'):
+        if hasattr(s, "setup"):
+            try:
+                s.setup()
+            except TypeError:
+                pass
+    setup_seconds = time.perf_counter() - total_start
+    warm_start_time = time.perf_counter()
     if warm_start is not None:
-        warm_start(s, target)
+        with cost_phase('warm_start'):
+            warm_start(s, target)
+    warm_start_seconds = time.perf_counter() - warm_start_time
 
     t0 = time.time()
-    if kind == "default":
-        I, var, eff, _ = s.integrate(f, *params, no_protect_names=True, **extra)
-        lnI = np.log(I); ln_relerr = np.log(np.sqrt(var) / I)
-    elif kind in ("AC", "adaptive_cartesian_gpu"):
-        lnI, logvar, eff, _ = s.integrate(ln_f, *params, no_protect_names=True,
-                                          use_lnL=True, **extra)
-        lnI = float(_asnumpy(lnI)); ln_relerr = float(_asnumpy(logvar)) / 2 - lnI
-    elif kind in ("GMM", "gmm"):
-        n_iters = int(nmax / n_chunk)
-        lnI, logvar, eff, _ = s.integrate(ln_f, *params, min_iter=n_iters,
-                                          max_iter=n_iters, correlate_all_dims=True,
-                                          n_comp=1, use_lnL=True, return_lnI=True, **extra)
-        lnI = float(_asnumpy(lnI)); ln_relerr = float(_asnumpy(logvar)) / 2 - lnI
-    elif kind == "AV":
-        lnI, logvar, eff, _ = s.integrate_log(ln_f, *params, no_protect_names=True, **extra)
-        lnI = float(_asnumpy(lnI)); ln_relerr = 0.5 * (float(_asnumpy(logvar)) - 2 * lnI)
-    elif kind == "NF":
-        lnI, logvar, eff, _ = s.integrate_log(ln_f, *params, no_protect_names=True, **extra)
-        lnI = float(_asnumpy(lnI)); ln_relerr = 0.5 * (float(_asnumpy(logvar)) - 2 * lnI)
-    else:
-        raise ValueError(kind)
+    with cost_phase('sampling'):
+        if kind == "default":
+            I, var, eff, _ = s.integrate(f, *params, no_protect_names=True, **extra)
+            lnI = np.log(I); ln_relerr = np.log(np.sqrt(var) / I)
+        elif kind in ("AC", "adaptive_cartesian_gpu"):
+            lnI, logvar, eff, _ = s.integrate(ln_f, *params, no_protect_names=True,
+                                              use_lnL=True, **extra)
+            lnI = float(_asnumpy(lnI)); ln_relerr = float(_asnumpy(logvar)) / 2 - lnI
+        elif kind in ("GMM", "gmm"):
+            n_iters = int(nmax / n_chunk)
+            lnI, logvar, eff, _ = s.integrate(ln_f, *params, min_iter=n_iters,
+                                              max_iter=n_iters, correlate_all_dims=True,
+                                              n_comp=1, use_lnL=True, return_lnI=True, **extra)
+            lnI = float(_asnumpy(lnI)); ln_relerr = float(_asnumpy(logvar)) / 2 - lnI
+        elif kind == "AV":
+            lnI, logvar, eff, _ = s.integrate_log(ln_f, *params, no_protect_names=True, **extra)
+            lnI = float(_asnumpy(lnI)); ln_relerr = 0.5 * (float(_asnumpy(logvar)) - 2 * lnI)
+        elif kind == "NF":
+            lnI, logvar, eff, _ = s.integrate_log(ln_f, *params, no_protect_names=True, **extra)
+            lnI = float(_asnumpy(lnI)); ln_relerr = 0.5 * (float(_asnumpy(logvar)) - 2 * lnI)
+        else:
+            raise ValueError(kind)
     wall = time.time() - t0
     eff = float(_asnumpy(eff))
-    n_eval = int(getattr(s, "ntotal", 0)) or int(nmax)
+    n_sampler = int(getattr(s, "ntotal", 0))
+    cost = ledger.snapshot()
+    n_eval = cost["true_rows"]
 
     # sample-based metrics
     ln_wt = log_weights_from_rvs(s._rvs)
@@ -383,7 +400,10 @@ def run(kind, target, nmax=200000, neff=1000, n_chunk=10000, tempering_exp=0.1,
 
     return dict(
         kind=kind, target=target.name, backend=backend,
-        ndim=target.ndim, n_eval=n_eval, wallclock=wall,
+        ndim=target.ndim, n_eval=n_eval, n_sampler=n_sampler,
+        wallclock=time.perf_counter() - total_start, integration_seconds=wall,
+        setup_seconds=setup_seconds, warm_start_seconds=warm_start_seconds,
+        evaluation_cost=cost, amortized_reuses=1,
         lnI=lnI, true_lnZ=float(target.true_lnZ),
         bias_ln=lnI - float(target.true_lnZ),
         rel_err=float(np.exp(ln_relerr)),

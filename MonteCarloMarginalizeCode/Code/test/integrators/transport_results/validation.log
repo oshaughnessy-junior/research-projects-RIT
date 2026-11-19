@@ -1,0 +1,86 @@
+......F............................................................      [100%]
+=================================== FAILURES ===================================
+__________________ test_benchmark_counts_setup_and_warm_start __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fec5612ae90>
+
+    def test_benchmark_counts_setup_and_warm_start(monkeypatch):
+        import benchmark_integrators as B
+        class Sampler:
+            ntotal = 2
+            _rvs = {}
+            def __init__(self, target):
+                self.target = target
+            def setup(self):
+                self.target.lnL(np.zeros((3, 2)))
+            def integrate(self, f, *args, **kwargs):
+                f(np.zeros(2), np.zeros(2))
+                return 1., .01, 2., {}
+        monkeypatch.setattr(B, 'build_sampler', lambda kind, target, **kw: (Sampler(target), 'mock'))
+        target = B.CorrelatedGaussian(ndim=2)
+        original = target.lnL
+>       result = B.run('default', target, warm_start=lambda s, t: t.lnL(np.zeros((7, 2))))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py:155:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+MonteCarloMarginalizeCode/Code/test/integrators/benchmark_integrators.py:390: in run
+    ln_wt = log_weights_from_rvs(s._rvs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+rvs = {}
+
+    def log_weights_from_rvs(rvs):
+        """Return per-sample ln(weight) = ln L + ln p_prior - ln p_sampling, from a
+        sampler's _rvs cache, tolerating the heterogeneous storage conventions:
+        log-keyed (AV/NF/portfolio) vs linear-keyed (default/AC), and GMM which
+        stores 'integrand' as *log* L (negative values) alongside linear priors."""
+        # integrand -> ln L
+        if "log_integrand" in rvs:
+            lnL = _asnumpy(rvs["log_integrand"]).astype(float)
+        elif "integrand" in rvs:
+            L = _asnumpy(rvs["integrand"]).astype(float)
+            # a genuine integrand/density is >=0; negative values mean it is
+            # already stored as ln L (GMM under return_lnI).
+            lnL = L if np.nanmin(L) < 0 else np.log(L + 1e-300)
+        else:
+>           raise KeyError("no integrand in _rvs; run with save_intg=True")
+E           KeyError: 'no integrand in _rvs; run with save_intg=True'
+
+MonteCarloMarginalizeCode/Code/test/integrators/benchmark_integrators.py:235: KeyError
+=============================== warnings summary ===============================
+MonteCarloMarginalizeCode/Code/RIFT/integrators/gaussian_mixture_model.py:41
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/gaussian_mixture_model.py:41: DeprecationWarning: `scipy.stats.mvn.mvnun` is deprecated along with the `scipy.stats.mvn` namespace. `scipy.stats.mvn.mvnun` will be removed in SciPy 1.14.0, and the `scipy.stats.mvn` namespace will be removed in SciPy 2.0.0.
+    from scipy.stats.mvn import mvnun
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py: 1 warning
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py: 10 warnings
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:136: RuntimeWarning: divide by zero encountered in log
+    log_M2 = logsumexp( 2*xpy_here.log(xpy_here.abs(dat - xpy_here.exp(log_mean) )))
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_wrong_collapsed_oracle_never_enters_evidence_cache_or_fairdraw
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:166: RuntimeWarning: divide by zero encountered in log
+    log_M2B = logsumexp( 2*xpy_here.log(xpy_here.abs(xpy_here.exp(newLogValues-log_refB) - xpy_here.exp(log_xBmean) )))
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_wrong_collapsed_oracle_never_enters_evidence_cache_or_fairdraw
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/RIFT/integrators/statutils.py:178: RuntimeWarning: divide by zero encountered in log
+    log_delta = xpy_here.log(xpy_here.abs(xpy_here.exp(log_xAmean)- xpy_here.exp(log_xBmean))) # sign irrelevant
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_gpu_sampling_density_integrates_to_one
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_gpu_sampling_density_integrates_to_one
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py:167: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+    total = np.trapz(np.trapz(q, yg, axis=1), xg)
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_sampling_density_works_in_one_dimension
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py:404: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+    assert np.isclose(np.trapz(q, xg), 1.0, rtol=1e-5), \
+
+MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py::test_supplied_cdf_inv_with_unnormalized_pdf_is_the_known_hole
+  /scratch/richard.oshaughnessy/codex_transport_20261015/source/MonteCarloMarginalizeCode/Code/test/integrators/test_portfolio_member_density.py:438: DeprecationWarning: `trapz` is deprecated. Use `trapezoid` instead, or one of the numerical integration functions in `scipy.integrate`.
+    total = float(np.trapz(s.sampling_density(xg.reshape(-1, 1)), xg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED MonteCarloMarginalizeCode/Code/test/integrators/test_transport_cost.py::test_benchmark_counts_setup_and_warm_start
+1 failed, 66 passed, 18 warnings in 6.93s
