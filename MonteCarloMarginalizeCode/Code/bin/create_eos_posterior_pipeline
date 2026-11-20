@@ -130,6 +130,18 @@ terminal_stage_specs = []
 if opts.terminal_stage_spec_file:
     terminal_stage_specs = load_terminal_stage_specs(
         opts.terminal_stage_spec_file)
+if opts.n_iterations < 0:
+    raise ValueError("--n-iterations must not be negative")
+if opts.n_iterations == 0:
+    # A workflow of terminal stages alone (a ledger run replaces the iteration
+    # loop).  No posterior iteration exists, so nothing can anchor terminal
+    # evidence, and without a terminal stage the DAG would be empty.
+    if not terminal_stage_specs:
+        raise ValueError("--n-iterations 0 builds terminal stages only, and "
+                         "no --terminal-stage-spec-file was given")
+    if opts.terminal_evidence:
+        raise ValueError("--terminal-evidence needs a posterior iteration; "
+                         "drop it with --n-iterations 0")
 
 main_worker_universe='vanilla'
 local_worker_universe="vanilla"
@@ -298,18 +310,6 @@ if opts.test_args:
 # remains the default hyperpipe interface.
 if bool(opts.eos_post_args) == bool(opts.eos_post_args_list):
     raise ValueError("set exactly one of --eos-post-args or --eos-post-args-list")
-if opts.n_iterations < 0:
-    raise ValueError("--n-iterations must not be negative")
-if opts.n_iterations == 0:
-    # A workflow of terminal stages alone (a ledger run replaces the iteration
-    # loop).  No posterior iteration exists, so nothing can anchor terminal
-    # evidence, and without a terminal stage the DAG would be empty.
-    if not terminal_stage_specs:
-        raise ValueError("--n-iterations 0 builds terminal stages only, and "
-                         "no --terminal-stage-spec-file was given")
-    if opts.terminal_evidence:
-        raise ValueError("--terminal-evidence needs a posterior iteration; "
-                         "drop it with --n-iterations 0")
 # The submit-file writers below read one posterior argument line even when no
 # iteration will use it.
 n_schedule_iterations = max(1, opts.n_iterations)

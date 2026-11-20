@@ -5,16 +5,20 @@ side.  The supervisor returns when the run stops, when its time budget ends, or 
 engine log shows the likelihood left the NoLoop path.  Started again on the same
 directory it resumes, because the directory holds the whole state.
 
-After an engine exits, by what its shard holds:
+After an engine exits, by what its shard and its in-flight file hold:
   killed by this supervisor        nothing is recorded; the next lease covers the missing rows
   every lease row has a line       nothing to do (the engine reports its own failed points)
-  died with a key in flight        a strike against that key; two strikes make it FAILED (L = 0)
+  died on a key, engine known good a strike against that key; two strikes make it FAILED (L = 0)
   anything else with rows missing  the engine is not working: no row is marked, and three such
                                    launches in a row end the supervisor with exit status 6
 
-A point is marked failed only on evidence about that point: the engine's own line, or
-two deaths while it was in the sampler.  An engine that cannot start, exits early, or
-dies between points never turns points into zeros.
+A point is marked failed only on evidence about that point.  The engine's own line is
+evidence.  A death while a key was in flight is evidence only if the engine is known to
+work: it wrote a row in the same launch, or the key already has a strike from a launch
+that did.  A key on which a launch died without that is moved to the end of the next
+lease, so the launch after shows whether the engine works on other points.  An engine
+that cannot start, has lost its GPU, or ends before its last point therefore never
+turns points into zeros.  An engine that writes no in-flight file gets no strikes.
 
 `chaos` kills engines on purpose, for tests: `engine=N` engine processes on alternate
 launches, each after a random delay between `lo` and `hi` seconds, or, with `rows=K`,
@@ -123,7 +127,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     old = signal.signal(signal.SIGTERM, stop_engines)
     try:
         while True:
-            act = controller.tick(controller.Run(run_dir), engines)
+            act = controller.tick(controller.Run(run_dir), engines, defer=state.get("defer", []))
             _log(run_dir, "ticks.jsonl", {k: v for k, v in act.items() if k != "leases"})
             if act["action"] in ("done", "failed"):
                 print("ledger run %s" % act["action"], flush=True)
@@ -208,14 +212,15 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 key = None
                 if os.path.exists(flight):
                     try:
-                        key = tuple(json.load(open(flight)))
-                    except ValueError:
+                        key = tuple(json.load(open(flight))["key"])
+                    except (ValueError, KeyError, TypeError):
                         pass
                     os.remove(flight)
+                if key is not None and (key[1], key[2]) in have:
+                    key = None                      # it died after that key's line was written
                 if not killed and missing:
-                    if key is not None and eng.returncode != 0:
-                        # the engine died inside the sampler on this key
-                        name = "%d/%d/%d" % key
+                    name = "%d/%d/%d" % key if key is not None else None
+                    if key is not None and (have or state["strikes"].get(name)):
                         state["strikes"][name] = state["strikes"].get(name, 0) + 1
                         rec["strike"] = name
                         if state["strikes"][name] >= 2:
@@ -227,6 +232,8 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                     else:
                         barren += 1
                         rec["not_working"] = True
+                        if key is not None and list(key) not in state.setdefault("defer", []):
+                            state["defer"].append(list(key))
                 elif not killed:
                     barren = 0
                 _log(run_dir, "leases.jsonl", rec)
@@ -240,8 +247,8 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 print("ledger run: %d engine log lines show the likelihood off the NoLoop path; stopping" % off, flush=True)
                 return EXIT_REDLINE
             if barren >= BARREN_LIMIT:
-                print("ledger run: %d engine launches in a row left lease rows without a line and without a "
-                      "point in flight; the engine is not working, see %s.  No point was marked failed." % (
+                print("ledger run: %d engine launches in a row left lease rows without a line and gave no "
+                      "evidence against one point; the engine is not working, see %s.  No point was marked failed." % (
                           barren, os.path.join(run_dir, "logs")), flush=True)
                 return EXIT_ENGINE
             if why == "budget":

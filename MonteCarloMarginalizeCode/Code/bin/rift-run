@@ -112,9 +112,8 @@ def main():
     elif opts.command == "verify":
         out = controller.verify(run)
         print(json.dumps(out, indent=1))
-        cert = out["certificate"] or dict(lnZ_difference=0.0, n_eff_difference=0.0, plans_match={})
-        same = (all(f["same_bytes"] for f in out["fits"]) and cert["lnZ_difference"] == 0.0
-                and cert["n_eff_difference"] == 0.0 and all(cert["plans_match"].values()))
+        cert = out["certificate"] or dict(same_result=True, plans_match={})
+        same = all(f["same_bytes"] for f in out["fits"]) and cert["same_result"] and all(cert["plans_match"].values())
         return 0 if same else 1
     elif opts.command == "replay":
         import subprocess

@@ -7,7 +7,8 @@ ln L = ln N(A; MU, COV) - ln p(A), so the posterior of block A is the Gaussian N
 and the evidence is exactly 1.  Each row gets mean-one lognormal noise fixed by its key,
 as the real engine seeds its sampler by the key.  LEDGER_FAKE_SLEEP seconds pass per row
 so a test can kill the process inside a lease.  LEDGER_FAKE_UNKEYED=1 draws the noise
-from the clock: the mutant a kill test must catch.
+from the clock: the mutant a kill test must catch.  LEDGER_FAKE_FAIL=f reports a fraction f
+of the keys as FAILED.
 """
 import json
 import os
@@ -40,6 +41,7 @@ def main():
     val = ln_like(Box.from_json(BOX), grid)
     pause = float(os.environ.get("LEDGER_FAKE_SLEEP", "0"))
     loose = np.random.default_rng() if os.environ.get("LEDGER_FAKE_UNKEYED") else None
+    FAIL = float(os.environ.get("LEDGER_FAKE_FAIL", "0"))        # fraction of keys reported FAILED, fixed by the key
     versions = meta.get("versions") or [meta["version"]] * len(grid)
     if os.environ.get("LEDGER_FAKE_OFF_NOLOOP"):
         print(" this is the old vectorized code path not the xpy path")
@@ -47,6 +49,9 @@ def main():
         for (s, i), ver, g, v in zip(meta["keys"], versions, grid, val):
             if pause:
                 time.sleep(pause)
+            if FAIL and np.random.default_rng([meta["seed"], 88, ver, s, i]).random() < FAIL:
+                f.write(json.dumps(dict(v=ver, s=s, i=i, status="FAILED", lnL=None)) + "\n")
+                continue
             z = (loose or np.random.default_rng([meta["seed"], 77, ver, s, i])).standard_normal()
             row = dict(v=ver, s=s, i=i, status="OK", lnL=float(v + SIGMA * z - 0.5 * SIGMA ** 2), sigma=SIGMA,
                        point=[float(x) for x in g])

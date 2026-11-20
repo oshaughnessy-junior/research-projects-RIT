@@ -14,10 +14,12 @@ sampler:
   * the sampler runs to the lease's sample count, not to an n_eff target;
   * one line is appended to the shard and synced before the script continues.
 
-Every lease row gets a line.  ILE catches an exception in one point and goes on to the
-next; the engine sees the gap and writes that row with status FAILED.  While a point is
-in the sampler its key is in SHARD.inflight, so a supervisor can tell a crash on one
-point from an engine that never reached a point.
+The engine follows each point from the moment ILE's `analyze_event` is entered until it
+returns.  While a point is being worked on its key is in SHARD.inflight, with the phase
+(precompute or sampler), so a supervisor can tell a crash on one point from an engine
+that never reached a point.  A point that ILE leaves without a sampler result (it
+catches an exception in one point and goes on to the next) gets a line with status
+FAILED at once.  A lease row ILE never starts gets no line.
 
 The four NoLoop flags and `--sampler-method AV` are required, and options known to call
 the sampler more than once per point or to carry state between points are refused,
@@ -38,12 +40,13 @@ REDLINE_FLAGS = ("--time-marginalization", "--vectorized", "--gpu", "--force-xpy
 # option name, so arguments are resolved against the script's own option list first.
 ILE_REFUSED = (
     "--auto-logarithm-offset",            # the ln L offset must be one number for the run
-    "--zero-likelihood", "--rom-integrate-intrinsic", "--pin-distance-to-sim", "--use-eccentricity",
+    "--zero-likelihood", "--rom-integrate-intrinsic", "--pin-distance-to-sim", "--save-eccentricity",
     "--export-eos-index",
     "--calibration-burn-in-neff", "--sampler-warmstart-retry-neff", "--mc-error-replicas",   # a second sampler call
     "--sampler-sequential-warmstart", "--no-adapt-after-first", "--sampler-load-state",      # state from another point
     "--sampler-save-state", "--sampler-warmstart-samples",
     "--internal-soft-fail-on-cuda-error", "--internal-make-empty-file-on-error",             # failures reported as success
+    "--check-good-enough", "--log-noise-evidence-only",                                      # ILE ends before its last point
 )
 EXIT_DOUBLE_CALL = 70
 
@@ -97,6 +100,7 @@ class Engine:
         self.shard = shard
         self.out = open(shard, "a")
         self.done = set()
+        self.following = False
         self.t_last = time.time()
         self.orig = None
 
@@ -112,22 +116,56 @@ class Engine:
         os.fsync(self.out.fileno())
         self.done.add(idx)
 
-    def mark_skipped(self, upto):
-        """Lease rows below `upto` that ILE passed over without reaching the sampler."""
-        for idx in range(upto):
-            if idx not in self.done:
-                self.write(idx, status="FAILED", lnL=None, reason="ILE skipped the point before the sampler")
-
-    def inflight(self, idx=None):
+    def inflight(self, idx=None, phase=None):
         path = self.shard + ".inflight"
         if idx is None:
             if os.path.exists(path):
                 os.remove(path)
             return
         with open(path, "w") as f:
-            json.dump(list(self.key(idx)), f)
+            json.dump(dict(key=list(self.key(idx)), phase=phase), f)
             f.flush()
             os.fsync(f.fileno())
+
+    # ---- following ILE from one point to the next -----------------------------------
+
+    def begin(self, idx):
+        self.inflight(idx, "precompute")
+
+    def end(self, idx):
+        if idx not in self.done:
+            self.write(idx, status="FAILED", lnL=None, reason="ILE left the point without a sampler result")
+        self.inflight(None)
+
+    def tracer(self, frame, event, arg):
+        """Global trace function, alive until ILE's first call of analyze_event returns.  From
+        that frame it reaches the script's globals and puts a wrapper around the function, so
+        later points cost nothing; the first point is followed by a local trace function."""
+        if (self.following or event != "call" or frame.f_code.co_name != "analyze_event"
+                or "indx_event" not in frame.f_locals):
+            return None
+        self.following = True
+        engine, inner, idx = self, frame.f_globals.get("analyze_event"), int(frame.f_locals["indx_event"])
+
+        def wrapped(P_list, indx_event, *args, **kwargs):
+            engine.begin(int(indx_event))
+            try:
+                return inner(P_list, indx_event, *args, **kwargs)
+            finally:
+                engine.end(int(indx_event))
+
+        if inner is not None:
+            frame.f_globals["analyze_event"] = wrapped
+        frame.f_trace_lines = False
+        self.begin(idx)
+
+        def local(frame, event, arg):
+            if event == "return":           # also the event when the frame is left by an exception
+                sys.settrace(None)
+                engine.end(idx)
+            return local
+
+        return local
 
     def integrate(self, sampler, func, *args, **kwargs):
         from RIFT.integrators.seeding import seed_everything
@@ -145,7 +183,6 @@ class Engine:
                              "combination is not supported\n" % idx)
             sys.stderr.flush()
             os._exit(EXIT_DOUBLE_CALL)
-        self.mark_skipped(idx)
         version, stream, index = self.key(idx)
         seed = int(np.random.SeedSequence([int(self.lease["seed"]), version, stream, index]).generate_state(1)[0])
         seed_everything(seed, verbose=False)
@@ -165,7 +202,7 @@ class Engine:
             acc[1] += 1
             return val
 
-        self.inflight(idx)
+        self.inflight(idx, "sampler")
         t0 = time.time()
         out = self.orig(sampler, timed, *args, **dict(kwargs, neff=float("inf"), nmax=int(self.lease["n_max_samples"])))
         row = dict(status="OK", lnL=None, key_seed=seed, point=point_of(P), ntotal=int(sampler.ntotal),
@@ -175,7 +212,6 @@ class Engine:
         else:
             row.update(lnL=float(out[0]), sigma=float(np.exp(out[1] / 2 - out[0])), effsamp=float(out[2]))
         self.write(idx, **row)
-        self.inflight(None)
         self.t_last = time.time()
         return out
 
@@ -210,13 +246,11 @@ def main(argv=None):
     print(" [ledger engine] lease %s: %d keys, %d samples per point" % (
         opts["--lease-keys"], len(eng.lease["keys"]), eng.lease["n_max_samples"]), flush=True)
     sys.argv = list(ile)
+    sys.settrace(eng.tracer)
     try:
         runpy.run_path(ile[0], run_name="__main__")
-    except SystemExit as exc:
-        if exc.code not in (0, None):
-            raise
-    # ILE came to its normal end: a row it never reached the sampler for was skipped
-    eng.mark_skipped(len(eng.lease["keys"]))
+    finally:
+        sys.settrace(None)
     return 0
 
 

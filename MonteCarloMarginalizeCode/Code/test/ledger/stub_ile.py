@@ -10,9 +10,18 @@ Gaussian of width WIDTH in three dimensions times a factor that depends on the p
 
     --stub-skip K      point K raises before it reaches the sampler
     --stub-double      a second sampler call per point, as a burn-in or replica option makes
+    --stub-exit K      the script exits with status 3 before point K
+
+Environment, for faults tied to a point and not to its place in a lease (M1 is the point's
+m1 in solar masses, as printed with repr; `all` means every point):
+
+    STUB_ABORT_PRE=M1       the process aborts before the sampler, as a GSL abort in waveform code does
+    STUB_ABORT_SAMPLER=M1   the process aborts inside the sampler, as a lost GPU context does
+    STUB_RAISE_SAMPLER=M1   the integrand raises, and the loop goes on to the next point
 """
 import contextlib
 import io
+import os
 import sys
 
 import lal
@@ -37,13 +46,24 @@ class Point:
         self.row = g
 
 
+def hit(name, P):
+    want = os.environ.get(name)
+    return want is not None and (want == "all" or want == repr(float(P.row[0])))
+
+
 def analyze_event(P_list, indx_event):
     P = P_list[indx_event]
     if indx_event == SKIP:
         raise ValueError("no waveform for this point")
+    if hit("STUB_ABORT_PRE", P):
+        os.abort()
     offset = analytic(P.row) - 3 * np.log(np.sqrt(2 * np.pi) * WIDTH)
 
     def ln_f(*xs):
+        if hit("STUB_ABORT_SAMPLER", P):
+            os.abort()
+        if hit("STUB_RAISE_SAMPLER", P):
+            raise FloatingPointError("the integrand failed")
         return -0.5 * np.sum((np.array(xs).T - 0.5) ** 2, axis=1) / WIDTH ** 2 + offset
 
     sampler = av.MCSampler(n_chunk=CHUNK)
@@ -65,7 +85,10 @@ if __name__ == "__main__":
     DOUBLE = "--stub-double" in sys.argv
     grid = np.loadtxt(sys.argv[sys.argv.index("--sim-grid") + 1], comments="#", ndmin=2)[:, 2:]
     points = [Point(g) for g in grid]
+    stop_at = int(sys.argv[sys.argv.index("--stub-exit") + 1]) if "--stub-exit" in sys.argv else -1
     for indx in range(len(points)):
+        if indx == stop_at:
+            sys.exit(3)
         try:
             analyze_event(points, indx)
         except Exception as exc:

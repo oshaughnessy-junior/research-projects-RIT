@@ -101,13 +101,14 @@ def test_the_recorded_plan_is_the_record(clean_run, monkeypatch):
     routine is perturbed after the run; the recomputed certificate must not move."""
     run = controller.Run(clean_run)
     arts = run.artifacts()
+    assert len(set(a["proposal"]["seed"] for a in arts)) == len(arts)      # each version draws from its own seed
     recorded = run.plan(len(arts))
     monkeypatch.setattr(proposal, "_affine", lambda mean, chol, z: [float(m) * (1 + 1e-6) for m in mean])
     prop = proposal.proposal_from_json(arts[-1]["proposal"], run.box)
     redrawn = proposal.draw_plan(prop, run.box, run.cfg["n_streams"], 0, 8)
     assert not np.allclose(redrawn["a"], recorded["a"][recorded["index"] < 8], rtol=0, atol=1e-9)   # the mutant bites
     check = controller.verify(run)["certificate"]
-    assert check["lnZ_difference"] == 0.0 and check["n_eff_difference"] == 0.0
+    assert check["same_result"] and check["lnZ_difference"] == 0.0 and check["n_eff_difference"] == 0.0
     assert all(check["plans_match"].values())
 
 
@@ -236,6 +237,7 @@ def test_draws_differ_between_streams_and_between_versions():
             for s2 in range(s1):
                 assert np.abs(a[s1] - a[s2]).min() > 0
         assert np.abs(a[0][1:] - a[0][:-1]).min() > 0
+        assert np.abs(prop.draw(1, 2)[0] - prop.draw(2, 1)[0]).min() > 0
         assert np.array_equal(proposal.draw_plan(prop, box, 4, 20, 30)["a"].reshape(4, 10, 4), a[:, 20:30])
     other = proposal.BlockProposal.from_json(dict(block.to_json(), seed=block.seed + 1000))
     assert np.abs(proposal.draw_plan(other, box, 4, 0, 50)["a"] - proposal.draw_plan(block, box, 4, 0, 50)["a"]).min() > 0
@@ -273,6 +275,12 @@ def test_zero_weight_draws_count_and_too_many_failures_block_the_certificate():
     assert not res["checks"]["failed"] and not res["stop"]
     pl, lnl = _synthetic_round(failed=0.001, n_per=2000)
     assert estimator.frozen_estimate(cfg, pl, lnl)["checks"]["failed"]
+    shifted = estimator.frozen_estimate(dict(cfg, lnl_offset=5.0), pl, lnl)
+    assert shifted["estimate"]["lnZ"] == pytest.approx(5.0 + np.log(np.isfinite(lnl).mean()), abs=1e-12)
+    assert all(g["lnZ"] > 4.9 for g in shifted["groups"])
+    lnl[pl["stream"] == 1] = -np.inf                  # one stream with no weighted row: no estimate, no crash
+    res = estimator.frozen_estimate(cfg, pl, lnl)
+    assert not res["checks"]["groups"] and not res["stop"] and np.isnan(res["group_chi2"]["lnZ"])
 
 
 @pytest.mark.parametrize("k", [0.15, 0.45, 0.85])
@@ -285,7 +293,14 @@ def test_tail_index_and_checks_against_a_known_tail(k):
     res = estimator.frozen_estimate(cfg, pl, lnl)
     assert abs(res["estimate"]["k_hat"] - k) < 0.2          # 424 tail weights give a standard error near 0.07
     assert res["checks"]["tail"] == (k < cfg["k_max"])
-    assert res["estimate"]["lnZ_tail"] > 0
+    if k < 0.5:
+        # exact quantiles of the same tail: the evidence beyond the largest weight is (0.5 / n)^(1 - k)
+        n = 8000
+        w = (1 - k) * (1 - (np.arange(n) + 0.5) / n) ** (-k)
+        k_fit, unseen = estimator.tail_fit(w)
+        assert abs(k_fit - k) < 0.1
+        assert 0.5 < unseen / (0.5 / n) ** (1 - k) < 2.0
+        assert estimator.estimate(np.log(w), {})["lnZ_tail"] == pytest.approx(np.log1p(unseen * n / w.sum()), rel=1e-12)
     if k < 0.5:
         assert res["checks"]["groups"]
         pl, lnl = _synthetic_round(n_per=5000, tail=k, shift_stream=2)
@@ -326,33 +341,34 @@ def test_the_first_row_of_a_key_wins(tmp_path):
     run_dir = str(tmp_path / "r")
     controller.init(run_dir, Box.from_json(fake_engine.BOX))
     os.makedirs(os.path.join(run_dir, "ledger"))
-    for name, val in (("shard-v01-n0001.jsonl", 2.0), ("shard-v01-n0000.jsonl", 1.0), ("shard-v01-n0002.jsonl", 1.0)):
+    for name, val in (("shard-v01-n0001.jsonl", 2.0), ("shard-v01-n0000.jsonl", 1.0), ("shard-v01-n0002.jsonl", 3.0)):
         with open(os.path.join(run_dir, "ledger", name), "w") as f:
             f.write(json.dumps(dict(v=1, s=0, i=0, status="OK", lnL=val)) + "\n")
     rows, stat = controller.Run(run_dir).ledger()
-    assert rows[(1, 0, 0)]["lnL"] == 1.0 and stat["repeats"] == 2 and stat["repeat_mismatch"] == 1
+    assert rows[(1, 0, 0)]["lnL"] == 1.0 and stat["repeats"] == 2 and stat["repeat_mismatch"] == 2
 
 
-def test_a_row_must_carry_its_keys_point(clean_run, tmp_path):
-    """Protects: a row evaluated at another point than its key's cannot enter an estimate.
-    Oracle: metamorphic.  Each of masses scaled together, one spin moved, and no point at all
-    is refused."""
-    import shutil
-    for n, change in enumerate((lambda p: [3 * p[0], 3 * p[1]] + p[2:], lambda p: p[:4] + [p[4] + 1e-6] + p[5:],
-                               lambda p: None)):
-        run_dir = str(tmp_path / ("copy%d" % n))
-        shutil.copytree(clean_run, run_dir)
-        shard = sorted(os.listdir(os.path.join(run_dir, "ledger")))[0]
-        path = os.path.join(run_dir, "ledger", shard)
-        lines = open(path).read().split("\n")
-        row = json.loads(lines[0])
-        row["point"] = change(row["point"])
+def test_a_row_must_carry_its_keys_point(clean_run):
+    """Protects: a row evaluated at another point than its key's cannot enter an estimate, and a
+    row whose ln L is not finite counts as failed.  Oracle: metamorphic.  A change of any one
+    column, both masses scaled together, and no point at all are each refused."""
+    run = controller.Run(clean_run)
+    rows, _ = run.ledger()
+    pl = run.plan(1)
+    j = int(np.flatnonzero(pl["ok"])[0])
+    key = (1, int(pl["stream"][j]), int(pl["index"][j]))
+    good = dict(rows[key])
+    assert np.isfinite(run.lnl(rows, 1, pl)[j])
+    changes = [lambda p, c=c: p[:c] + [p[c] * (1 + 1e-6) + 1e-6] + p[c + 1:] for c in range(8)]
+    changes += [lambda p: [3 * p[0], 3 * p[1]] + p[2:], lambda p: None]
+    for change in changes:
+        row = dict(good, point=change(list(good["point"])))
         if row["point"] is None:
             del row["point"]
-        open(path, "w").write("\n".join([json.dumps(row)] + lines[1:]))
         with pytest.raises(SystemExit) as err:
-            controller.verify(controller.Run(run_dir))
+            run.lnl(dict(rows, **{}) | {key: row}, 1, pl)
         assert "does not carry its key's point" in str(err.value)
+    assert run.lnl({**rows, key: dict(good, lnL=float("nan"))}, 1, pl)[j] == -np.inf
 
 
 def test_exit_statuses(tmp_path):
@@ -374,6 +390,34 @@ def test_exit_statuses(tmp_path):
     del env["LEDGER_FAKE_OFF_NOLOOP"]
     assert subprocess.run(cmd, env=env).returncode == 4
     assert controller.Run(run_dir).head()["state"] == "FAILED"
+
+
+def test_failed_evaluations_end_a_run_and_never_a_certificate(clean_run, tmp_path):
+    """Protects: a learning version with too many failed evaluations ends the run; a frozen round
+    whose failures cannot be diluted is closed uncertified at once, without drawing to the limit;
+    and `rift-run verify` exits 1 when a certificate does not follow from its ledger.
+    Oracle: analytic."""
+    run_dir = str(tmp_path / "many")
+    cmd, env = _command(run_dir)
+    env["LEDGER_FAKE_FAIL"] = "0.3"
+    assert subprocess.run(cmd, env=env).returncode == 4
+    head = controller.Run(run_dir).head()
+    assert head["version"] == 1 and "evaluations failed" in head["reason"]
+    run_dir = str(tmp_path / "few")
+    cmd, env = _command(run_dir)
+    env["LEDGER_FAKE_FAIL"] = "0.02"
+    assert subprocess.run(cmd, env=env).returncode == 4
+    cert = json.load(open(os.path.join(run_dir, "certificate.json")))
+    assert not cert["certified"] and not cert["checks"]["failed"] and cert["failed_rows"] > 6
+    assert cert["draws"] == 1000, "the round was extended although more draws fail at the same rate"
+    verify = [sys.executable, "-B", RIFT_RUN, "verify", "--run-dir"]
+    assert subprocess.run(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 0
+    for field, value in (("certified", True), ("failed_rows", 0)):
+        path = os.path.join(run_dir, "certificate.json")
+        edited = dict(cert, **{field: value})
+        open(path, "w").write(json.dumps(edited))
+        assert subprocess.run(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 1, field
+        open(path, "w").write(json.dumps(cert))
 
 
 @pytest.fixture(scope="module")
@@ -419,11 +463,14 @@ def test_the_engine_writes_keyed_rows_at_the_lease_sample_count(stub_run):
     assert json.loads(out.stdout)["identical"] == 8
 
 
-@pytest.mark.parametrize("flags, status", [(["--stub-skip", "1"], 0), (["--stub-double"], engine.EXIT_DOUBLE_CALL)])
+@pytest.mark.parametrize("flags, status", [(["--stub-skip", "0"], 0), (["--stub-skip", "1"], 0), (["--stub-skip", "2"], 0),
+                                           (["--stub-exit", "1"], 3),
+                                           (["--stub-double"], engine.EXIT_DOUBLE_CALL)])
 def test_the_engine_reports_what_ile_did_to_a_point(stub_run, tmp_path, flags, status):
-    """Protects: a point ILE skips gets a FAILED line of its own, and a second sampler call for
-    one point voids the key and stops the engine, since ILE would swallow an exception and
-    leave a row that holds only the first call.  Oracle: analytic."""
+    """Protects: a point ILE skips gets a FAILED line of its own, wherever it is in the lease; a
+    point ILE never starts gets no line, and ILE's exit status is the engine's; a second
+    sampler call for one point voids the key and stops the engine, since ILE would swallow an
+    exception and leave a row that holds only the first call.  Oracle: analytic."""
     run_dir, env, work = stub_run
     meta = json.load(open(os.path.join(run_dir, "leases", "lease-v01-n0000.json")))
     text = open(os.path.join(run_dir, "leases", "lease-v01-n0000.dat")).read().split("\n")
@@ -436,8 +483,13 @@ def test_the_engine_reports_what_ile_did_to_a_point(stub_run, tmp_path, flags, s
            "--sampler-method", "AV", "--sim-grid", str(tmp_path / "lease.dat")] + flags
     assert subprocess.run(cmd, env=env, cwd=work).returncode == status
     lines = [json.loads(x) for x in open(shard)]
+    assert not os.path.exists(shard + ".inflight") or flags[0] == "--stub-double"
     if flags[0] == "--stub-skip":
-        assert [x["status"] for x in lines] == ["OK", "FAILED", "OK"] and [x["lease_row"] for x in lines] == [0, 1, 2]
+        want = ["OK", "OK", "OK"]
+        want[int(flags[1])] = "FAILED"
+        assert [x["status"] for x in lines] == want and [x["lease_row"] for x in lines] == [0, 1, 2]
+    elif flags[0] == "--stub-exit":
+        assert [x["status"] for x in lines] == ["OK"]
     else:
         assert [x["status"] for x in lines] == ["OK", "INVALID"]
         os.makedirs(tmp_path / "run" / "ledger")
@@ -501,3 +553,106 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
         out = build(name, extra)
         assert out.returncode != 0 and named in out.stdout, (name, out.stdout[-1500:])
     shutil.rmtree(str(tmp_path / "ok"))
+
+
+def _stub_command(work, extra=()):
+    work.mkdir(exist_ok=True)
+    (work / "args_ile.txt").write_text("X --manual-logarithm-offset 0 --time-marginalization --vectorized --gpu "
+                                       "--force-xpy --sampler-method AV --n-chunk 2000\n")
+    (work / "args_cip_list.txt").write_text(FINAL_CIP + "\n")
+    (work / "grid.dat").write_text("\n".join(controller.GRID_HEADER) + "\n")
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([CODE, os.environ.get("PYTHONPATH", "")]))
+    cmd = [sys.executable, "-B", RIFT_RUN, "--run-dir", str(work / "ledger"), "--ile-args-file", str(work / "args_ile.txt"),
+           "--prior-args-file", str(work / "args_cip_list.txt"), "--grid-template", str(work / "grid.dat"),
+           "--ile-exe", os.path.join(HERE, "stub_ile.py"), "--set", "seed=9", "--set", "learn_per_stream=5",
+           "--set", "max_learn_versions=1", "--set", "n_max_samples=4000"] + list(extra)
+    return cmd, env
+
+
+@pytest.mark.parametrize("fault, row", [("STUB_ABORT_PRE", 7), ("STUB_ABORT_SAMPLER", 7), ("STUB_ABORT_PRE", 0),
+                                        ("STUB_RAISE_SAMPLER", 7)])
+def test_a_point_that_breaks_the_engine_is_failed_and_the_run_goes_on(tmp_path, fault, row):
+    """Protects: one point that kills the engine, before or inside the sampler, is marked failed
+    after two deaths on it and the other points are all evaluated; a point whose integrand
+    raises is failed by the engine itself.  Oracle: analytic (19 rows OK, that one FAILED)."""
+    cmd, env = _stub_command(tmp_path / "w")
+    assert subprocess.run(cmd + ["--budget", "1"], env=env, cwd=str(tmp_path / "w")).returncode == 3   # plan only
+    run = controller.Run(str(tmp_path / "w" / "ledger"))
+    pl = run.plan(1)
+    env[fault] = repr(float(pl["grid"][row, 0]))
+    for _ in range(6):
+        status = subprocess.run(cmd, env=env, cwd=str(tmp_path / "w")).returncode
+        if status != 6:
+            break
+    assert status == 4                                   # the run got past the point; it stops by design after version 1
+    rows, _ = run.ledger()
+    bad = (1, int(pl["stream"][row]), int(pl["index"][row]))
+    assert len(rows) == 20 and rows[bad]["status"] == "FAILED"
+    assert sum(r["status"] == "OK" for r in rows.values()) == 19
+    leases = [json.loads(x) for x in open(run.p("ctl", "leases.jsonl"))]
+    assert sum("strike" in x for x in leases) == (0 if fault == "STUB_RAISE_SAMPLER" else 2)
+
+
+def test_an_engine_that_dies_on_every_point_marks_none(tmp_path):
+    """Protects: an engine that dies inside the sampler on whatever point it is given (a lost GPU
+    context) is reported as not working, and no point is marked failed.  Oracle: analytic."""
+    cmd, env = _stub_command(tmp_path / "w")
+    env["STUB_ABORT_SAMPLER"] = "all"
+    for _ in range(2):
+        assert subprocess.run(cmd, env=env, cwd=str(tmp_path / "w")).returncode == 6
+    run = controller.Run(str(tmp_path / "w" / "ledger"))
+    assert run.ledger()[0] == {}
+    leases = [json.loads(x) for x in open(run.p("ctl", "leases.jsonl"))]
+    assert len(leases) == 6 and all(x.get("not_working") for x in leases)
+
+
+def test_reported_parameters_and_the_prior_density():
+    """Protects: chi_eff, chi_p, q and mc are the standard definitions, and the prior density is
+    normalised on its stated support, including an eta range that ends below 0.25.
+    Oracle: analytic (one hand-computed binary; the density integrates to 1, estimated with draws
+    from a wide proposal that does not come from the prior code)."""
+    g = np.array([[30.0, 20.0, 0.3, 0.4, 0.1, 0.0, -0.6, -0.2]])
+    out = summaries(g)
+    assert out["q"][0] == pytest.approx(2 / 3) and out["mc"][0] == pytest.approx(600 ** 0.6 / 50 ** 0.2)
+    assert out["chi_eff"][0] == pytest.approx((30 * 0.1 - 20 * 0.2) / 50)
+    assert out["chi_p"][0] == pytest.approx(max(0.5, (4 * 2 / 3 + 3) / (4 + 3 * 2 / 3) * (2 / 3) * 0.6))
+    box = Box([25.0, 35.0], [0.12, 0.24], 0.8)
+    sd = np.array([4.0, 0.25, 0.5, 0.5])
+    wide = proposal.BlockProposal.from_covariances([1.0], [[30.0, 0.4, 0.0, 0.0]], [np.diag(sd ** 2)],
+                                                   [30.0, 0.4, 0.0, 0.0], np.diag((2 * sd) ** 2), a=0.3, seed=2)
+    a = np.array([wide.draw(0, i)[0] for i in range(60000)])
+    val = np.exp(box.ln_prior_A(a) - wide.ln_q(a))
+    err = val.std(ddof=1) / np.sqrt(len(val))
+    assert err < 0.03 and abs(val.mean() - 1.0) < 4 * err
+    edge = np.array([[30.0, box.delta_min - 1e-3, 0.3, 0.3], [30.0, box.delta_max + 1e-3, 0.3, 0.3], [30.0, 0.5, 0.81, 0.3],
+                     [24.9, 0.5, 0.3, 0.3], [35.1, 0.5, 0.3, 0.3], [30.0, 0.5, 0.3, 0.0]])
+    assert np.all(np.isneginf(box.ln_prior_A(edge))) and np.isfinite(box.ln_prior_A([[30.0, 0.5, 0.3, 0.3]])[0])
+
+
+@pytest.mark.parametrize("name", sorted(engine.ILE_REFUSED))
+def test_every_refused_ile_option_is_refused(name):
+    """Protects: each option in engine.ILE_REFUSED is an option ILE declares, and is refused by
+    the engine and by rift-run under its full name.  Oracle: ILE's own option list."""
+    assert name in engine.option_names(ILE_EXE)
+    for check in (lambda t: engine.check_ile_arguments(t, ILE_EXE), lambda t: rundir.check_ile_tokens(t, ILE_EXE)):
+        with pytest.raises(SystemExit) as err:
+            check(ILE.split() + [name, "1"])
+        assert name in str(err.value)
+
+
+def test_the_builder_accepts_zero_iterations_only_for_terminal_stages(tmp_path):
+    """Protects: `--n-iterations 0` builds terminal stages alone and is refused without them,
+    with terminal evidence, or below zero.  Oracle: analytic."""
+    builder = os.path.join(CODE, "bin", "create_eos_posterior_pipeline")
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([CODE, os.environ.get("PYTHONPATH", "")]), RIFT_DAG_BACKEND="local")
+    (tmp_path / "grid.dat").write_text("\n".join(controller.GRID_HEADER) + "\n0 0 30 20 0 0 0 0 0 0\n")
+    (tmp_path / "stages.json").write_text(json.dumps(dict(version=1, stages=[dict(
+        name="only", kind="command-v1", exe="/bin/true", args="", initial_dir=str(tmp_path), log_dir=str(tmp_path))])))
+    base = [sys.executable, builder, "--input-grid", str(tmp_path / "grid.dat"), "--working-directory", str(tmp_path)]
+    for extra, named in ((["--n-iterations", "0"], "builds terminal stages only"),
+                         (["--n-iterations", "0", "--terminal-stage-spec-file", str(tmp_path / "stages.json"),
+                           "--terminal-evidence"], "--terminal-evidence needs a posterior iteration"),
+                         (["--n-iterations", "-1"], "must not be negative")):
+        out = subprocess.run(base + extra, cwd=str(tmp_path), env=env, text=True, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+        assert out.returncode != 0 and named in out.stdout, out.stdout[-800:]
