@@ -77,10 +77,10 @@ def test_kills_and_restarts_leave_the_certificate_unchanged(clean_run, tmp_path)
     engines change no proposal and no estimate.  Oracle: metamorphic, against the uninterrupted
     one-engine run with the same seed."""
     run_dir = str(tmp_path / "killed")
-    cmd, env = _command(run_dir, ["--chaos", "engine=2,seed=3,lo=0.8,hi=1.6", "--engines", "2"])
-    env["LEDGER_FAKE_SLEEP"] = "0.0015"
+    cmd, env = _command(run_dir, ["--chaos", "engine=2,rows=150", "--engines", "2"])
+    env["LEDGER_FAKE_SLEEP"] = "0.001"
     first = subprocess.Popen(cmd, env=env)
-    time.sleep(4.0)
+    time.sleep(3.0)
     first.send_signal(signal.SIGKILL)            # the supervisor dies; its engine is orphaned
     first.wait()
     for _ in range(20):
@@ -89,7 +89,7 @@ def test_kills_and_restarts_leave_the_certificate_unchanged(clean_run, tmp_path)
     else:
         pytest.fail("the killed run did not finish")
     kills = [json.loads(x) for x in open(os.path.join(run_dir, "ctl", "chaos.jsonl"))]
-    assert sum(k["rows_kept"] > 0 and k["in_flight"] is not None for k in kills) >= 1, "no kill landed inside a lease"
+    assert len(kills) == 2 and all(k["rows_kept"] >= 150 and k["in_flight"] is not None for k in kills)
     a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
     assert a["proposals"] == b["proposals"]
     assert a["estimate"] == b["estimate"]

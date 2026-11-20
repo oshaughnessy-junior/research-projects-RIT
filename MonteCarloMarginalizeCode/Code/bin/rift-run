@@ -43,7 +43,7 @@ def parse():
     ap.add_argument("--budget", type=float, default=float("inf"), help="seconds; engines are stopped when it ends")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="configuration value at the first start (see RIFT.ledger.controller.DEFAULTS)")
-    ap.add_argument("--chaos", default="", help="testing: engine=N,seed=S,lo=SEC,hi=SEC kills N engines on purpose")
+    ap.add_argument("--chaos", default="", help="testing: engine=N kills N engines on purpose, after lo=SEC to hi=SEC (seed=S) or at rows=K lines")
     ap.add_argument("--replay-keys", type=int, default=64)
     return ap.parse_args()
 

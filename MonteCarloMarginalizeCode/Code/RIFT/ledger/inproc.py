@@ -16,8 +16,9 @@ A point is marked failed only on evidence about that point: the engine's own lin
 two deaths while it was in the sampler.  An engine that cannot start, exits early, or
 dies between points never turns points into zeros.
 
-`chaos` kills engines on purpose, for tests: `engine=N` engine processes, each after a
-random delay between `lo` and `hi` seconds, on alternate launches.  Every kill is logged
+`chaos` kills engines on purpose, for tests: `engine=N` engine processes on alternate
+launches, each after a random delay between `lo` and `hi` seconds, or, with `rows=K`,
+once its shard holds K lines.  Every kill is logged
 in ctl/chaos.jsonl.
 """
 import fcntl
@@ -101,7 +102,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
         raise SystemExit("ledger run: another supervisor holds %s" % lock.name)
     _reap_orphans(run_dir)
     t_end = time.time() + budget
-    spec = dict(engine=0, seed=0, lo=60.0, hi=400.0)
+    spec = dict(engine=0, seed=0, lo=60.0, hi=400.0, rows=0)
     spec.update({k: float(v) for k, v in (kv.split("=") for kv in chaos.split(",") if kv)})
     state_file = os.path.join(run_dir, "ctl", "supervisor_state.json")
     state = json.load(open(state_file)) if os.path.exists(state_file) else dict(engine_kills=0, launches=0, strikes={})
@@ -134,9 +135,12 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 print("ledger run: budget spent; the run resumes on the next start", flush=True)
                 return EXIT_BUDGET
             state["launches"] += 1
-            kill_at = None
+            kill_at, kill_rows = None, None
             if state["engine_kills"] < spec["engine"] and state["launches"] % 2 == 1:
-                kill_at = float(rng.uniform(spec["lo"], spec["hi"]))
+                if spec["rows"]:
+                    kill_rows = int(spec["rows"])
+                else:
+                    kill_at = float(rng.uniform(spec["lo"], spec["hi"]))
             t0 = time.time()
             jobs = []
             for slot, lease in enumerate(act["leases"]):
@@ -158,8 +162,10 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
             why = None
             deadline = t0 + (min(left, kill_at) if kill_at is not None else left)
             while any(eng.poll() is None for _, _, _, _, eng in jobs):
-                if time.time() >= deadline:
-                    why = "chaos" if kill_at is not None and kill_at < left else "budget"
+                by_rows = (kill_rows is not None and jobs[0][4].poll() is None
+                           and len(_shard_keys(jobs[0][0]["shard"])) >= kill_rows)
+                if by_rows or time.time() >= deadline:
+                    why = "chaos" if by_rows or (kill_at is not None and kill_at < left) else "budget"
                     # a chaos kill takes one engine; the budget takes all
                     for _, _, _, _, eng in (jobs[:1] if why == "chaos" else jobs):
                         if eng.poll() is None:
@@ -169,7 +175,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                         except OSError:
                             pass
                     if why == "chaos":
-                        kill_at, deadline = None, t0 + left
+                        kill_at, kill_rows, deadline = None, None, t0 + left
                         state["engine_kills"] += 1
                         lease, base = jobs[0][0], jobs[0][1]
                         jobs[0][4].wait()
