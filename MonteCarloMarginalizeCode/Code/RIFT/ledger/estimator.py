@@ -11,9 +11,9 @@ only as n^-(1-k).  `lnZ_tail` estimates that fraction from the generalized Paret
 fitted to the largest weights.  It is reported beside the error and is not a check:
 in simulation, stopping on it (or on a stricter tail-index line, or on Pareto-smoothed
 weights) selected the samples without a heavy draw and made the certified ln Z worse.
-Read the certificate as ln Z within [-2 err, +2 err + lnZ_tail] of the value; that
-interval held in 91 to 97% of certified runs for true tail indices up to 0.6
-(`m0_delivery/tail_coverage.py` in the paper repository).
+Read the certificate as ln Z within [-2 err, +2 err + 3 lnZ_tail] of the value; that
+interval missed the truth in at most 4% of certified rounds for true tail indices up to
+0.6 (`m0_delivery/tail_coverage.py` in the paper repository).
 """
 import numpy as np
 from scipy import special

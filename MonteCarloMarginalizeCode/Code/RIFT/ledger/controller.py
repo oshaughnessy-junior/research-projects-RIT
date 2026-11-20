@@ -308,7 +308,7 @@ def tick(run, engines=1, defer=()):
                        "error do not include that estimate's bias")),
                    reading=("ln Z lies within [-2 lnZ_err, +2 lnZ_err + 3 lnZ_tail] of lnZ.  lnZ_tail estimates the "
                             "evidence beyond the largest weight seen; with it the interval missed the truth in at most "
-                            "5% of certified rounds in simulation, for weight tails up to index 0.65.  A failed row has "
+                            "4% of certified rounds in simulation, for weight tails up to index 0.6.  A failed row has "
                             "weight zero and lowers ln Z by an amount that depends on the weight it would have had."))
         write_products(run, cur, rows, v, res)
         write_atomic(run.p("certificate.json"), json.dumps(res, indent=1, sort_keys=True))

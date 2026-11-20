@@ -41,8 +41,8 @@ The weights are used raw, and a heavy tail makes ln Z read low: n draws from wei
 tail index k typically miss a fraction of the evidence that falls only as n^-(1-k). The
 certificate's `lnZ_tail` estimates that fraction from the generalized Pareto fitted to
 the largest weights. Read a certificate as ln Z within [-2 err, +2 err + 3 `lnZ_tail`]
-of its value; in simulation that interval missed the truth in at most 5% of certified
-rounds for tail indices up to 0.65. `lnZ_tail` is reported and is not a check. In simulation, stopping on it, on
+of its value; in simulation that interval missed the truth in at most 4% of certified
+rounds for tail indices up to 0.6, and in about 5% at 0.65. `lnZ_tail` is reported and is not a check. In simulation, stopping on it, on
 a stricter tail-index line or on Pareto-smoothed weights selected the rounds without a
 heavy draw and made the certified ln Z worse.
 
