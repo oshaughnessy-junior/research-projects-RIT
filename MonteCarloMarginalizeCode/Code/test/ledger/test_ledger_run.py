@@ -38,6 +38,12 @@ ILE = ("--manual-logarithm-offset 224.5 --time-marginalization --vectorized --gp
 ILE_EXE = os.path.join(CODE, "bin", "integrate_likelihood_extrinsic_batchmode")
 
 
+def run_bounded(*args, **kwargs):
+    """subprocess.run with a time limit, so a run that never ends fails its test."""
+    kwargs.setdefault("timeout", 300)
+    return subprocess.run(*args, **kwargs)
+
+
 def _command(run_dir, extra=()):
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([CODE, os.environ.get("PYTHONPATH", "")]))
     engine = "%s -B %s {lease} {keys} {shard}" % (sys.executable, os.path.join(HERE, "fake_engine.py"))
@@ -52,7 +58,7 @@ def _command(run_dir, extra=()):
 def clean_run(tmp_path_factory):
     run_dir = str(tmp_path_factory.mktemp("ledger") / "clean")
     cmd, env = _command(run_dir)
-    assert subprocess.run(cmd, env=env).returncode == 0
+    assert run_bounded(cmd, env=env).returncode == 0
     return run_dir
 
 
@@ -84,7 +90,7 @@ def test_kills_and_restarts_leave_the_certificate_unchanged(clean_run, tmp_path)
     first.send_signal(signal.SIGKILL)            # the supervisor dies; its engine is orphaned
     first.wait()
     for _ in range(20):
-        if subprocess.run(cmd, env=env).returncode == 0:
+        if run_bounded(cmd, env=env).returncode == 0:
             break
     else:
         pytest.fail("the killed run did not finish")
@@ -217,10 +223,10 @@ def test_an_engine_that_cannot_start_stops_the_run(tmp_path):
     run_dir = str(tmp_path / "broken")
     cmd, env = _command(run_dir)
     cmd[cmd.index("--engine-command") + 1] = "exit 7"
-    assert subprocess.run(cmd, env=env).returncode == 6
+    assert run_bounded(cmd, env=env).returncode == 6
     assert controller.Run(run_dir).ledger()[0] == {}
     for _ in range(2):                       # nor do repeated starts
-        assert subprocess.run(cmd, env=env).returncode == 6
+        assert run_bounded(cmd, env=env).returncode == 6
     assert controller.Run(run_dir).ledger()[0] == {}
 
 
@@ -299,7 +305,7 @@ def test_tail_index_and_checks_against_a_known_tail(k):
         w = (1 - k) * (1 - (np.arange(n) + 0.5) / n) ** (-k)
         k_fit, unseen = estimator.tail_fit(w)
         assert abs(k_fit - k) < 0.1
-        assert 0.5 < unseen / (0.5 / n) ** (1 - k) < 2.0
+        assert 0.85 < unseen / (0.5 / n) ** (1 - k) < 1.4
         assert estimator.estimate(np.log(w), {})["lnZ_tail"] == pytest.approx(np.log1p(unseen * n / w.sum()), rel=1e-12)
     if k < 0.5:
         assert res["checks"]["groups"]
@@ -377,18 +383,18 @@ def test_exit_statuses(tmp_path):
     Oracle: analytic."""
     run_dir = str(tmp_path / "budget")
     cmd, env = _command(run_dir, ["--budget", "1"])
-    assert subprocess.run(cmd, env=env).returncode == 3
+    assert run_bounded(cmd, env=env).returncode == 3
     assert controller.Run(run_dir).ledger()[0] == {}
     run_dir = str(tmp_path / "nofreeze")
     cmd, env = _command(run_dir, ["--set", "max_learn_versions=1"])
-    assert subprocess.run(cmd, env=env).returncode == 4
+    assert run_bounded(cmd, env=env).returncode == 4
     assert not os.path.exists(os.path.join(run_dir, "certificate.json"))
     run_dir = str(tmp_path / "offpath")
     cmd, env = _command(run_dir)
     env["LEDGER_FAKE_OFF_NOLOOP"] = "1"
-    assert subprocess.run(cmd, env=env).returncode == 5
+    assert run_bounded(cmd, env=env).returncode == 5
     del env["LEDGER_FAKE_OFF_NOLOOP"]
-    assert subprocess.run(cmd, env=env).returncode == 4
+    assert run_bounded(cmd, env=env).returncode == 4
     assert controller.Run(run_dir).head()["state"] == "FAILED"
 
 
@@ -400,23 +406,23 @@ def test_failed_evaluations_end_a_run_and_never_a_certificate(clean_run, tmp_pat
     run_dir = str(tmp_path / "many")
     cmd, env = _command(run_dir)
     env["LEDGER_FAKE_FAIL"] = "0.3"
-    assert subprocess.run(cmd, env=env).returncode == 4
+    assert run_bounded(cmd, env=env).returncode == 4
     head = controller.Run(run_dir).head()
     assert head["version"] == 1 and "evaluations failed" in head["reason"]
     run_dir = str(tmp_path / "few")
     cmd, env = _command(run_dir)
     env["LEDGER_FAKE_FAIL"] = "0.02"
-    assert subprocess.run(cmd, env=env).returncode == 4
+    assert run_bounded(cmd, env=env).returncode == 4
     cert = json.load(open(os.path.join(run_dir, "certificate.json")))
     assert not cert["certified"] and not cert["checks"]["failed"] and cert["failed_rows"] > 6
     assert cert["draws"] == 1000, "the round was extended although more draws fail at the same rate"
     verify = [sys.executable, "-B", RIFT_RUN, "verify", "--run-dir"]
-    assert subprocess.run(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 0
+    assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 0
     for field, value in (("certified", True), ("failed_rows", 0)):
         path = os.path.join(run_dir, "certificate.json")
         edited = dict(cert, **{field: value})
         open(path, "w").write(json.dumps(edited))
-        assert subprocess.run(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 1, field
+        assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 1, field
         open(path, "w").write(json.dumps(cert))
 
 
@@ -435,7 +441,7 @@ def stub_run(tmp_path_factory):
            "--prior-args-file", str(work / "args_cip_list.txt"), "--grid-template", str(work / "grid.dat"),
            "--ile-exe", os.path.join(HERE, "stub_ile.py"), "--set", "seed=9", "--set", "learn_per_stream=20",
            "--set", "max_learn_versions=1", "--set", "n_max_samples=20000"]
-    assert subprocess.run(cmd, env=env, cwd=str(work)).returncode == 4
+    assert run_bounded(cmd, env=env, cwd=str(work)).returncode == 4
     return run_dir, env, str(work)
 
 
@@ -457,7 +463,7 @@ def test_the_engine_writes_keyed_rows_at_the_lease_sample_count(stub_run):
     assert abs(np.mean(z)) < 4 / np.sqrt(len(z)) + 0.5        # AV reads slightly low at this count (gate G3)
     assert np.max(np.abs(z)) < 6
     assert len(set(r["key_seed"] for r in rows.values())) == 80
-    out = subprocess.run([sys.executable, "-B", RIFT_RUN, "replay", "--run-dir", run_dir, "--replay-keys", "8"],
+    out = run_bounded([sys.executable, "-B", RIFT_RUN, "replay", "--run-dir", run_dir, "--replay-keys", "8"],
                          env=env, cwd=work, stdout=subprocess.PIPE, text=True)
     assert out.returncode == 0, out.stdout
     assert json.loads(out.stdout)["identical"] == 8
@@ -481,7 +487,7 @@ def test_the_engine_reports_what_ile_did_to_a_point(stub_run, tmp_path, flags, s
     cmd = [sys.executable, "-B", "-m", "RIFT.ledger.engine", "--lease-keys", str(tmp_path / "lease.json"), "--shard", shard,
            "--", os.path.join(HERE, "stub_ile.py"), "--time-marginalization", "--vectorized", "--gpu", "--force-xpy",
            "--sampler-method", "AV", "--sim-grid", str(tmp_path / "lease.dat")] + flags
-    assert subprocess.run(cmd, env=env, cwd=work).returncode == status
+    assert run_bounded(cmd, env=env, cwd=work).returncode == status
     lines = [json.loads(x) for x in open(shard)]
     assert not os.path.exists(shard + ".inflight") or flags[0] == "--stub-double"
     if flags[0] == "--stub-skip":
@@ -529,7 +535,7 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
             "--n-output-samples-last", "7", "--ile-jobs-per-worker", "3", "--skip-reproducibility", "--ledger-run"]
 
     def build(name, extra):
-        return subprocess.run(base + ["--use-rundir", str(tmp_path / name)] + extra, cwd=str(tmp_path), env=env, text=True,
+        return run_bounded(base + ["--use-rundir", str(tmp_path / name)] + extra, cwd=str(tmp_path), env=env, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     out = build("ok", ["--pipeline-builder", "Hyperpipe", "--ile-sampler-method", "AV", "--ledger-run-args", "--budget 600"])
@@ -576,12 +582,12 @@ def test_a_point_that_breaks_the_engine_is_failed_and_the_run_goes_on(tmp_path, 
     after two deaths on it and the other points are all evaluated; a point whose integrand
     raises is failed by the engine itself.  Oracle: analytic (19 rows OK, that one FAILED)."""
     cmd, env = _stub_command(tmp_path / "w")
-    assert subprocess.run(cmd + ["--budget", "1"], env=env, cwd=str(tmp_path / "w")).returncode == 3   # plan only
+    assert run_bounded(cmd + ["--budget", "1"], env=env, cwd=str(tmp_path / "w")).returncode == 3   # plan only
     run = controller.Run(str(tmp_path / "w" / "ledger"))
     pl = run.plan(1)
     env[fault] = repr(float(pl["grid"][row, 0]))
     for _ in range(6):
-        status = subprocess.run(cmd, env=env, cwd=str(tmp_path / "w")).returncode
+        status = run_bounded(cmd, env=env, cwd=str(tmp_path / "w")).returncode
         if status != 6:
             break
     assert status == 4                                   # the run got past the point; it stops by design after version 1
@@ -599,7 +605,7 @@ def test_an_engine_that_dies_on_every_point_marks_none(tmp_path):
     cmd, env = _stub_command(tmp_path / "w")
     env["STUB_ABORT_SAMPLER"] = "all"
     for _ in range(2):
-        assert subprocess.run(cmd, env=env, cwd=str(tmp_path / "w")).returncode == 6
+        assert run_bounded(cmd, env=env, cwd=str(tmp_path / "w")).returncode == 6
     run = controller.Run(str(tmp_path / "w" / "ledger"))
     assert run.ledger()[0] == {}
     leases = [json.loads(x) for x in open(run.p("ctl", "leases.jsonl"))]
@@ -653,6 +659,6 @@ def test_the_builder_accepts_zero_iterations_only_for_terminal_stages(tmp_path):
                          (["--n-iterations", "0", "--terminal-stage-spec-file", str(tmp_path / "stages.json"),
                            "--terminal-evidence"], "--terminal-evidence needs a posterior iteration"),
                          (["--n-iterations", "-1"], "must not be negative")):
-        out = subprocess.run(base + extra, cwd=str(tmp_path), env=env, text=True, stdout=subprocess.PIPE,
+        out = run_bounded(base + extra, cwd=str(tmp_path), env=env, text=True, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT)
         assert out.returncode != 0 and named in out.stdout, out.stdout[-800:]
