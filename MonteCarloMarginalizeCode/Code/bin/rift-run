@@ -13,7 +13,7 @@ DIR/certificate.json and DIR/posterior_samples.dat.
 
 Exit status: 0 certified; 3 time budget spent (start again to resume); 4 stopped without
 a certificate; 5 an engine left the NoLoop likelihood path; 6 the engine fails before its
-first row.
+first row.  `verify` and `replay` exit 1 when what they recompute differs.
 """
 import argparse
 import json
@@ -66,10 +66,10 @@ def first_start(opts):
         if not (opts.ile_args_file and opts.grid_template):
             raise SystemExit("rift-run: give --ile-args-file and --grid-template, or --engine-command")
         tokens = rundir.read_args_line(opts.ile_args_file)
-        overrides.setdefault("lnl_offset", rundir.check_ile_tokens(tokens))
+        exe = shutil.which(opts.ile_exe) or opts.ile_exe
+        overrides.setdefault("lnl_offset", rundir.check_ile_tokens(tokens, exe))
         if opts.ile_n_chunk:
             tokens = rundir.replace_option(tokens, "--n-chunk", opts.ile_n_chunk)
-        exe = shutil.which(opts.ile_exe) or opts.ile_exe
         tmp = os.path.join(os.path.abspath(opts.run_dir), "ile_out")
         engine["command"] = " ".join(
             [shlex.quote(sys.executable), "-u", "-m", "RIFT.ledger.engine", "--lease-keys", "{keys}", "--shard", "{shard}",
@@ -79,8 +79,21 @@ def first_start(opts):
         engine["ile_args"] = tokens
         engine["cleanup"] = os.path.join(tmp, "{base}_*")     # ILE's own per-point files; the shard is the record
         os.makedirs(tmp, exist_ok=True)
-    controller.init(opts.run_dir, box, header, **overrides)
+    # engine.json first: config.json is what marks the directory as a started run
+    os.makedirs(opts.run_dir, exist_ok=True)
     controller.write_atomic(os.path.join(opts.run_dir, "engine.json"), json.dumps(engine, indent=1, sort_keys=True))
+    controller.init(opts.run_dir, box, header, **overrides)
+
+
+def load_engine(run_dir):
+    path = os.path.join(run_dir, "engine.json")
+    if not os.path.exists(path):
+        raise SystemExit("rift-run: %s is missing; the run directory is incomplete" % path)
+    engine = json.load(open(path))
+    if not os.path.isdir(engine["cwd"]):
+        raise SystemExit("rift-run: the engine's working directory %s is gone.  A run records absolute "
+                         "paths and cannot be moved; edit %s if it was." % (engine["cwd"], path))
+    return engine
 
 
 def main():
@@ -89,7 +102,7 @@ def main():
     if opts.command == "run":
         if not os.path.exists(os.path.join(opts.run_dir, "config.json")):
             first_start(opts)
-        engine = json.load(open(os.path.join(opts.run_dir, "engine.json")))
+        engine = load_engine(opts.run_dir)
         gpus = [g for g in (opts.engine_gpus or "").split(",") if g]
         return inproc.run(os.path.abspath(opts.run_dir), engine["command"], cwd=engine["cwd"], engines=opts.engines,
                           gpus=gpus, budget=opts.budget, chaos=opts.chaos, cleanup=engine.get("cleanup"))
@@ -97,15 +110,21 @@ def main():
     if opts.command == "status":
         print(json.dumps(controller.status(run), indent=1))
     elif opts.command == "verify":
-        print(json.dumps(controller.verify(run), indent=1))
+        out = controller.verify(run)
+        print(json.dumps(out, indent=1))
+        cert = out["certificate"] or dict(lnZ_difference=0.0, n_eff_difference=0.0, plans_match={})
+        same = (all(f["same_bytes"] for f in out["fits"]) and cert["lnZ_difference"] == 0.0
+                and cert["n_eff_difference"] == 0.0 and all(cert["plans_match"].values()))
+        return 0 if same else 1
     elif opts.command == "replay":
         import subprocess
         lease = controller.replay_lease(run, opts.replay_keys)
         if os.path.exists(lease["shard"]):
             os.remove(lease["shard"])
-        engine = json.load(open(run.p("engine.json")))
-        cmd = engine["command"].format(lease=lease["lease"], keys=lease["keys"], shard=lease["shard"], n=lease["n"],
-                                       log=run.p("replay", "engine.log"), base="replay")
+        engine = load_engine(run.path)
+        cmd = engine["command"].format(lease=shlex.quote(lease["lease"]), keys=shlex.quote(lease["keys"]),
+                                       shard=shlex.quote(lease["shard"]), n=lease["n"],
+                                       log=shlex.quote(run.p("replay", "engine.log")), base="replay")
         with open(run.p("replay", "engine.log"), "ab") as lf:
             subprocess.run(cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT, cwd=engine["cwd"])
         out = controller.replay_check(run)

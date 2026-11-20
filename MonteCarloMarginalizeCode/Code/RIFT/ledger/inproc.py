@@ -5,14 +5,16 @@ side.  The supervisor returns when the run stops, when its time budget ends, or 
 engine log shows the likelihood left the NoLoop path.  Started again on the same
 directory it resumes, because the directory holds the whole state.
 
-After an engine exits:
-  exit 0 with lease rows missing   the engine skipped those points; each becomes a FAILED row (L = 0)
-  its own non-zero exit            a strike against the first missing key; two strikes make it FAILED
-  killed (budget or chaos)         nothing is recorded; the next lease covers the missing rows
+After an engine exits, by what its shard holds:
+  killed by this supervisor        nothing is recorded; the next lease covers the missing rows
+  every lease row has a line       nothing to do (the engine reports its own failed points)
+  died with a key in flight        a strike against that key; two strikes make it FAILED (L = 0)
+  anything else with rows missing  the engine is not working: no row is marked, and three such
+                                   launches in a row end the supervisor with exit status 6
 
-Three launches in a row that fail without writing a row end the supervisor with exit
-status 6: the engine cannot start, and marking one point after another as failed would
-be wrong.
+A point is marked failed only on evidence about that point: the engine's own line, or
+two deaths while it was in the sampler.  An engine that cannot start, exits early, or
+dies between points never turns points into zeros.
 
 `chaos` kills engines on purpose, for tests: `engine=N` engine processes, each after a
 random delay between `lo` and `hi` seconds, on alternate launches.  Every kill is logged
@@ -22,6 +24,7 @@ import fcntl
 import glob
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -32,7 +35,7 @@ import numpy as np
 from . import controller
 
 EXIT_DONE, EXIT_BUDGET, EXIT_FAILED, EXIT_REDLINE, EXIT_ENGINE = 0, 3, 4, 5, 6
-BARREN_LIMIT = 3      # consecutive engine launches that fail before writing any row
+BARREN_LIMIT = 3      # consecutive launches that leave rows missing with no point to blame
 # Lines that mean an engine was not on the NoLoop likelihood (RIFT AGENTS.md, REDLINE).
 # `Override --gpu` is expected on a host without cupy once --force-xpy is given, which the engine requires.
 OFF_NOLOOP = ("this is the old vectorized code path not the xpy path", "NOT APPLIED -- this configuration cannot honour")
@@ -104,10 +107,11 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     state = json.load(open(state_file)) if os.path.exists(state_file) else dict(engine_kills=0, launches=0, strikes={})
     barren = 0
     rng = np.random.default_rng([int(spec["seed"]), state["launches"]])
-    live = []
+    live, ours = [], set()        # running engines; pids this supervisor killed
 
     def stop_engines(signum=None, frame=None):
         for eng in live:
+            ours.add(eng.pid)
             try:
                 os.killpg(eng.pid, signal.SIGKILL)
             except OSError:
@@ -138,8 +142,9 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
             for slot, lease in enumerate(act["leases"]):
                 base = os.path.basename(lease["lease"])[:-4]
                 logf = os.path.join(run_dir, "logs", base + ".log")
-                cmd = engine_command.format(lease=lease["lease"], keys=lease["keys"], shard=lease["shard"],
-                                            n=lease["n"], log=logf, base=base)
+                cmd = engine_command.format(lease=shlex.quote(lease["lease"]), keys=shlex.quote(lease["keys"]),
+                                            shard=shlex.quote(lease["shard"]), n=lease["n"], log=shlex.quote(logf),
+                                            base=base)
                 env = dict(os.environ)
                 if gpus:
                     env["CUDA_VISIBLE_DEVICES"] = str(gpus[slot % len(gpus)])
@@ -157,6 +162,8 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                     why = "chaos" if kill_at is not None and kill_at < left else "budget"
                     # a chaos kill takes one engine; the budget takes all
                     for _, _, _, _, eng in (jobs[:1] if why == "chaos" else jobs):
+                        if eng.poll() is None:
+                            ours.add(eng.pid)
                         try:
                             os.killpg(eng.pid, signal.SIGKILL)
                         except OSError:
@@ -181,7 +188,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 have = _shard_keys(lease["shard"])
                 keys = [tuple(k) for k in json.load(open(lease["keys"]))["keys"]]
                 missing = [k for k in keys if k not in have]
-                killed = eng.returncode is not None and eng.returncode < 0
+                killed = eng.pid in ours
                 rec = dict(lease=base, rows=len(have), missing=len(missing), status=eng.returncode,
                            killed=bool(killed), wall=time.time() - t0, off_noloop=_off_noloop(logf))
                 off += rec["off_noloop"]
@@ -191,22 +198,31 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                             os.remove(f)
                         except OSError:
                             pass
-                if not killed:
-                    barren = barren + 1 if (eng.returncode != 0 and not have) else 0
-                failed = []
+                flight = lease["shard"] + ".inflight"
+                key = None
+                if os.path.exists(flight):
+                    try:
+                        key = tuple(json.load(open(flight)))
+                    except ValueError:
+                        pass
+                    os.remove(flight)
                 if not killed and missing:
-                    if eng.returncode == 0:
-                        failed = missing
+                    if key is not None and eng.returncode != 0:
+                        # the engine died inside the sampler on this key
+                        name = "%d/%d/%d" % key
+                        state["strikes"][name] = state["strikes"].get(name, 0) + 1
+                        rec["strike"] = name
+                        if state["strikes"][name] >= 2:
+                            with open(lease["shard"][:-6] + "-ctl.jsonl", "a") as f:
+                                f.write(json.dumps(dict(v=key[0], s=key[1], i=key[2], status="FAILED", lnL=None,
+                                                        reason="the engine died twice on this point")) + "\n")
+                            rec["recorded_failed"] = 1
+                        barren = 0
                     else:
-                        k = "%d/%d/%d" % ((lease["version"],) + missing[0])
-                        state["strikes"][k] = state["strikes"].get(k, 0) + 1
-                        if state["strikes"][k] >= 2:
-                            failed = [missing[0]]
-                if failed:
-                    with open(lease["shard"][:-6] + "-ctl.jsonl", "a") as f:
-                        for s, i in failed:
-                            f.write(json.dumps(dict(v=lease["version"], s=s, i=i, status="FAILED", lnL=None)) + "\n")
-                    rec["recorded_failed"] = len(failed)
+                        barren += 1
+                        rec["not_working"] = True
+                elif not killed:
+                    barren = 0
                 _log(run_dir, "leases.jsonl", rec)
             controller.write_atomic(state_file, json.dumps(state))
             if os.path.exists(os.path.join(run_dir, "ctl", "engines.json")):
@@ -218,8 +234,8 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 print("ledger run: %d engine log lines show the likelihood off the NoLoop path; stopping" % off, flush=True)
                 return EXIT_REDLINE
             if barren >= BARREN_LIMIT:
-                print("ledger run: %d engine launches in a row failed before their first row; see %s. "
-                      "A key marked FAILED by these launches is in a ledger/*-ctl.jsonl file." % (
+                print("ledger run: %d engine launches in a row left lease rows without a line and without a "
+                      "point in flight; the engine is not working, see %s.  No point was marked failed." % (
                           barren, os.path.join(run_dir, "logs")), flush=True)
                 return EXIT_ENGINE
             if why == "budget":

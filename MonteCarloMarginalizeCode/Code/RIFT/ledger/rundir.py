@@ -9,7 +9,7 @@ else is refused by name.
 import re
 import shlex
 
-from .engine import REDLINE_FLAGS
+from .engine import check_ile_arguments
 from .space import GRID_COLUMNS, Box
 
 # Options of the final CIP line that leave the target prior alone, with their value counts.
@@ -26,11 +26,6 @@ CIP_PRIOR = {"--mc-range": 1, "--eta-range": 1, "--chi-max": 1, "--chi-small-max
              "--parameter": 1, "--parameter-implied": 1, "--parameter-nofit": 1,
              "--downselect-parameter": 1, "--downselect-parameter-range": 1}
 POLAR_SPINS = {"chi1", "chi2", "cos_theta1", "cos_theta2", "phi1", "phi2"}
-ILE_REFUSED = ("--auto-logarithm-offset", "--zero-likelihood", "--calibration-burn-in-neff",
-               "--sampler-warmstart-retry-neff", "--sampler-load-state", "--use-eccentricity",
-               "--export-eos-index", "--pin-distance-to-sim", "--rom-integrate-intrinsic")
-
-
 def read_args_line(path, which=-1):
     """Tokens of one line of an args file, without the leading iteration-count field."""
     lines = [x.strip() for x in open(path) if x.strip()]
@@ -98,18 +93,13 @@ def box_from_cip_tokens(tokens):
     return box
 
 
-def check_ile_tokens(tokens):
-    """Refuse ILE arguments the engine cannot honour.  Returns ln L offset."""
-    missing = [f for f in REDLINE_FLAGS if f not in tokens]
-    if missing:
-        raise SystemExit("ledger run: the ILE arguments lack %s (the NoLoop likelihood needs all of %s)"
-                         % (" ".join(missing), " ".join(REDLINE_FLAGS)))
-    opts = dict((o, v) for o, v in _options(tokens))
-    bad = [o for o in opts if o in ILE_REFUSED or o.startswith("--calibration")]
-    if bad:
-        raise SystemExit("ledger run: ILE options not supported by the ledger engine: %s" % ", ".join(sorted(bad)))
-    if opts.get("--sampler-method") != ["AV"]:
-        raise SystemExit("ledger run: the ILE arguments must carry --sampler-method AV")
+def check_ile_tokens(tokens, ile_exe=None):
+    """Refuse ILE arguments the engine cannot honour (engine.check_ile_arguments).
+    Returns the ln L offset of the run."""
+    try:
+        opts = check_ile_arguments(tokens, ile_exe)
+    except SystemExit as exc:
+        raise SystemExit(str(exc).replace("ledger engine:", "ledger run:"))
     return float(opts.get("--manual-logarithm-offset", ["0"])[0])
 
 

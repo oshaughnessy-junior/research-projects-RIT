@@ -41,13 +41,15 @@ def main():
     pause = float(os.environ.get("LEDGER_FAKE_SLEEP", "0"))
     loose = np.random.default_rng() if os.environ.get("LEDGER_FAKE_UNKEYED") else None
     versions = meta.get("versions") or [meta["version"]] * len(grid)
+    if os.environ.get("LEDGER_FAKE_OFF_NOLOOP"):
+        print(" this is the old vectorized code path not the xpy path")
     with open(shard, "a") as f:
         for (s, i), ver, g, v in zip(meta["keys"], versions, grid, val):
             if pause:
                 time.sleep(pause)
             z = (loose or np.random.default_rng([meta["seed"], 77, ver, s, i])).standard_normal()
             row = dict(v=ver, s=s, i=i, status="OK", lnL=float(v + SIGMA * z - 0.5 * SIGMA ** 2), sigma=SIGMA,
-                       m1=float(g[0]), m2=float(g[1]))
+                       point=[float(x) for x in g])
             f.write(json.dumps(row) + "\n")
             f.flush()
 

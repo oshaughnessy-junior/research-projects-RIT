@@ -1142,6 +1142,8 @@ if opts.pipeline_builder == "Hyperpipe":
          "--ledger-run with --add-extrinsic"),
         (opts.ledger_run and opts.use_jax_ile,
          "--ledger-run with --use-jax-ile"),
+        (opts.ledger_run and opts.ile_sampler_method != "AV",
+         "--ledger-run without --ile-sampler-method AV"),
         (opts.ledger_run and opts.ile_zero_likelihood_data_free,
          "--ledger-run with --ile-zero-likelihood-data-free"),
         (opts.ledger_run and opts.use_osg,

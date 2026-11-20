@@ -36,7 +36,7 @@ from .space import GRID_COLUMNS, PARAMS, Box, from_grid
 DEFAULTS = dict(seed=20261119, n_streams=4, learn_per_stream=375, frozen_per_stream=375, max_learn_versions=12,
                 target_n_eff=1000.0, lnz_tol=0.05, k_max=0.7, chi2_max=11.3, max_frozen_per_stream=2000,
                 min_extension=64, extension_margin=1.1, extension_factor=1.5, lnl_offset=0.0,
-                n_max_samples=400000)
+                n_max_samples=400000, max_failed_fraction=0.002, max_failed_fraction_learn=0.2)
 GRID_HEADER = ["# RIFT_HYPERPIPELINE_V1", "# lnL sigma_lnL " + " ".join(GRID_COLUMNS)]
 PLAN_COLUMNS = ("stream", "index", "ok", "ln_pq", "mc", "delta", "s1z", "s2z") + GRID_COLUMNS
 STATES_OVER = ("DONE", "FAILED")
@@ -147,6 +147,7 @@ class Run:
         """Canonical row per key: the first one in shard-name order.  A shard may end in a
         partial line (its engine was killed); a bad line anywhere else is an error."""
         rows, stat = {}, dict(shards=0, rows=0, repeats=0, repeat_mismatch=0, partial_lines=0)
+        void = []
         for f in sorted(glob.glob(self.p("ledger", "shard-*.jsonl"))):
             stat["shards"] += 1
             lines = open(f).read().split("\n")
@@ -161,27 +162,39 @@ class Run:
                     stat["partial_lines"] += 1
                     continue
                 key = (r["v"], r["s"], r["i"])
+                if r.get("status") == "INVALID":
+                    void.append((key, f))
+                    continue
                 if key in rows:
                     stat["repeats"] += 1
                     stat["repeat_mismatch"] += rows[key]["lnL"] != r["lnL"]
                 else:
                     rows[key] = r
                     stat["rows"] += 1
+        if void:
+            # an engine found its own row for a key untrustworthy; nothing here can repair that
+            raise SystemExit("the engine voided %d key(s), first %s in %s: its ILE options make the sampler "
+                             "run twice per point.  Fix the ILE arguments and start a new run." % (
+                                 len(void), void[0][0], void[0][1]))
         return rows, stat
 
     def lnl(self, rows, version, pl):
-        """ln L minus the offset, aligned with a plan: nan where missing, -inf where failed."""
+        """ln L minus the offset, aligned with a plan: nan where missing, -inf where failed.
+        A row with status OK must carry the point it evaluated, and that point must be
+        its key's: masses to 1e-9 relative, spins to 1e-9."""
         out = np.full(len(pl["ok"]), np.nan)
         for j in np.flatnonzero(pl["ok"]):
             r = rows.get((version, int(pl["stream"][j]), int(pl["index"][j])))
             if r is None:
                 continue
-            if r["status"] != "OK" or r["lnL"] is None:
+            val = r.get("lnL")
+            if r["status"] != "OK" or val is None or not np.isfinite(val):
                 out[j] = -np.inf
                 continue
-            if "m1" in r and abs(r["m1"] / r["m2"] - pl["grid"][j, 0] / pl["grid"][j, 1]) > 1e-9 * r["m1"] / r["m2"]:
-                raise SystemExit("row %s does not carry its key's point" % (r,))
-            out[j] = r["lnL"]
+            pt, g = np.asarray(r.get("point", []), dtype=float), pl["grid"][j]
+            if pt.shape != (8,) or np.any(np.abs(pt[:2] / g[:2] - 1) > 1e-9) or np.any(np.abs(pt[2:] - g[2:]) > 1e-9):
+                raise SystemExit("row %s does not carry its key's point %s" % (r, list(g)))
+            out[j] = val
         return out
 
     def lease_text(self, grid_rows):
@@ -254,8 +267,17 @@ def tick(run, engines=1):
     if missing.any():
         return dict(action="run", ledger=stat, leases=run.write_leases(v, cur["plan"], missing, engines))
     if cur["kind"] == "learn":
+        good = int(np.isfinite(cur["lnl"]).sum())
+        bad = int((cur["plan"]["ok"] & ~np.isfinite(cur["lnl"])).sum())
+        if bad > cfg["max_failed_fraction_learn"] * (good + bad):
+            # failed rows cost a learning version only efficiency, but this many say the engine or the box is wrong
+            run.set_head(**dict(head, state="FAILED", reason="version %d: %d of %d evaluations failed" % (v, bad, good + bad)))
+            return dict(action="failed")
         if v >= cfg["max_learn_versions"]:
             run.set_head(**dict(head, state="FAILED", reason="no freeze by version %d" % v))
+            return dict(action="failed")
+        if sum(int(np.isfinite(h["lnl"]).sum()) for h in hist) < adapt.N_FIT:
+            run.set_head(**dict(head, state="FAILED", reason="%d evaluations are needed for a fit" % adapt.N_FIT))
             return dict(action="failed")
         prop, info = fit_next(run, hist)
         is_frozen = adapt.frozen([h["fit"] for h in hist if h["fit"]] + [info])
@@ -273,7 +295,10 @@ def tick(run, engines=1):
                    fits=[h["fit"] for h in hist if h["fit"]], config=cfg,
                    integrator=dict(n_max_samples=cfg["n_max_samples"], note=(
                        "each ln L is one Monte Carlo estimate at this sample count; ln Z and its "
-                       "error do not include that estimate's bias")))
+                       "error do not include that estimate's bias")),
+                   reading=("ln Z lies within [-2 lnZ_err, +2 lnZ_err + lnZ_tail] of lnZ; lnZ_tail estimates the "
+                            "evidence beyond the largest weight seen.  Each failed row has weight zero and "
+                            "lowers ln Z by at most ln(1 - failed_rows / draws)."))
         write_products(run, cur, rows, v, res)
         write_atomic(run.p("certificate.json"), json.dumps(res, indent=1, sort_keys=True))
         run.set_head(**dict(head, state="DONE" if res["stop"] else "FAILED",
