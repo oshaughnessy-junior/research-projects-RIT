@@ -173,6 +173,9 @@ FILES=(
   # CIP/PUFF (DAG args), posterior-stage and treatment refusals.  ~35 s.
   "$C/test/hyperpipe/tests/test_waveform_transform_pseudo_build.py"
   "$C/test/test_hyperpipeline_io.py"
+  # -- ledger runs (RIFT/ledger, bin/rift-run): the controller driven end to end with a
+  # known-answer engine and a stand-in ILE on the real AV sampler; no likelihood.  ~100 s.
+  "$C/test/ledger/test_ledger_run.py"
   # -- hyperpipe pseudo-pipe builder (PR 181).  Every file below was run individually under a
   # runner-like import environment on CIT (IGWN conda python with htcondor/asimov/pesummary
   # blocked via a sys.meta_path finder, glue present -- pip lalsuite's closure carries

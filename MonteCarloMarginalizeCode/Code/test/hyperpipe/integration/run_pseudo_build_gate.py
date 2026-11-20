@@ -154,6 +154,67 @@ def _build(builder: Optional[str], run_base: Path, seed_grid: Path, cache: Path,
 ALTERNATE_ITERATIONS = (1, 3)
 
 
+def _build_ledger(run_base: Path, seed_grid: Path, cache: Path):
+    """A Hyperpipe build whose iteration loop is replaced by one ledger run."""
+    rundir = run_base / "hyperpipe-ledger-run"
+    command = [
+        sys.executable, str(PSEUDO_PIPE),
+        "--use-rundir", str(rundir),
+        "--pipeline-builder", "Hyperpipe",
+        "--manual-initial-grid", str(seed_grid),
+        "--fake-data-cache", str(cache),
+        "--event-time", "1126259462.391",
+        "--manual-ifo-list", "H1,L1",
+        "--approx", "IMRPhenomXPHM",
+        "--assume-precessing",
+        "--fmin-template", "20",
+        "--internal-force-iterations", "2",
+        "--internal-n-evaluations-per-iteration", "4",
+        "--n-output-samples", "7",
+        "--n-output-samples-last", "7",
+        "--ile-jobs-per-worker", "3",
+        "--ile-sampler-method", "AV",
+        "--ledger-run",
+        "--ledger-run-args", "--budget 600",
+        "--skip-reproducibility",
+    ]
+    result = subprocess.run(
+        command, cwd=str(run_base), env=_environment(run_base),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError(
+            "ledger build failed ({}):\n{}".format(
+                result.returncode, result.stdout))
+    (rundir / "pipeline-build.log").write_text(result.stdout)
+    return rundir
+
+
+def _assert_ledger_run_contract(ledger: Path):
+    """A ledger build is one node, and rift-run accepts the files it will read.
+
+    The stage reads args_ile.txt and the last line of args_cip_list.txt when it
+    starts, and refuses what it does not implement.  A build that such a start
+    would refuse is a pipeline that submits and then fails, so the same checks
+    run here against the files this build wrote.
+    """
+    from RIFT.ledger import rundir as ledger_rundir
+    manifest = json.loads((ledger / "terminal_stage_specs.json").read_text())
+    assert [stage["name"] for stage in manifest["stages"]] == ["ledger_run"]
+    jobs, edges = _dag_jobs_and_edges(
+        ledger / "marginalize_hyperparameters.dag")
+    assert list(jobs.values()) == ["TERMINAL_ledger_run.sub"], jobs
+    assert not edges, edges
+    submit = (ledger / "TERMINAL_ledger_run.sub").read_text()
+    for needed in ("--budget 600", "args_ile.txt", "args_cip_list.txt",
+                   "proposed-grid.dat", "request_gpus"):
+        assert needed in submit, (needed, submit)
+    ledger_rundir.check_ile_tokens(
+        ledger_rundir.read_args_line(str(ledger / "args_ile.txt")))
+    ledger_rundir.box_from_cip_tokens(
+        ledger_rundir.read_args_line(str(ledger / "args_cip_list.txt")))
+    ledger_rundir.grid_header(str(ledger / "proposed-grid.dat"))
+
+
 def _build_alternate(run_base: Path, seed_grid: Path, cache: Path,
                      n_iterations: int):
     """Build AlternateIteration, the builder --use-subdags / AMR route to.
@@ -1208,7 +1269,19 @@ def _assert_unsupported_gates(run_base: Path):
           "--add-extrinsic-time-resampling", "--bilby-pickle-file", "p",
           "--calibration-reweighting-osg"],
          "OSG calibration reweighting requires SINGULARITY_RIFT_IMAGE"),
+        (["--ledger-run", "--add-extrinsic",
+          "--add-extrinsic-time-resampling"],
+         "--ledger-run with --add-extrinsic"),
+        (["--ledger-run", "--use-osg"],
+         "--ledger-run with --use-osg"),
     ]
+    result = subprocess.run(
+        [sys.executable, str(PSEUDO_PIPE),
+         "--pipeline-builder", "BasicIteration", "--ledger-run"],
+        cwd=str(run_base), env=_environment(run_base), text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert result.returncode != 0
+    assert "--ledger-run requires --pipeline-builder Hyperpipe" in result.stdout
     for extra, expected in cases:
         result = subprocess.run(
             [sys.executable, str(PSEUDO_PIPE),
@@ -1445,8 +1518,10 @@ def main(argv=None):
         _assert_extrinsic_reads_the_final_grid(basic, hyper)
         _assert_alternate_extrinsic_reads_the_final_grid(alternate)
         _assert_nr_extrinsic_reads_the_final_grid(nr)
+        hyper_ledger = _build_ledger(run_base, ascii_grid, cache)
+        _assert_ledger_run_contract(hyper_ledger)
         _assert_stage_product_table_matches(
-            hyper, hyper_auto, hyper_osg, hyper_z)
+            hyper, hyper_auto, hyper_osg, hyper_z, hyper_ledger)
         _assert_extra_terminal_stages_merge(
             run_base, ascii_grid, cache, pickle_file)
         _assert_unsupported_gates(run_base)

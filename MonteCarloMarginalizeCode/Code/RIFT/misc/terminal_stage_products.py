@@ -70,6 +70,12 @@ TERMINAL_STAGE_PRODUCTS = {
         None, "--archive-pesummary-label",
         "writes a directory of pages, not a file; the paths come from"
         " args_plot.txt."),
+    "ledger_run": StageProduct(
+        "ledger/certificate.json", "--ledger-run",
+        "replaces the iteration loop; also writes ledger/posterior_samples.dat"
+        " (equal-weight draws) and ledger/posterior_weighted.dat, both"
+        " hyperpipeline grids.  The certificate's `certified` field says"
+        " whether the stop rule held."),
     "distance_grid": StageProduct(
         "all_dgrid.dat", "--export-marginal-distance-grid", ""),
     "distance_slices": StageProduct(
