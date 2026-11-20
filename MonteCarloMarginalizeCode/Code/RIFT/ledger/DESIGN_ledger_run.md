@@ -33,9 +33,17 @@ Every draw of the frozen round counts in the estimate. A draw outside the prior
 support, or one whose evaluation failed, has weight zero. Four streams give four
 independent estimates; their chi-squared about the common mean is one of the checks.
 
-A run that cannot freeze by `max_learn_versions`, or that reaches
-`max_frozen_per_stream` with a check failing, ends without a certificate. It does not
-fall back to a looser rule.
+A run that cannot freeze by `max_learn_versions` ends with no certificate. A run that
+reaches `max_frozen_per_stream` with a check failing writes a certificate whose
+`certified` field is false. Both exit 4. Neither falls back to a looser rule.
+
+The weights are used raw, and a heavy tail makes ln Z read low: n draws from weights of
+tail index k typically miss a fraction of the evidence that falls only as n^-(1-k). The
+certificate's `lnZ_tail` estimates that fraction from the generalized Pareto fitted to
+the largest weights. Read a certificate as ln Z within [-2 err, +2 err + `lnZ_tail`] of
+its value. `lnZ_tail` is reported and is not a check. In simulation, stopping on it, on
+a stricter tail-index line or on Pareto-smoothed weights selected the rounds without a
+heavy draw and made the certified ln Z worse.
 
 ## Run directory
 
@@ -84,10 +92,19 @@ per lease. It replaces the per-point call of the AV sampler by a call that reads
 key, reseeds, runs to `n_max_samples` samples with no n_eff target, and appends one
 synced row. Data reading, waveforms, precompute and the likelihood are ILE's own code.
 
-The four NoLoop flags and `--sampler-method AV` are required and checked before ILE
-starts. After each lease the transport reads the engine log. A line that shows the
-likelihood off the NoLoop path ends the run in state FAILED, because such rows must not
-enter a fit.
+Every lease row gets a line. ILE catches an exception in one point and continues; the
+engine sees the gap and writes that row with status FAILED. While a point is in the
+sampler its key is in `<shard>.inflight`. A row with status OK carries the point it
+evaluated, and the controller checks all eight columns against the key's point.
+
+The four NoLoop flags and `--sampler-method AV` are required. Options that call the
+sampler twice per point, carry state between points, or report a failure as success are
+refused. The check resolves each argument against the option names in the ILE script,
+because optparse accepts abbreviations. A second sampler call that gets through writes
+an INVALID line and ends the process; the controller refuses a ledger that holds one.
+
+After each lease the transport reads the engine log. A line that shows the likelihood
+off the NoLoop path ends the run in state FAILED, because such rows must not enter a fit.
 
 Each ln L is one Monte Carlo estimate at a fixed sample count. Its noise is unbiased in
 L and enters the weights. Its bias at that count does not average out: gate G2 measured
@@ -102,13 +119,26 @@ stops engines when its time budget ends and exits 3; the next start resumes. It 
 lock on the run directory, and on start it kills engines that an earlier supervisor
 left running on the same host.
 
+A failed row has weight zero and lowers ln Z, so a point is marked failed only on
+evidence about that point.
+
+| After an engine exits | The transport |
+|---|---|
+| killed by this supervisor | records nothing; the next lease covers the rows |
+| every lease row has a line | does nothing; the engine reported its own failed points |
+| died with a key in flight | gives that key a strike; two strikes make it FAILED |
+| anything else with rows missing | marks nothing; three such launches in a row exit 6 |
+
+A frozen round with more than `max_failed_fraction` failed rows is not certified. A
+learning version with more than `max_failed_fraction_learn` ends the run.
+
 | Exit status | Meaning |
 |---|---|
 | 0 | certified |
 | 3 | time budget spent; start again to resume |
 | 4 | stopped without a certificate |
 | 5 | an engine left the NoLoop path |
-| 6 | three engine launches in a row failed before their first row |
+| 6 | the engine is not working: three launches in a row left rows without a line and no point to blame |
 
 ## Hyperpipe stage
 
@@ -121,7 +151,7 @@ When it first starts, `rift-run` reads three files of the build (`rundir.py`):
 
 | File | Use | Refused |
 |---|---|---|
-| `args_ile.txt` | the engine's ILE line; `--manual-logarithm-offset` | a missing NoLoop flag, a sampler other than AV, `--auto-logarithm-offset`, calibration marginalization, options that call the sampler twice per point |
+| `args_ile.txt` | the engine's ILE line; `--manual-logarithm-offset` | a missing NoLoop flag, a sampler other than AV, `--auto-logarithm-offset`, calibration marginalization, and the options named in `engine.ILE_REFUSED` |
 | last line of `args_cip_list.txt` | the prior box: `--mc-range`, `--eta-range`, `--chi-max` | any option not known to leave the prior alone; a coordinate set other than mc, delta_mc and polar spins; a downselect that cuts the box |
 | `proposed-grid.dat` | the grid header for leases | columns other than masses and Cartesian spins |
 
@@ -129,7 +159,8 @@ The product is `ledger/certificate.json` (`RIFT.misc.terminal_stage_products`). 
 `certified` field says whether the stop rule held.
 
 pseudo_pipe refuses `--ledger-run` with `--add-extrinsic`, `--use-osg`,
-`--use-jax-ile` and outside the Hyperpipe builder.
+`--use-jax-ile`, without `--ile-sampler-method AV`, and outside the Hyperpipe builder.
+A run directory records absolute paths and cannot be moved.
 
 ## Defaults
 
@@ -142,6 +173,7 @@ pseudo_pipe refuses `--ledger-run` with `--add-extrinsic`, `--use-osg`,
 | `max_learn_versions`, `max_frozen_per_stream` | 12, 2000 | gate G7 |
 | `extension_factor`, `extension_margin`, `min_extension` | 1.5, 1.1, 64 | null worlds, `m0_delivery/null_extension.py` |
 | `n_max_samples` | 400000 | gate G3: the cost of n_eff 40; gate G2: enough near the peak |
+| `max_failed_fraction`, `max_failed_fraction_learn` | 0.002, 0.2 | a failed fraction f lowers ln Z by at most -ln(1 - f) |
 
 ## Not implemented
 
@@ -157,9 +189,19 @@ pseudo_pipe refuses `--ledger-run` with `--add-extrinsic`, `--use-osg`,
 
 ## Tests
 
-`test/ledger/test_ledger_run.py` drives `rift-run` with an engine whose answer is
-known: ln Z is 0 and the block-A posterior is a given Gaussian. It checks the
-certified estimate against that answer, that kills, restarts and a second engine
-change no byte of the estimate, that the recorded plan is the record, that each
-proposal's density is the density of its draws, and the refusals above.
-`test/hyperpipe/integration/run_pseudo_build_gate.py` builds the stage.
+`test/ledger/test_ledger_run.py` has three kinds of test, none with a real likelihood.
+
+- Whole runs through `rift-run` with `fake_engine.py`, whose ln Z is 0 and whose
+  block-A posterior is a given Gaussian: the certified estimate; kills, restarts and a
+  second engine leaving the estimate unchanged; the recorded plan as the record; exit
+  statuses; a row that does not carry its key's point.
+- The real engine and the real AV sampler through `rift-run`, with `stub_ile.py` in
+  ILE's place: keyed rows at the lease's sample count against an analytic integral, a
+  replay in a fresh process, a skipped point, and a second sampler call.
+- Pieces against analytic or independent answers: each proposal's density, the prior
+  against a rejection sample, zero-weight draws, the tail index, the stream check, the
+  extension limit, and the refusals in `rundir.py` and `pseudo_pipe`.
+
+`test/hyperpipe/integration/run_pseudo_build_gate.py` also builds the stage. An
+independent reviewer mutated the first version of this code; the record is in the paper
+repository (`RESULTS_m0_delivery_20261119.md`).
