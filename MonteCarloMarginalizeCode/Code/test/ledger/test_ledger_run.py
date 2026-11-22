@@ -21,7 +21,7 @@ sys.path.insert(0, CODE)
 
 import fake_engine  # noqa: E402
 import stub_ile  # noqa: E402
-from RIFT.ledger import controller, engine, estimator, proposal, rundir  # noqa: E402
+from RIFT.ledger import controller, engine, estimator, inproc, proposal, rundir  # noqa: E402
 from RIFT.ledger.space import Box, summaries, to_grid  # noqa: E402
 
 SIZES = ["--set", "seed=7", "--set", "learn_per_stream=250", "--set", "frozen_per_stream=250", "--set", "target_n_eff=500"]
@@ -76,6 +76,33 @@ def test_certified_estimate_matches_the_known_posterior(clean_run):
     m1, m2 = draws[:, 2], draws[:, 3]
     mc_draws = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
     assert abs(mc_draws.mean() - fake_engine.MU[0]) < 4 * np.hypot(mc["se_mean"], fake_engine.SD[0] / np.sqrt(len(draws)))
+
+
+def test_a_certificate_states_a_rule_that_held_and_tables_drawn_by_weight(clean_run):
+    """Protects: a certified run met every line of its own stop rule; the certificate carries the
+    hashes of both tables and of engine.json; and posterior_samples.dat is drawn from the weighted
+    rows in proportion to their weights.  Oracle: analytic (the rule; for a draw by weight the mean
+    ln weight of the drawn rows is sum(w ln w) / sum(w))."""
+    cert = json.load(open(os.path.join(clean_run, "certificate.json")))
+    cfg, est = cert["config"], cert["estimate"]
+    assert cert["certified"] and all(cert["checks"].values())
+    assert est["n_eff"] >= cfg["target_n_eff"] == 500 and est["lnZ_err"] <= cfg["lnz_tol"] and est["k_hat"] < cfg["k_max"]
+    assert max(cert["group_chi2"].values()) < cfg["chi2_max"]
+    assert cert["failed_rows"] <= cfg["max_failed_fraction"] * cert["draws"]
+    assert cert["collapsed"] == dict(rows=0, weight_share=0.0)
+    for name, sha in cert["products"]["sha256"].items():
+        assert controller.sha256_file(os.path.join(clean_run, name)) == sha
+    assert sorted(cert["products"]["sha256"]) == ["posterior_samples.dat", "posterior_weighted.dat"]
+    assert cert["engine_sha256"] == controller.sha256_file(os.path.join(clean_run, "engine.json"))
+    weighted = np.loadtxt(os.path.join(clean_run, "posterior_weighted.dat"), ndmin=2)
+    draws = np.loadtxt(os.path.join(clean_run, "posterior_samples.dat"), ndmin=2)
+    ln_w = dict(zip(map(tuple, weighted[:, :10]), weighted[:, 10]))
+    drawn = np.array([ln_w[tuple(r)] for r in draws])            # every drawn row is a weighted row
+    w = np.exp(weighted[:, 10])
+    want = np.sum(w * weighted[:, 10]) / w.sum()
+    sd = np.sqrt(np.sum(w * (weighted[:, 10] - want) ** 2) / w.sum())
+    assert abs(drawn.mean() - want) < 4 * sd / np.sqrt(len(drawn))
+    assert abs(weighted[:, 10].mean() - want) > 8 * sd / np.sqrt(len(drawn)), "the test cannot tell a draw without weights"
 
 
 def test_kills_and_restarts_leave_the_certificate_unchanged(clean_run, tmp_path):
@@ -289,6 +316,62 @@ def test_zero_weight_draws_count_and_too_many_failures_block_the_certificate():
     assert not res["checks"]["groups"] and not res["stop"] and np.isnan(res["group_chi2"]["lnZ"])
 
 
+def test_the_estimate_is_the_weighted_one_over_every_draw():
+    """Protects: ln Z, n_eff, the errors and the stream estimates are the importance-weighted ones
+    with weight exp(ln L + ln p - ln q), over every draw including those of weight zero.
+    Oracle: the same quantities worked out here from the weights."""
+    rng = np.random.default_rng(5)
+    n_per = 300
+    n = 4 * n_per
+    stream = np.repeat(np.arange(4), n_per)
+    ok = rng.random(n) >= 0.1
+    ln_pq, lnl = rng.normal(0, 0.7, n), rng.normal(0, 0.7, n)
+    lnl[rng.random(n) < 0.05] = -np.inf
+    grid = np.column_stack([rng.uniform(25, 35, n), rng.uniform(15, 25, n), rng.uniform(-0.5, 0.5, (n, 6))])
+    res = estimator.frozen_estimate(dict(controller.DEFAULTS), dict(stream=stream, grid=grid, ok=ok, ln_pq=ln_pq), lnl)
+    w = np.where(ok & np.isfinite(lnl), np.exp(np.where(np.isfinite(lnl), lnl, 0.0) + ln_pq), 0.0)
+    est = res["estimate"]
+    n_eff = w.sum() ** 2 / np.sum(w ** 2)
+    assert est["lnZ"] == pytest.approx(np.log(w.mean()), abs=1e-12)
+    assert est["n_eff"] == pytest.approx(n_eff, rel=1e-12)
+    assert est["lnZ_err"] == pytest.approx(np.sqrt(1 / n_eff - 1 / n), rel=1e-12)
+    assert est["n_total"] == n and est["n_evaluated"] == int((w > 0).sum())
+    mc = summaries(grid)["mc"]
+    mean = np.sum(w * mc) / w.sum()
+    assert est["params"]["mc"]["mean"] == pytest.approx(mean, rel=1e-12)
+    assert est["params"]["mc"]["sd"] == pytest.approx(np.sqrt(np.sum(w * (mc - mean) ** 2) / w.sum()), rel=1e-12)
+    assert est["params"]["mc"]["se_mean"] == pytest.approx(np.sqrt(np.sum(w ** 2 * (mc - mean) ** 2)) / w.sum(), rel=1e-12)
+    for s, g in enumerate(res["groups"]):
+        ws = w[stream == s]
+        assert g["lnZ"] == pytest.approx(np.log(ws.mean()), abs=1e-12), "a stream's estimate counts its zero-weight draws"
+        assert g["n_total"] == n_per
+    assert res["efficiency"] == pytest.approx(n_eff / n, rel=1e-12)
+
+
+def test_each_line_of_the_stop_rule_can_refuse():
+    """Protects: the stop needs each of n_eff, the ln Z error, the tail index, the stream check and
+    the failed-row limit, each at its stated threshold.  Oracle: analytic.  One threshold at a
+    time is moved just past the round's own value."""
+    pl, lnl = _synthetic_round(n_per=5000, tail=0.3)
+    cfg = dict(controller.DEFAULTS, target_n_eff=100.0)
+    res = estimator.frozen_estimate(cfg, pl, lnl)
+    est = res["estimate"]
+    assert res["stop"] and all(res["checks"].values())
+    moved = dict(n_eff=dict(target_n_eff=est["n_eff"] * 1.001), lnZ_err=dict(lnz_tol=est["lnZ_err"] * 0.999),
+                 tail=dict(k_max=est["k_hat"] - 1e-6), groups=dict(chi2_max=max(res["group_chi2"].values()) - 1e-6))
+    for check, change in moved.items():
+        got = estimator.frozen_estimate(dict(cfg, **change), pl, lnl)
+        assert not got["stop"] and [k for k, v in got["checks"].items() if not v] == [check], check
+    assert estimator.frozen_estimate(dict(cfg, target_n_eff=est["n_eff"]), pl, lnl)["checks"]["n_eff"]
+    assert estimator.frozen_estimate(dict(cfg, lnz_tol=est["lnZ_err"]), pl, lnl)["checks"]["lnZ_err"]
+    limit = int(cfg["max_failed_fraction"] * len(lnl))               # 40 of 20000
+    for failed, passes in ((limit, True), (limit + 1, False)):
+        bad = lnl.copy()
+        bad[np.argsort(lnl)[:failed]] = -np.inf                      # the smallest weights: no other check moves
+        got = estimator.frozen_estimate(cfg, pl, bad)
+        assert got["failed_rows"] == failed and got["checks"]["failed"] == passes and got["stop"] == passes
+
+
 @pytest.mark.parametrize("k", [0.15, 0.45, 0.85])
 def test_tail_index_and_checks_against_a_known_tail(k):
     """Protects: the tail index is the weights' tail index, the tail check refuses a heavy tail,
@@ -379,8 +462,8 @@ def test_a_row_must_carry_its_keys_point(clean_run):
 
 def test_exit_statuses(tmp_path):
     """Protects: the supervisor's exit status says what happened: 3 budget spent, 4 stopped
-    without a certificate, 5 an engine off the NoLoop path (and the run then stays stopped).
-    Oracle: analytic."""
+    without a certificate, 5 an engine off the NoLoop path (and the run then stays stopped);
+    a log that an ended supervisor never read is read at the next start.  Oracle: analytic."""
     run_dir = str(tmp_path / "budget")
     cmd, env = _command(run_dir, ["--budget", "1"])
     assert run_bounded(cmd, env=env).returncode == 3
@@ -394,8 +477,15 @@ def test_exit_statuses(tmp_path):
     env["LEDGER_FAKE_OFF_NOLOOP"] = "1"
     assert run_bounded(cmd, env=env).returncode == 5
     del env["LEDGER_FAKE_OFF_NOLOOP"]
-    assert run_bounded(cmd, env=env).returncode == 4
+    assert run_bounded(cmd, env=env).returncode == 5
     assert controller.Run(run_dir).head()["state"] == "FAILED"
+    run_dir = str(tmp_path / "late")
+    cmd, env = _command(run_dir)
+    assert run_bounded(cmd + ["--budget", "1"], env=env).returncode == 3
+    with open(os.path.join(run_dir, "logs", "lease-v01-n0000.log"), "w") as f:
+        f.write("some line\n" + inproc.OFF_NOLOOP[0] + "\n")
+    assert run_bounded(cmd, env=env).returncode == 5
+    assert controller.Run(run_dir).head()["state"] == "FAILED" and controller.Run(run_dir).ledger()[0] == {}
 
 
 def test_failed_evaluations_end_a_run_and_never_a_certificate(clean_run, tmp_path):
@@ -418,12 +508,34 @@ def test_failed_evaluations_end_a_run_and_never_a_certificate(clean_run, tmp_pat
     assert cert["draws"] == 1000, "the round was extended although more draws fail at the same rate"
     verify = [sys.executable, "-B", RIFT_RUN, "verify", "--run-dir"]
     assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 0
-    for field, value in (("certified", True), ("failed_rows", 0)):
+    edits = (("certified", True), ("failed_rows", 0), ("config", dict(cert["config"], target_n_eff=1.0)),
+             ("draws", 2 * cert["draws"]), ("per_stream", 2 * cert["per_stream"]), ("proposals", []), ("fits", []),
+             ("engine_sha256", "0" * 64), ("products", dict(cert["products"], posterior_samples=1)))
+    for field, value in edits:
         path = os.path.join(run_dir, "certificate.json")
         edited = dict(cert, **{field: value})
         open(path, "w").write(json.dumps(edited))
         assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 1, field
         open(path, "w").write(json.dumps(cert))
+    assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 0
+    table = os.path.join(run_dir, "posterior_samples.dat")
+    text = open(table).read()
+    lines = text.split("\n")
+    body = [x for x in lines if x and not x.startswith("#")]
+    open(table, "w").write("\n".join([x for x in lines if x.startswith("#")] + [body[0]] * len(body)) + "\n")
+    assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 1, "an edited table"
+    open(table, "w").write(text)
+    os.rename(os.path.join(run_dir, "posterior_weighted.dat"), os.path.join(run_dir, "moved.dat"))
+    assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 1, "a missing table"
+    os.rename(os.path.join(run_dir, "moved.dat"), os.path.join(run_dir, "posterior_weighted.dat"))
+    assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL).returncode == 0
+    plan = sorted(cert["plans"])[-1]                           # a plan cut at a line boundary is refused
+    text = open(os.path.join(run_dir, "plans", plan)).read().split("\n")
+    open(os.path.join(run_dir, "plans", plan), "w").write("\n".join(text[:-9]) + "\n")
+    with pytest.raises(SystemExit) as err:
+        controller.Run(run_dir).plan(cert["version"])
+    assert "cut or edited" in str(err.value)
+    assert run_bounded(verify + [run_dir], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0
 
 
 @pytest.fixture(scope="module")
@@ -469,6 +581,26 @@ def test_the_engine_writes_keyed_rows_at_the_lease_sample_count(stub_run):
     assert json.loads(out.stdout)["identical"] == 8
 
 
+def _engine_on_three_points(stub_run, tmp_path, flags=(), fault=None, row=None):
+    """The engine alone on the first three points of the stub run's first lease.  Returns its
+    exit status, the shard lines and the shard path."""
+    run_dir, env, work = stub_run
+    meta = json.load(open(os.path.join(run_dir, "leases", "lease-v01-n0000.json")))
+    text = open(os.path.join(run_dir, "leases", "lease-v01-n0000.dat")).read().split("\n")
+    head = [x for x in text if x.startswith("#")]
+    body = [x for x in text if x and not x.startswith("#")][:3]
+    (tmp_path / "lease.dat").write_text("\n".join(head + body) + "\n")
+    (tmp_path / "lease.json").write_text(json.dumps(dict(meta, keys=meta["keys"][:3])))
+    shard = str(tmp_path / "shard.jsonl")
+    if fault:
+        env = dict(env, **{fault: repr(float(body[row].split()[2]))})
+    cmd = [sys.executable, "-B", "-m", "RIFT.ledger.engine", "--lease-keys", str(tmp_path / "lease.json"), "--shard", shard,
+           "--", os.path.join(HERE, "stub_ile.py"), "--time-marginalization", "--vectorized", "--gpu", "--force-xpy",
+           "--sampler-method", "AV", "--sim-grid", str(tmp_path / "lease.dat")] + list(flags)
+    status = run_bounded(cmd, env=env, cwd=work, stderr=subprocess.DEVNULL).returncode
+    return status, [json.loads(x) for x in open(shard)], shard
+
+
 @pytest.mark.parametrize("flags, status", [(["--stub-skip", "0"], 0), (["--stub-skip", "1"], 0), (["--stub-skip", "2"], 0),
                                            (["--stub-exit", "1"], 3),
                                            (["--stub-double"], engine.EXIT_DOUBLE_CALL)])
@@ -477,34 +609,48 @@ def test_the_engine_reports_what_ile_did_to_a_point(stub_run, tmp_path, flags, s
     point ILE never starts gets no line, and ILE's exit status is the engine's; a second
     sampler call for one point voids the key and stops the engine, since ILE would swallow an
     exception and leave a row that holds only the first call.  Oracle: analytic."""
-    run_dir, env, work = stub_run
-    meta = json.load(open(os.path.join(run_dir, "leases", "lease-v01-n0000.json")))
-    text = open(os.path.join(run_dir, "leases", "lease-v01-n0000.dat")).read().split("\n")
-    head = [x for x in text if x.startswith("#")]
-    (tmp_path / "lease.dat").write_text("\n".join(head + [x for x in text if x and not x.startswith("#")][:3]) + "\n")
-    (tmp_path / "lease.json").write_text(json.dumps(dict(meta, keys=meta["keys"][:3])))
-    shard = str(tmp_path / "shard.jsonl")
-    cmd = [sys.executable, "-B", "-m", "RIFT.ledger.engine", "--lease-keys", str(tmp_path / "lease.json"), "--shard", shard,
-           "--", os.path.join(HERE, "stub_ile.py"), "--time-marginalization", "--vectorized", "--gpu", "--force-xpy",
-           "--sampler-method", "AV", "--sim-grid", str(tmp_path / "lease.dat")] + flags
-    assert run_bounded(cmd, env=env, cwd=work).returncode == status
-    lines = [json.loads(x) for x in open(shard)]
+    got, lines, shard = _engine_on_three_points(stub_run, tmp_path, flags)
+    assert got == status
     assert not os.path.exists(shard + ".inflight") or flags[0] == "--stub-double"
     if flags[0] == "--stub-skip":
         want = ["OK", "OK", "OK"]
         want[int(flags[1])] = "FAILED"
-        assert [x["status"] for x in lines] == want and [x["lease_row"] for x in lines] == [0, 1, 2]
+        assert sorted(x["lease_row"] for x in lines) == [0, 1, 2]
+        assert [x["status"] for x in sorted(lines, key=lambda x: x["lease_row"])] == want
     elif flags[0] == "--stub-exit":
         assert [x["status"] for x in lines] == ["OK"]
     else:
-        assert [x["status"] for x in lines] == ["OK", "INVALID"]
-        os.makedirs(tmp_path / "run" / "ledger")
+        assert [x["status"] for x in lines] == ["INVALID"]
         controller.init(str(tmp_path / "run2"), Box.from_json(fake_engine.BOX))
         os.makedirs(tmp_path / "run2" / "ledger")
         os.replace(shard, str(tmp_path / "run2" / "ledger" / "shard-v01-n0000.jsonl"))
         with pytest.raises(SystemExit) as err:
             controller.Run(str(tmp_path / "run2")).ledger()
         assert "voided" in str(err.value)
+
+
+@pytest.mark.parametrize("row", [0, 1, 2])
+def test_what_ile_does_after_the_sampler_decides_the_row(stub_run, tmp_path, row):
+    """Protects: a point ILE rejects after its sampler call returned is a FAILED row and not the
+    sampler's OK row; a row whose sampler reported a collapsed live volume says so; and a memory
+    error, which ILE re-raises, ends the engine with no line for the point and its key still in
+    flight.  Oracle: analytic."""
+    (tmp_path / "a").mkdir()
+    got, lines, shard = _engine_on_three_points(stub_run, tmp_path / "a", fault="STUB_REJECT_AFTER", row=row)
+    lines.sort(key=lambda x: x["lease_row"])
+    want = ["OK", "OK", "OK"]
+    want[row] = "FAILED"
+    assert got == 0 and [x["status"] for x in lines] == want and "after the sampler returned" in lines[row]["reason"]
+    assert not os.path.exists(shard + ".inflight")
+    (tmp_path / "b").mkdir()
+    got, lines, shard = _engine_on_three_points(stub_run, tmp_path / "b", fault="STUB_EMPTY_FIRST", row=row)
+    lines.sort(key=lambda x: x["lease_row"])
+    assert got == 0 and [x["status"] for x in lines] == ["OK"] * 3
+    assert [bool(x.get("collapsed")) for x in lines] == [j == row for j in range(3)]
+    (tmp_path / "c").mkdir()
+    got, lines, shard = _engine_on_three_points(stub_run, tmp_path / "c", fault="STUB_GPU_SAMPLER", row=row)
+    assert got != 0 and [x["lease_row"] for x in lines] == list(range(row)) and all(x["status"] == "OK" for x in lines)
+    assert json.load(open(shard + ".inflight"))["key"][1:] == json.load(open(str(tmp_path / "c" / "lease.json")))["keys"][row]
 
 
 def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
@@ -576,11 +722,12 @@ def _stub_command(work, extra=()):
 
 
 @pytest.mark.parametrize("fault, row", [("STUB_ABORT_PRE", 7), ("STUB_ABORT_SAMPLER", 7), ("STUB_ABORT_PRE", 0),
-                                        ("STUB_RAISE_SAMPLER", 7)])
+                                        ("STUB_RAISE_SAMPLER", 7), ("STUB_GPU_SAMPLER", 7)])
 def test_a_point_that_breaks_the_engine_is_failed_and_the_run_goes_on(tmp_path, fault, row):
-    """Protects: one point that kills the engine, before or inside the sampler, is marked failed
-    after two deaths on it and the other points are all evaluated; a point whose integrand
-    raises is failed by the engine itself.  Oracle: analytic (19 rows OK, that one FAILED)."""
+    """Protects: one point that kills the engine, before or inside the sampler or by a memory
+    error ILE re-raises, is marked failed after two deaths on it and the other points are all
+    evaluated; a point whose integrand raises an error ILE catches is failed by the engine
+    itself.  Oracle: analytic (19 rows OK, that one FAILED)."""
     cmd, env = _stub_command(tmp_path / "w")
     assert run_bounded(cmd + ["--budget", "1"], env=env, cwd=str(tmp_path / "w")).returncode == 3   # plan only
     run = controller.Run(str(tmp_path / "w" / "ledger"))
@@ -599,11 +746,35 @@ def test_a_point_that_breaks_the_engine_is_failed_and_the_run_goes_on(tmp_path, 
     assert sum("strike" in x for x in leases) == (0 if fault == "STUB_RAISE_SAMPLER" else 2)
 
 
-def test_an_engine_that_dies_on_every_point_marks_none(tmp_path):
-    """Protects: an engine that dies inside the sampler on whatever point it is given (a lost GPU
-    context) is reported as not working, and no point is marked failed.  Oracle: analytic."""
+def test_two_points_that_break_the_engine_at_the_end_of_a_version_are_both_failed(tmp_path):
+    """Protects: when the only rows left are points on which the engine died with no row in the
+    same launch, the lease starts with a key that already has a row, so the engine can show it
+    works and the points are failed; the run does not stop with exit 6 for good.
+    Oracle: analytic (18 rows OK, the last two FAILED, the repeated rows identical)."""
     cmd, env = _stub_command(tmp_path / "w")
-    env["STUB_ABORT_SAMPLER"] = "all"
+    assert run_bounded(cmd + ["--budget", "1"], env=env, cwd=str(tmp_path / "w")).returncode == 3   # plan only
+    run = controller.Run(str(tmp_path / "w" / "ledger"))
+    pl = run.plan(1)
+    env["STUB_ABORT_PRE"] = ",".join(repr(float(pl["grid"][row, 0])) for row in (18, 19))
+    for _ in range(6):
+        status = run_bounded(cmd, env=env, cwd=str(tmp_path / "w")).returncode
+        if status != 6:
+            break
+    assert status == 4
+    rows, stat = run.ledger()
+    bad = [(1, int(pl["stream"][row]), int(pl["index"][row])) for row in (18, 19)]
+    assert len(rows) == 20 and [rows[k]["status"] for k in bad] == ["FAILED", "FAILED"]
+    assert sum(r["status"] == "OK" for r in rows.values()) == 18
+    assert stat["repeats"] >= 1 and stat["repeat_mismatch"] == 0
+
+
+@pytest.mark.parametrize("fault", ["STUB_ABORT_SAMPLER", "STUB_GPU_SAMPLER"])
+def test_an_engine_that_dies_on_every_point_marks_none(tmp_path, fault):
+    """Protects: an engine that dies inside the sampler on whatever point it is given (a lost GPU
+    context, by an abort or by the memory error ILE re-raises) is reported as not working, and
+    no point is marked failed.  Oracle: analytic."""
+    cmd, env = _stub_command(tmp_path / "w")
+    env[fault] = "all"
     for _ in range(2):
         assert run_bounded(cmd, env=env, cwd=str(tmp_path / "w")).returncode == 6
     run = controller.Run(str(tmp_path / "w" / "ledger"))
@@ -635,7 +806,19 @@ def test_reported_parameters_and_the_prior_density():
     assert np.all(np.isneginf(box.ln_prior_A(edge))) and np.isfinite(box.ln_prior_A([[30.0, 0.5, 0.3, 0.3]])[0])
 
 
-@pytest.mark.parametrize("name", sorted(engine.ILE_REFUSED))
+REFUSED = ["--auto-logarithm-offset", "--zero-likelihood", "--rom-integrate-intrinsic", "--pin-distance-to-sim",
+           "--save-eccentricity", "--export-eos-index", "--calibration-burn-in-neff", "--sampler-warmstart-retry-neff",
+           "--mc-error-replicas", "--sampler-sequential-warmstart", "--no-adapt-after-first", "--sampler-load-state",
+           "--sampler-save-state", "--sampler-warmstart-samples", "--internal-soft-fail-on-cuda-error",
+           "--internal-make-empty-file-on-error", "--check-good-enough", "--log-noise-evidence-only",
+           "--glitch-basis", "--glitch-basis-file"]
+
+
+def test_the_refused_list_is_the_one_written_here():
+    assert sorted(REFUSED) == sorted(engine.ILE_REFUSED)
+
+
+@pytest.mark.parametrize("name", REFUSED)
 def test_every_refused_ile_option_is_refused(name):
     """Protects: each option in engine.ILE_REFUSED is an option ILE declares, and is refused by
     the engine and by rift-run under its full name.  Oracle: ILE's own option list."""

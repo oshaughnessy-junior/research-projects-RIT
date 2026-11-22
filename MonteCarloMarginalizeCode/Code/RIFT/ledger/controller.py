@@ -66,6 +66,8 @@ def init(path, box, grid_header=None, **overrides):
         raise ValueError("unknown configuration keys: %s" % unknown)
     cfg = dict(DEFAULTS)
     cfg.update({k: type(DEFAULTS[k])(v) for k, v in overrides.items()})
+    if cfg["min_extension"] < 1:
+        raise ValueError("min_extension must be at least 1, or a frozen round may never grow")
     cfg["box"] = box.to_json()
     cfg["grid_header"] = list(grid_header or GRID_HEADER)
     if cfg["grid_header"][-1].split()[1:] != ["lnL", "sigma_lnL"] + list(GRID_COLUMNS):
@@ -136,7 +138,17 @@ class Run:
             files.append(name)
         if not files:
             raise SystemExit("version %d has no plan" % version)
-        t = np.vstack([np.loadtxt(f, comments="#", ndmin=2) for f in files])
+        parts = []
+        for f in files:
+            lo, hi = (int(x[1:]) for x in os.path.basename(f)[:-4].split("-")[2:4])
+            part = np.loadtxt(f, comments="#", ndmin=2)
+            want = np.repeat(np.arange(self.cfg["n_streams"]), hi - lo), np.tile(np.arange(lo, hi), self.cfg["n_streams"])
+            if part.shape != (len(want[0]), len(PLAN_COLUMNS)) or not (
+                    np.array_equal(np.sort(part[:, 0] * 10 ** 9 + part[:, 1]), want[0] * 10 ** 9 + want[1])):
+                raise SystemExit("plan file %s does not hold draws [%d, %d) of %d streams; it was cut or edited"
+                                 % (f, lo, hi, self.cfg["n_streams"]))
+            parts.append(part)
+        t = np.vstack(parts)
         t = t[np.lexsort((t[:, 1], t[:, 0]))]
         return dict(stream=t[:, 0].astype(int), index=t[:, 1].astype(int), ok=t[:, 2] > 0.5, ln_pq=t[:, 3],
                     a=t[:, 4:8], grid=t[:, 8:16])
@@ -201,9 +213,12 @@ class Run:
         return "\n".join(self.cfg["grid_header"]) + "\n" + "".join(
             " ".join("%.18e" % v for v in [0.0, 0.0] + list(g)) + "\n" for g in grid_rows)
 
-    def write_leases(self, version, pl, missing, parts=1, defer=()):
+    def write_leases(self, version, pl, missing, parts=1, defer=(), known_good=None):
         """One lease per engine: the missing rows, split into `parts` contiguous pieces.
-        Keys in `defer` (version, stream, index) go last."""
+        Keys in `defer` (version, stream, index) go last.  A lease that holds only such keys
+        starts with plan row `known_good`, a key that already has a row: an engine that
+        writes it again and then dies has shown that it works, so the death counts against
+        the key it died on.  The repeated row is not used."""
         out = []
         k = len(glob.glob(self.p("leases", "lease-*.json")))
         todo = np.flatnonzero(missing)
@@ -212,6 +227,8 @@ class Run:
             is_late = np.array([(int(pl["stream"][i]), int(pl["index"][i])) in late for i in todo])
             todo = np.concatenate([todo[~is_late], todo[is_late]])
         for j in np.array_split(todo, max(1, min(int(parts), int(missing.sum())))):
+            if known_good is not None and late and all((int(pl["stream"][i]), int(pl["index"][i])) in late for i in j):
+                j = np.concatenate([[int(known_good)], j])
             stem = "v%02d-n%04d" % (version, k)
             k += 1
             text = self.lease_text(pl["grid"][j])
@@ -272,7 +289,9 @@ def tick(run, engines=1, defer=()):
     cur = hist[-1]
     missing = cur["plan"]["ok"] & np.isnan(cur["lnl"])
     if missing.any():
-        return dict(action="run", ledger=stat, leases=run.write_leases(v, cur["plan"], missing, engines, defer))
+        good = np.flatnonzero(cur["plan"]["ok"] & np.isfinite(cur["lnl"]))
+        return dict(action="run", ledger=stat, leases=run.write_leases(
+            v, cur["plan"], missing, engines, defer, known_good=good[0] if len(good) else None))
     if cur["kind"] == "learn":
         good = int(np.isfinite(cur["lnl"]).sum())
         bad = int((cur["plan"]["ok"] & ~np.isfinite(cur["lnl"])).sum())
@@ -295,22 +314,13 @@ def tick(run, engines=1, defer=()):
         return dict(action="again", note="published version %d (%s)" % (v + 1, "frozen" if is_frozen else "learn"), fit=info)
     res = estimator.frozen_estimate(cfg, cur["plan"], cur["lnl"])
     allowed = cfg["max_failed_fraction"] * len(cur["plan"]["ok"])
-    # more draws fail at the same rate, so a count well above the limit will not come back under it
+    # A failed row is a property of its point, so more draws fail at the same rate: a count this far
+    # above the limit (three standard deviations of a count at the limit) will not come back under it.
     hopeless = res["failed_rows"] > allowed + 3.0 * np.sqrt(max(allowed, 1.0))
     if res["stop"] or hopeless or head["per_stream"] >= cfg["max_frozen_per_stream"]:
-        res.update(version=v, per_stream=head["per_stream"], draws=int(len(cur["plan"]["ok"])), ledger=stat,
-                   open_indices=int(missing.sum()), certified=res["stop"],
-                   proposals=[os.path.basename(f) for f in sorted(glob.glob(run.p("artifacts", "proposal-v??-*.json")))],
-                   plans={os.path.basename(f): sha256_file(f) for f in run.plan_files(v)[0]},
-                   fits=[h["fit"] for h in hist if h["fit"]], config=cfg,
-                   integrator=dict(n_max_samples=cfg["n_max_samples"], note=(
-                       "each ln L is one Monte Carlo estimate at this sample count; ln Z and its "
-                       "error do not include that estimate's bias")),
-                   reading=("ln Z lies within [-2 lnZ_err, +2 lnZ_err + 3 lnZ_tail] of lnZ.  lnZ_tail estimates the "
-                            "evidence beyond the largest weight seen; with it the interval missed the truth in at most "
-                            "4% of certified rounds in simulation, for weight tails up to index 0.6.  A failed row has "
-                            "weight zero and lowers ln Z by an amount that depends on the weight it would have had."))
-        write_products(run, cur, rows, v, res)
+        res, tables = certificate(run, hist, rows, stat)
+        for name, text in tables.items():
+            write_atomic(run.p(name), text)
         write_atomic(run.p("certificate.json"), json.dumps(res, indent=1, sort_keys=True))
         run.set_head(**dict(head, state="DONE" if res["stop"] else "FAILED",
                             reason="stop rule met" if res["stop"] else (
@@ -323,29 +333,62 @@ def tick(run, engines=1, defer=()):
                 checks=res["checks"], efficiency=res["efficiency"])
 
 
-def write_products(run, cur, rows, version, res):
+def certificate(run, hist, rows, stat):
+    """The certificate of the frozen round `hist[-1]` and the text of its two tables, from the
+    directory's files alone.  `tick` writes them; `verify` builds them again and compares."""
+    cfg, cur, v = run.cfg, hist[-1], len(hist)
+    per_stream = int(len(cur["plan"]["ok"]) // cfg["n_streams"])
+    res = estimator.frozen_estimate(cfg, cur["plan"], cur["lnl"])
+    engine_file = run.p("engine.json")
+    res.update(version=v, per_stream=per_stream, draws=int(len(cur["plan"]["ok"])), ledger=stat,
+               open_indices=int((cur["plan"]["ok"] & np.isnan(cur["lnl"])).sum()), certified=res["stop"],
+               proposals=[os.path.basename(f) for f in sorted(glob.glob(run.p("artifacts", "proposal-v??-*.json")))],
+               plans={os.path.basename(f): sha256_file(f) for f in run.plan_files(v)[0]},
+               fits=[h["fit"] for h in hist if h["fit"]], config=cfg,
+               engine_sha256=sha256_file(engine_file) if os.path.exists(engine_file) else None,
+               integrator=dict(n_max_samples=cfg["n_max_samples"], note=(
+                   "each ln L is one Monte Carlo estimate at this sample count; ln Z and its "
+                   "error do not include that estimate's bias")),
+               reading=("ln Z lies within [-2 lnZ_err, +2 lnZ_err + 3 lnZ_tail] of lnZ.  lnZ_tail estimates the "
+                        "evidence beyond the largest weight seen; with it the interval missed the truth in at most "
+                        "4% of certified rounds in simulation, for weight tails up to index 0.6.  A failed row has "
+                        "weight zero and lowers ln Z by an amount that depends on the weight it would have had.  "
+                        "A collapsed row is one whose extrinsic integral the sampler reported as collapsed: its "
+                        "ln L is a lower bound, and `collapsed` gives the share of the weight such rows carry."))
+    tables = product_tables(run, cur, rows, v, res)
+    return res, tables
+
+
+def product_tables(run, cur, rows, version, res):
     """The frozen round as tables in the hyperpipeline grid format: every weighted row,
-    and equal-weight draws from them."""
+    and equal-weight draws from them.  Returns {file name: text}; counts, hashes and the
+    collapsed rows' share of the weight go into `res`."""
     pl, lnl = cur["plan"], cur["lnl"]
     sel = np.flatnonzero(pl["ok"] & np.isfinite(lnl))
+    res["collapsed"] = dict(rows=0, weight_share=0.0)
     if len(sel) == 0:
-        res["products"] = dict(posterior_weighted=0, posterior_samples=0)
-        return
+        res["products"] = dict(posterior_weighted=0, posterior_samples=0, sha256={})
+        return {}
     ln_w = lnl[sel] + pl["ln_pq"][sel]
-    sigma = np.array([rows[(version, int(pl["stream"][j]), int(pl["index"][j]))].get("sigma") or 0.0 for j in sel])
+    mine = [rows[(version, int(pl["stream"][j]), int(pl["index"][j]))] for j in sel]
+    sigma = np.array([r.get("sigma") or 0.0 for r in mine])
     table = np.column_stack([lnl[sel] + run.cfg["lnl_offset"], sigma, pl["grid"][sel]])
     head = run.cfg["grid_header"]
 
-    def dump(name, body, extra=""):
-        write_atomic(run.p(name), "\n".join(head[:-1] + [head[-1] + extra]) + "\n" + "".join(
-            " ".join("%.18e" % v for v in row) + "\n" for row in body))
+    def text(body, extra=""):
+        return "\n".join(head[:-1] + [head[-1] + extra]) + "\n" + "".join(
+            " ".join("%.18e" % v for v in row) + "\n" for row in body)
 
-    dump("posterior_weighted.dat", np.column_stack([table, ln_w - ln_w.max()]), " ln_weight")
     w = np.exp(ln_w - ln_w.max())
     rng = np.random.default_rng([run.cfg["seed"], 909])
     n_out = max(1, int(res["estimate"]["n_eff"]))
-    dump("posterior_samples.dat", table[rng.choice(len(sel), size=n_out, p=w / w.sum())])
-    res["products"] = dict(posterior_weighted=int(len(sel)), posterior_samples=n_out)
+    out = {"posterior_weighted.dat": text(np.column_stack([table, ln_w - ln_w.max()]), " ln_weight"),
+           "posterior_samples.dat": text(table[rng.choice(len(sel), size=n_out, p=w / w.sum())])}
+    collapsed = np.array([bool(r.get("collapsed")) for r in mine])
+    res["collapsed"] = dict(rows=int(collapsed.sum()), weight_share=float(w[collapsed].sum() / w.sum()))
+    res["products"] = dict(posterior_weighted=int(len(sel)), posterior_samples=n_out,
+                           sha256={k: hashlib.sha256(v.encode()).hexdigest() for k, v in out.items()})
+    return out
 
 
 def status(run):
@@ -365,8 +408,9 @@ def status(run):
 
 def verify(run):
     """Refit each proposal from the ledger and the recorded plans; compare with the
-    published artifact.  Also recompute the certificate's estimate from the same files."""
-    arts, rows = run.artifacts(), run.ledger()[0]
+    published artifact.  Also build the certificate and its two tables again from the same
+    files, and compare every field and both tables with what the directory holds."""
+    arts, (rows, stat) = run.artifacts(), run.ledger()
     hist = load_history(run, arts, rows)
     out = dict(fits=[], certificate=None)
     for n in range(1, len(arts)):
@@ -376,15 +420,18 @@ def verify(run):
         out["fits"].append(dict(version=n + 1, same_bytes=canonical(arts[n]) == text))
     if os.path.exists(run.p("certificate.json")):
         cert = json.load(open(run.p("certificate.json")))
-        res = estimator.frozen_estimate(run.cfg, hist[-1]["plan"], hist[-1]["lnl"])
-        same = all(json.loads(canonical(res[k])) == cert.get(k)
-                   for k in ("estimate", "groups", "group_chi2", "checks", "failed_rows", "outside_support"))
+        res, tables = certificate(run, hist, rows, stat)
+        res = json.loads(canonical(res))
+        differs = sorted(k for k in set(res) | set(cert) if res.get(k) != cert.get(k))
         out["certificate"] = dict(
-            same_result=bool(same and res["stop"] == cert.get("certified")),
+            same_result=not differs, differs=differs,
             lnZ_difference=res["estimate"]["lnZ"] - cert["estimate"]["lnZ"],
             n_eff_difference=res["estimate"]["n_eff"] - cert["estimate"]["n_eff"],
             plans_match={os.path.basename(f): sha256_file(f) == cert["plans"].get(os.path.basename(f))
-                         for f in run.plan_files(len(arts))[0]})
+                         for f in run.plan_files(len(arts))[0]},
+            tables_match={name: os.path.exists(run.p(name))
+                          and sha256_file(run.p(name)) == hashlib.sha256(text.encode()).hexdigest()
+                          for name, text in tables.items()})
     return out
 
 
@@ -429,7 +476,8 @@ def replay_lease(run, n):
 def replay_check(run):
     rows = run.ledger()[0]
     again = [json.loads(x) for x in open(run.p("replay", "rows.jsonl")) if x.strip()]
-    same = [rows[(r["v"], r["s"], r["i"])]["lnL"] == r["lnL"] for r in again]
+    fields = ("status", "lnL", "sigma", "ntotal", "point", "key_seed", "collapsed")
+    same = [all(rows[(r["v"], r["s"], r["i"])].get(f) == r.get(f) for f in fields) for r in again]
     diff = [abs(rows[(r["v"], r["s"], r["i"])]["lnL"] - r["lnL"]) for r in again if r["lnL"] is not None]
     out = dict(keys=len(again), identical=int(sum(same)), largest_difference=float(max(diff)) if diff else None,
                versions=sorted(set(r["v"] for r in again)))

@@ -12,8 +12,9 @@ until the proposal freezes, then one frozen round until the stop rule holds, and
 DIR/certificate.json and DIR/posterior_samples.dat.
 
 Exit status: 0 certified; 3 time budget spent (start again to resume); 4 stopped without
-a certificate; 5 an engine left the NoLoop likelihood path; 6 the engine fails before its
-first row.  `verify` and `replay` exit 1 when what they recompute differs.
+a certificate; 5 an engine left the NoLoop likelihood path; 6 the engine is not working
+(three launches in a row left rows missing and gave no evidence against one point).
+`verify` and `replay` exit 1 when what they recompute differs.
 """
 import argparse
 import json
@@ -112,8 +113,9 @@ def main():
     elif opts.command == "verify":
         out = controller.verify(run)
         print(json.dumps(out, indent=1))
-        cert = out["certificate"] or dict(same_result=True, plans_match={})
-        same = all(f["same_bytes"] for f in out["fits"]) and cert["same_result"] and all(cert["plans_match"].values())
+        cert = out["certificate"] or dict(same_result=True, plans_match={}, tables_match={})
+        same = (all(f["same_bytes"] for f in out["fits"]) and cert["same_result"]
+                and all(cert["plans_match"].values()) and all(cert["tables_match"].values()))
         return 0 if same else 1
     elif opts.command == "replay":
         import subprocess

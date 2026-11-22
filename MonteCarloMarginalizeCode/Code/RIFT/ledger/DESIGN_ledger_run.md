@@ -79,13 +79,15 @@ SVD whose vector signs depend on the LAPACK build; the same artifact then gave
 different points on two machines (gate G7). Two machines can still differ in the last
 bits of a draw. The plan file written when a draw is first made is therefore the
 record, with its weight. Later ticks read it and never redraw a planned key.
-`rift-run verify` recomputes the certificate's estimate, checks and decision from the
-plan files and the ledger, and exits 1 if any differs.
+`rift-run verify` builds the certificate and both posterior tables again from the plan
+files and the ledger, and exits 1 if any field or table differs. The certificate records
+the hash of `engine.json`. `verify` needs the environment that made the run: on another
+machine the refits and the last bits of the estimate differ.
 
 The engine reseeds every random stream from (run seed, key) before it evaluates a
 point. A row then does not depend on which process produced it, or on what that
 process did before. `rift-run replay` repeats ledger keys in a fresh process and
-compares the rows bit for bit.
+compares each row's status, ln L, error, sample count and point for equality.
 
 ## Engine
 
@@ -96,19 +98,31 @@ synced row. Data reading, waveforms, precompute and the likelihood are ILE's own
 
 The engine follows each point from the entry of ILE's `analyze_event` to its return.
 While a point is being worked on, its key and phase (precompute or sampler) are in
-`<shard>.inflight`. ILE catches an exception in one point and continues; a point it
-leaves without a sampler result gets a line with status FAILED at once. A lease row ILE
-never starts gets no line. A row with status OK carries the point it evaluated, and the
+`<shard>.inflight`. The row of the sampler call is written when `analyze_event` returns
+a finite result.
+
+On an exception in one point ILE either ends the process (a GPU or memory error) or
+continues with the next point. The engine writes nothing at the exception. If ILE
+continues, the point gets a FAILED line, also when the sampler had already returned.
+If the process ends, the key has no line and the transport decides. A lease row ILE
+never starts gets no line.
+
+A row whose sampler reported a collapsed live volume is marked `collapsed`. Its ln L is
+a lower bound. The certificate gives the count of such rows in the frozen round and
+their share of the weight. In the two GW150914 runs they were 1% of rows and held under 1e-7 of
+the frozen weight. A row with status OK carries the point it evaluated, and the
 controller checks all eight columns against the key's point.
 
 The four NoLoop flags and `--sampler-method AV` are required. Options that call the
 sampler twice per point, carry state between points, or report a failure as success are
-refused. The check resolves each argument against the option names in the ILE script,
+refused. So are the glitch-basis options, which add a constant to ln L that the run
+does not record. The check resolves each argument against the option names in the ILE script,
 because optparse accepts abbreviations. A second sampler call that gets through writes
 an INVALID line and ends the process; the controller refuses a ledger that holds one.
 
-After each lease the transport reads the engine log. A line that shows the likelihood
-off the NoLoop path ends the run in state FAILED, because such rows must not enter a fit.
+After each lease the transport reads the engine log, and at every start it reads all of
+them. A line that shows the likelihood off the NoLoop path ends the run in state FAILED,
+because such rows must not enter a fit.
 
 Each ln L is one Monte Carlo estimate at a fixed sample count. Its noise is unbiased in
 L and enters the weights. Its bias at that count does not average out: gate G2 measured
@@ -122,6 +136,11 @@ with engine processes, one per lease, side by side when `--engines` exceeds 1. I
 stops engines when its time budget ends and exits 3; the next start resumes. It holds a
 lock on the run directory, and on start it kills engines that an earlier supervisor
 left running on the same host.
+
+| Engines on one A100, public GW150914, 936 rows | Rows per GPU-hour, relative | Rows identical to one engine's |
+|---|---|---|
+| 2 | 1.28 | all |
+| 4 | 1.46 | all |
 
 A failed row has weight zero and lowers ln Z, so a point is marked failed only on
 evidence about that point.
@@ -137,13 +156,14 @@ The engine is known to work when it wrote a row in the same launch, or when the 
 already has a strike from a launch that did. A key on which a launch died without that
 goes to the end of the next lease, so the next launch shows whether other points still
 evaluate. One point that kills the engine is then failed after two deaths and the run
-continues. An engine that dies on every point, as after a lost GPU context, ends the
-run with exit 6 and no failed point. An engine that writes no in-flight file gets no
-strikes.
+continues. When only such keys are left, the lease starts with a key that already has
+a row, so the launch can still show that the engine works. An engine that dies on every
+point, as after a lost GPU context, ends the run with exit 6 and no failed point. An
+engine that writes no in-flight file gets no strikes.
 
-A frozen round with more than `max_failed_fraction` failed rows is not certified, and
-it is closed at once when the count is too far above the limit for more draws to
-dilute. A learning version with more than `max_failed_fraction_learn` ends the run.
+A frozen round with more than `max_failed_fraction` failed rows is not certified. Further draws fail at the
+same rate, so the round is closed at once when the count exceeds the limit by three
+standard deviations of a count at the limit. A learning version with more than `max_failed_fraction_learn` ends the run.
 
 | Exit status | Meaning |
 |---|---|
@@ -186,7 +206,7 @@ A run directory records absolute paths and cannot be moved.
 | `max_learn_versions`, `max_frozen_per_stream` | 12, 2000 | gate G7 |
 | `extension_factor`, `extension_margin`, `min_extension` | 1.5, 1.1, 64 | null worlds, `m0_delivery/null_extension.py` |
 | `n_max_samples` | 400000 | gate G3: the cost of n_eff 40; gate G2: enough near the peak |
-| `max_failed_fraction`, `max_failed_fraction_learn` | 0.002, 0.2 | a failed fraction f lowers ln Z by at most -ln(1 - f) |
+| `max_failed_fraction`, `max_failed_fraction_learn` | 0.002, 0.2 | failed rows at random lower ln Z by -ln(1 - f) on average for a fraction f; rows that fail at high weight cost more |
 
 ## Not implemented
 
@@ -204,18 +224,12 @@ A run directory records absolute paths and cannot be moved.
 
 `test/ledger/test_ledger_run.py` has three kinds of test, none with a real likelihood.
 
-- Whole runs through `rift-run` with `fake_engine.py`, whose ln Z is 0 and whose
-  block-A posterior is a given Gaussian: the certified estimate; kills, restarts and a
-  second engine leaving the estimate unchanged; the recorded plan as the record; exit
-  statuses; a row that does not carry its key's point.
-- The real engine and the real AV sampler through `rift-run`, with `stub_ile.py` in
-  ILE's place: keyed rows at the lease's sample count against an analytic integral, a
-  replay in a fresh process, a skipped point, a second sampler call, one point that
-  kills the engine before or inside the sampler, and an engine that dies on every point.
-- Pieces against analytic or independent answers: each proposal's density, the prior
-  against a rejection sample, zero-weight draws, the tail index, the stream check, the
-  extension limit, and the refusals in `rundir.py` and `pseudo_pipe`.
+| Kind | Covers |
+|---|---|
+| Whole runs through `rift-run` with `fake_engine.py` (ln Z is 0, block-A posterior a given Gaussian) | the certified estimate and that it met the stop rule; kills, restarts and a second engine; the recorded plan as the record; exit statuses; a row without its key's point; `verify` after edits to the certificate, a table or a plan |
+| The real engine and AV sampler through `rift-run`, with `stub_ile.py` in ILE's place | keyed rows against an analytic integral; replay; a skipped point; a second sampler call; a point rejected after the sampler; a collapsed integral; one and two points that kill the engine; a memory error on one point and on every point |
+| Pieces against analytic or independent answers | each proposal's density; the prior; the estimate, its errors and stream estimates from weights worked by hand; each check of the stop rule; the tail index; the extension limit; the refusals in `rundir.py` and `pseudo_pipe` |
 
 `test/hyperpipe/integration/run_pseudo_build_gate.py` also builds the stage. An
-independent reviewer mutated this code in two rounds; the record is in the paper
+independent reviewer mutated this code in three rounds; the record is in the paper
 repository (`RESULTS_m0_delivery_20261119.md`). CI does not run the build gate.

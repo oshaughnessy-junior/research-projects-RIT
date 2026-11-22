@@ -19,6 +19,11 @@ that did.  A key on which a launch died without that is moved to the end of the 
 lease, so the launch after shows whether the engine works on other points.  An engine
 that cannot start, has lost its GPU, or ends before its last point therefore never
 turns points into zeros.  An engine that writes no in-flight file gets no strikes.
+When only such keys are left, the controller puts a key that already has a row first
+in the lease, so that launch can still show the engine works.
+
+Engine logs are read for lines off the NoLoop path after each lease, and all of them
+again at every start: a supervisor ended in mid-lease never read its last logs.
 
 `chaos` kills engines on purpose, for tests: `engine=N` engine processes on alternate
 launches, each after a random delay between `lo` and `hi` seconds, or, with `rows=K`,
@@ -72,6 +77,14 @@ def _off_noloop(logf):
     return sum(text.count(s) for s in OFF_NOLOOP)
 
 
+def _stop_off_noloop(run_dir, off):
+    """Rows from an engine off the NoLoop path must not enter a fit or an estimate: end the run."""
+    r = controller.Run(run_dir)
+    r.set_head(**dict(r.head() or {}, state="FAILED", reason="an engine left the NoLoop likelihood path"))
+    print("ledger run: %d engine log lines show the likelihood off the NoLoop path; stopping" % off, flush=True)
+    return EXIT_REDLINE
+
+
 def _reap_orphans(run_dir):
     """Kill engines a previous supervisor left running on this host, identified by the
     lease path in the command line of their process-group leader."""
@@ -105,6 +118,9 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     except OSError:
         raise SystemExit("ledger run: another supervisor holds %s" % lock.name)
     _reap_orphans(run_dir)
+    off = sum(_off_noloop(f) for f in glob.glob(os.path.join(run_dir, "logs", "*.log")))
+    if off and os.path.exists(os.path.join(run_dir, "HEAD.json")):
+        return _stop_off_noloop(run_dir, off)
     t_end = time.time() + budget
     spec = dict(engine=0, seed=0, lo=60.0, hi=400.0, rows=0)
     spec.update({k: float(v) for k, v in (kv.split("=") for kv in chaos.split(",") if kv)})
@@ -241,11 +257,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
             if os.path.exists(os.path.join(run_dir, "ctl", "engines.json")):
                 os.remove(os.path.join(run_dir, "ctl", "engines.json"))
             if off:
-                # rows from such an engine must not enter a fit or an estimate: the run ends here
-                r = controller.Run(run_dir)
-                r.set_head(**dict(r.head(), state="FAILED", reason="an engine left the NoLoop likelihood path"))
-                print("ledger run: %d engine log lines show the likelihood off the NoLoop path; stopping" % off, flush=True)
-                return EXIT_REDLINE
+                return _stop_off_noloop(run_dir, off)
             if barren >= BARREN_LIMIT:
                 print("ledger run: %d engine launches in a row left lease rows without a line and gave no "
                       "evidence against one point; the engine is not working, see %s.  No point was marked failed." % (

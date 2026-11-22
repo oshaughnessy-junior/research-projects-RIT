@@ -12,14 +12,25 @@ sampler:
   * every random stream is reseeded from (run seed, key), so the row does not depend
     on which process evaluates it or on what that process did before;
   * the sampler runs to the lease's sample count, not to an n_eff target;
-  * one line is appended to the shard and synced before the script continues.
+  * one line is appended to the shard and synced when ILE has finished the point.
 
 The engine follows each point from the moment ILE's `analyze_event` is entered until it
-returns.  While a point is being worked on its key is in SHARD.inflight, with the phase
+is left.  While a point is being worked on its key is in SHARD.inflight, with the phase
 (precompute or sampler), so a supervisor can tell a crash on one point from an engine
-that never reached a point.  A point that ILE leaves without a sampler result (it
-catches an exception in one point and goes on to the next) gets a line with status
-FAILED at once.  A lease row ILE never starts gets no line.
+that never reached a point.  The row the sampler call produced is held until
+`analyze_event` returns a finite result, and is written then.
+
+When `analyze_event` is left by an exception the engine cannot yet tell what ILE will
+do.  ILE re-raises a GPU or memory error and exits on some others, and the process
+ends; it catches the rest, prints FAILED ANALYSIS and goes on.  So the engine writes
+nothing and leaves the in-flight file.  If ILE starts another point or ends normally,
+the point gets a line with status FAILED then, whether or not the sampler had returned.
+If the process ends instead, the key has no line and the supervisor decides from the
+in-flight file.  A lease row ILE never starts gets no line.
+
+A row whose sampler reported a collapsed live volume carries `collapsed: true`.  Its
+ln L is a lower bound.  It stays an OK row unless ILE itself rejects it
+(`--reject-collapsed-live-volume`), which makes it FAILED.
 
 The four NoLoop flags and `--sampler-method AV` are required, and options known to call
 the sampler more than once per point or to carry state between points are refused,
@@ -47,6 +58,7 @@ ILE_REFUSED = (
     "--sampler-save-state", "--sampler-warmstart-samples",
     "--internal-soft-fail-on-cuda-error", "--internal-make-empty-file-on-error",             # failures reported as success
     "--check-good-enough", "--log-noise-evidence-only",                                      # ILE ends before its last point
+    "--glitch-basis", "--glitch-basis-file",        # ILE adds a per-run constant to the offset that the run does not record
 )
 EXIT_DOUBLE_CALL = 70
 
@@ -100,6 +112,8 @@ class Engine:
         self.shard = shard
         self.out = open(shard, "a")
         self.done = set()
+        self.rows = {}            # lease row -> the row of its sampler call, held until analyze_event returns
+        self.pending = None       # (lease row, reason): analyze_event was left by an exception
         self.following = False
         self.t_last = time.time()
         self.orig = None
@@ -129,12 +143,42 @@ class Engine:
 
     # ---- following ILE from one point to the next -----------------------------------
 
+    def settle(self):
+        """ILE went on after an exception in a point, so that point failed."""
+        if self.pending is None:
+            return
+        idx, reason = self.pending
+        self.pending = None
+        if idx not in self.done:
+            self.write(idx, status="FAILED", lnL=None, reason=reason)
+        self.inflight(None)
+
     def begin(self, idx):
+        self.settle()
         self.inflight(idx, "precompute")
 
-    def end(self, idx):
-        if idx not in self.done:
+    def end(self, idx, res, raised):
+        """analyze_event is left: `res` is its return value, `raised` the exception that left it."""
+        row = self.rows.pop(idx, None)
+        if idx in self.done:
+            return
+        if raised is not None:
+            # ILE may re-raise or exit on this (a GPU error), or catch it and go on.  Which is
+            # known only at the next point or at the end, so no line yet; the in-flight file stays.
+            what = "%s: %s" % (type(raised).__name__, str(raised)[:200])
+            self.pending = (idx, ("ILE rejected the point after the sampler returned: " if row is not None
+                                  else "ILE left the point without a sampler result: ") + what)
+            return
+        try:
+            finite = res is not None and bool(np.isfinite(res))
+        except (TypeError, ValueError):
+            finite = False
+        if row is None:
             self.write(idx, status="FAILED", lnL=None, reason="ILE left the point without a sampler result")
+        elif row["status"] == "OK" and not finite:
+            self.write(idx, status="FAILED", lnL=None, reason="ILE's result for the point is not finite")
+        else:
+            self.write(idx, **row)
         self.inflight(None)
 
     def tracer(self, frame, event, arg):
@@ -150,19 +194,28 @@ class Engine:
         def wrapped(P_list, indx_event, *args, **kwargs):
             engine.begin(int(indx_event))
             try:
-                return inner(P_list, indx_event, *args, **kwargs)
-            finally:
-                engine.end(int(indx_event))
+                res = inner(P_list, indx_event, *args, **kwargs)
+            except BaseException as exc:
+                engine.end(int(indx_event), None, exc)
+                raise
+            engine.end(int(indx_event), res, None)
+            return res
 
         if inner is not None:
             frame.f_globals["analyze_event"] = wrapped
         frame.f_trace_lines = False
         self.begin(idx)
 
+        seen = [None]
+
         def local(frame, event, arg):
-            if event == "return":           # also the event when the frame is left by an exception
+            if event == "exception":
+                seen[0] = arg[1]
+            elif event == "return":
+                # Also the event when the frame is left by an exception, with arg None.  ILE's
+                # analyze_event returns a number, so None with an exception seen is that case.
                 sys.settrace(None)
-                engine.end(idx)
+                engine.end(idx, arg, seen[0] if arg is None else None)
             return local
 
         return local
@@ -175,7 +228,7 @@ class Engine:
         if frame is None:
             raise RuntimeError("the ledger engine needs ILE's analyze_event on the stack")
         idx, P = int(frame.f_locals["indx_event"]), frame.f_locals["P"]
-        if idx in self.done:
+        if idx in self.done or idx in self.rows:
             # ILE would catch an exception here and carry on with a row that holds only the
             # first call.  Void the key and stop.
             self.write(idx, status="INVALID", lnL=None, reason="the sampler was called twice for this point")
@@ -211,7 +264,10 @@ class Engine:
             row.update(status="FAILED", reason="the sampler returned no finite integral")
         else:
             row.update(lnL=float(out[0]), sigma=float(np.exp(out[1] / 2 - out[0])), effsamp=float(out[2]))
-        self.write(idx, **row)
+            info = out[3] if len(out) > 3 and isinstance(out[3], dict) else {}
+            if info.get("live_volume_collapsed"):
+                row.update(collapsed=True, collapse_reason=str(info.get("collapse_reason", ""))[:200])
+        self.rows[idx] = row
         self.t_last = time.time()
         return out
 
@@ -249,6 +305,12 @@ def main(argv=None):
     sys.settrace(eng.tracer)
     try:
         runpy.run_path(ile[0], run_name="__main__")
+    except SystemExit as exc:
+        if exc.code in (0, None):
+            eng.settle()
+        raise
+    else:
+        eng.settle()
     finally:
         sys.settrace(None)
     return 0

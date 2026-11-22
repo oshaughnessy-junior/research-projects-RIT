@@ -18,6 +18,13 @@ m1 in solar masses, as printed with repr; `all` means every point):
     STUB_ABORT_PRE=M1       the process aborts before the sampler, as a GSL abort in waveform code does
     STUB_ABORT_SAMPLER=M1   the process aborts inside the sampler, as a lost GPU context does
     STUB_RAISE_SAMPLER=M1   the integrand raises, and the loop goes on to the next point
+    STUB_GPU_SAMPLER=M1     the integrand raises MemoryError, which the loop re-raises as ILE does a GPU error
+    STUB_REJECT_AFTER=M1    analyze_event raises after the sampler returned, as ILE does for a result it
+                            rejects, and the loop goes on
+    STUB_EMPTY_FIRST=M1     the integrand is -inf on its first chunk, and the sampler reports a collapsed
+                            live volume
+
+M1 may be a comma list.
 """
 import contextlib
 import io
@@ -48,7 +55,7 @@ class Point:
 
 def hit(name, P):
     want = os.environ.get(name)
-    return want is not None and (want == "all" or want == repr(float(P.row[0])))
+    return want is not None and (want == "all" or repr(float(P.row[0])) in want.split(","))
 
 
 def analyze_event(P_list, indx_event):
@@ -59,11 +66,18 @@ def analyze_event(P_list, indx_event):
         os.abort()
     offset = analytic(P.row) - 3 * np.log(np.sqrt(2 * np.pi) * WIDTH)
 
+    calls = [0]
+
     def ln_f(*xs):
+        calls[0] += 1
         if hit("STUB_ABORT_SAMPLER", P):
             os.abort()
         if hit("STUB_RAISE_SAMPLER", P):
             raise FloatingPointError("the integrand failed")
+        if hit("STUB_GPU_SAMPLER", P):
+            raise MemoryError("the device is gone")
+        if calls[0] == 1 and hit("STUB_EMPTY_FIRST", P):
+            return np.full(len(xs[0]), -np.inf)
         return -0.5 * np.sum((np.array(xs).T - 0.5) ** 2, axis=1) / WIDTH ** 2 + offset
 
     sampler = av.MCSampler(n_chunk=CHUNK)
@@ -77,7 +91,9 @@ def analyze_event(P_list, indx_event):
         out = sampler.integrate(ln_f, *NAMES, **kw)
         if DOUBLE:
             sampler.integrate(ln_f, *NAMES, **kw)
-    return out
+    if hit("STUB_REJECT_AFTER", P):
+        raise ValueError("this event is being dropped rather than exported")
+    return float(out[0])
 
 
 if __name__ == "__main__":
@@ -92,4 +108,6 @@ if __name__ == "__main__":
         try:
             analyze_event(points, indx)
         except Exception as exc:
+            if isinstance(exc, MemoryError):          # ILE re-raises what is_gpu_resource_error recognises
+                raise
             print("  ===> FAILED ANALYSIS <==== ", exc)
