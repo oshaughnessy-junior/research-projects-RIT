@@ -1,0 +1,147 @@
+#!/usr/bin/env python
+"""rift-run: drive one ledger run (RIFT/ledger/DESIGN_ledger_run.md).
+
+    rift-run --run-dir DIR --ile-args-file args_ile.txt --prior-args-file args_cip_list.txt \\
+             --grid-template proposed-grid.dat [--budget SECONDS] [--engines G]
+    rift-run status|verify|replay-check --run-dir DIR
+    rift-run replay --run-dir DIR [--replay-keys N]
+
+The first form creates DIR on first use and resumes it afterwards.  It reads the prior
+box from the last line of the posterior arguments, runs learning versions from the prior
+until the proposal freezes, then one frozen round until the stop rule holds, and writes
+DIR/certificate.json and DIR/posterior_samples.dat.
+
+Exit status: 0 certified; 3 time budget spent (start again to resume); 4 stopped without
+a certificate; 5 an engine left the NoLoop likelihood path; 6 the engine is not working
+(in three launches in a row no engine finished its lease or gave evidence against one
+point).  `verify`, `replay` and `replay-check` exit 1 when what they recompute differs;
+`verify` also when a finished run has no certificate.
+"""
+import argparse
+import json
+import os
+import shlex
+import shutil
+import sys
+
+
+def parse():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", nargs="?", default="run", choices=["run", "status", "verify", "replay", "replay-check"])
+    ap.add_argument("--run-dir", required=True, help="directory holding the whole state of the run")
+    ap.add_argument("--transport", default="inproc", choices=["inproc"], help="engines are child processes on this host")
+    ap.add_argument("--ile-args-file", help="ILE argument line (pseudo_pipe args_ile.txt); read at the first start")
+    ap.add_argument("--prior-args-file", help="posterior argument schedule (args_cip_list.txt); its last line gives the prior")
+    ap.add_argument("--grid-template", help="a hyperpipeline grid of this run (proposed-grid.dat); its header is reused")
+    ap.add_argument("--mc-range", help="[low,high]; with --eta-range and --chi-max, replaces --prior-args-file")
+    ap.add_argument("--eta-range")
+    ap.add_argument("--chi-max", type=float)
+    ap.add_argument("--ile-exe", default="integrate_likelihood_extrinsic_batchmode")
+    ap.add_argument("--ile-n-chunk", type=int, help="replace --n-chunk in the ILE arguments")
+    ap.add_argument("--engine-command", help="shell template replacing the ILE engine: any program that reads a lease "
+                    "{lease} with keys {keys} and appends rows to {shard}; also {n} {log} {base}")
+    ap.add_argument("--engines", type=int, default=1, help="engine processes run side by side")
+    ap.add_argument("--engine-gpus", help="comma list; engine k gets CUDA_VISIBLE_DEVICES of entry k")
+    ap.add_argument("--budget", type=float, default=float("inf"), help="seconds; engines are stopped when it ends")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="configuration value at the first start (see RIFT.ledger.controller.DEFAULTS)")
+    ap.add_argument("--chaos", default="", help="testing: engine=N kills N engines on purpose, after lo=SEC to hi=SEC (seed=S) or at rows=K lines")
+    ap.add_argument("--accept-engine-change", action="store_true",
+                    help="engine.json was edited since the last start and gives the same likelihood (a moved run); "
+                         "the certificate lists both versions")
+    ap.add_argument("--replay-keys", type=int, default=64)
+    return ap.parse_args()
+
+
+def first_start(opts):
+    from RIFT.ledger import controller, rundir
+    from RIFT.ledger.space import Box
+    engine = dict(cwd=os.getcwd())
+    overrides = dict(kv.split("=", 1) for kv in opts.set)
+    header = rundir.grid_header(opts.grid_template) if opts.grid_template else None
+    if opts.prior_args_file:
+        box = rundir.box_from_cip_tokens(rundir.read_args_line(opts.prior_args_file))
+    elif opts.mc_range and opts.eta_range and opts.chi_max:
+        box = Box(rundir._pair(opts.mc_range), rundir._pair(opts.eta_range), opts.chi_max)
+    else:
+        raise SystemExit("rift-run: give --prior-args-file, or --mc-range --eta-range --chi-max")
+    if opts.engine_command:
+        engine["command"] = opts.engine_command
+    else:
+        if not (opts.ile_args_file and opts.grid_template):
+            raise SystemExit("rift-run: give --ile-args-file and --grid-template, or --engine-command")
+        tokens = rundir.read_args_line(opts.ile_args_file)
+        exe = shutil.which(opts.ile_exe) or opts.ile_exe
+        overrides.setdefault("lnl_offset", rundir.check_ile_tokens(tokens, exe))
+        if opts.ile_n_chunk:
+            tokens = rundir.replace_option(tokens, "--n-chunk", opts.ile_n_chunk)
+        tmp = os.path.join(os.path.abspath(opts.run_dir), "ile_out")
+        engine["command"] = " ".join(
+            [shlex.quote(sys.executable), "-u", "-m", "RIFT.ledger.engine", "--lease-keys", "{keys}", "--shard", "{shard}",
+             "--", shlex.quote(exe)] + [shlex.quote(t) for t in tokens]
+            + ["--sim-grid", "{lease}", "--n-events-to-analyze", "{n}", "--event=0",
+               "--output-file=" + shlex.quote(tmp) + "/{base}"])
+        engine["ile_args"] = tokens
+        engine["cleanup"] = os.path.join(tmp, "{base}_*")     # ILE's own per-point files; the shard is the record
+        os.makedirs(tmp, exist_ok=True)
+    # engine.json first: config.json is what marks the directory as a started run
+    os.makedirs(opts.run_dir, exist_ok=True)
+    controller.write_atomic(os.path.join(opts.run_dir, "engine.json"), json.dumps(engine, indent=1, sort_keys=True))
+    controller.init(opts.run_dir, box, header, **overrides)
+
+
+def load_engine(run_dir):
+    path = os.path.join(run_dir, "engine.json")
+    if not os.path.exists(path):
+        raise SystemExit("rift-run: %s is missing; the run directory is incomplete" % path)
+    engine = json.load(open(path))
+    if not os.path.isdir(engine["cwd"]):
+        raise SystemExit("rift-run: the engine's working directory %s is gone.  A run records absolute "
+                         "paths and cannot be moved; edit %s if it was." % (engine["cwd"], path))
+    return engine
+
+
+def main():
+    opts = parse()
+    from RIFT.ledger import controller, inproc
+    if opts.command == "run":
+        if not os.path.exists(os.path.join(opts.run_dir, "config.json")):
+            first_start(opts)
+        engine = load_engine(opts.run_dir)
+        controller.engine_history(opts.run_dir, accept_change=opts.accept_engine_change, record=True)
+        gpus = [g for g in (opts.engine_gpus or "").split(",") if g]
+        return inproc.run(os.path.abspath(opts.run_dir), engine["command"], cwd=engine["cwd"], engines=opts.engines,
+                          gpus=gpus, budget=opts.budget, chaos=opts.chaos, cleanup=engine.get("cleanup"))
+    run = controller.Run(os.path.abspath(opts.run_dir))
+    if opts.command == "status":
+        print(json.dumps(controller.status(run), indent=1))
+    elif opts.command == "verify":
+        out = controller.verify(run)
+        print(json.dumps(out, indent=1))
+        cert = out["certificate"] or dict(same_result=True, plans_match={}, tables_match={})
+        same = (all(f["same_bytes"] for f in out["fits"]) and cert["same_result"]
+                and all(cert["plans_match"].values()) and all(cert["tables_match"].values()))
+        return 0 if same else 1
+    elif opts.command == "replay":
+        import subprocess
+        lease = controller.replay_lease(run, opts.replay_keys)
+        if os.path.exists(lease["shard"]):
+            os.remove(lease["shard"])
+        engine = load_engine(run.path)
+        cmd = engine["command"].format(lease=shlex.quote(lease["lease"]), keys=shlex.quote(lease["keys"]),
+                                       shard=shlex.quote(lease["shard"]), n=lease["n"],
+                                       log=shlex.quote(run.p("replay", "engine.log")), base="replay")
+        with open(run.p("replay", "engine.log"), "ab") as lf:
+            subprocess.run(cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT, cwd=engine["cwd"])
+        out = controller.replay_check(run)
+        print(json.dumps(out, indent=1))
+        return 0 if out["keys"] == lease["n"] and out["identical"] == out["keys"] else 1
+    elif opts.command == "replay-check":
+        out = controller.replay_check(run)
+        print(json.dumps(out, indent=1))
+        return 0 if out["keys"] and out["identical"] == out["keys"] else 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
