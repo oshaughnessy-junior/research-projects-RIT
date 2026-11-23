@@ -23,7 +23,7 @@ sys.path.insert(0, CODE)
 
 import fake_engine  # noqa: E402
 import stub_ile  # noqa: E402
-from RIFT.ledger import controller, engine, estimator, inproc, proposal, rundir  # noqa: E402
+from RIFT.ledger import controller, engine, estimator, inproc, proposal, rundir, spool  # noqa: E402
 from RIFT.ledger.space import Box, summaries, to_grid  # noqa: E402
 
 SIZES = ["--set", "seed=7", "--set", "learn_per_stream=250", "--set", "frozen_per_stream=250", "--set", "target_n_eff=500"]
@@ -717,9 +717,19 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
              if x.startswith(("run_unit ", "run_node "))]
     assert len(nodes) == 1 and "TERMINAL_ledger_run" in nodes[0]
     assert "--budget" in open(run / "TERMINAL_ledger_run.sub").read()
+    assert "--transport inproc" in open(run / "TERMINAL_ledger_run.sub").read().replace('"', "")
     rundir.check_ile_tokens(rundir.read_args_line(str(run / "args_ile.txt")), ILE_EXE)
     rundir.box_from_cip_tokens(rundir.read_args_line(str(run / "args_cip_list.txt")))
     rundir.grid_header(str(run / "proposed-grid.dat"))
+    out = build("pilots", ["--pipeline-builder", "Hyperpipe", "--ile-sampler-method", "AV", "--ledger-run-pilots", "3"])
+    assert out.returncode == 0, out.stdout[-3000:]
+    run = tmp_path / "pilots"                      # three nodes of one command, each a pilot of the same run
+    nodes = [x for x in open(run / "marginalize_hyperparameters_local.sh").read().split("\n")
+             if x.startswith(("run_unit ", "run_node "))]
+    assert len(nodes) == 3 and all("TERMINAL_ledger_run" in x for x in nodes)
+    assert "--transport spool --fleet 3" in open(run / "TERMINAL_ledger_run.sub").read().replace('"', "")
+    shutil.rmtree(str(run))
+    run = tmp_path / "ok"
     for name, extra, named in (
             ("r1", ["--pipeline-builder", "Hyperpipe"], "--ledger-run without --ile-sampler-method AV"),
             ("r2", ["--pipeline-builder", "Hyperpipe", "--ile-sampler-method", "AV", "--add-extrinsic",
@@ -1020,3 +1030,171 @@ def test_the_builder_accepts_zero_iterations_only_for_terminal_stages(tmp_path):
         out = run_bounded(base + extra, cwd=str(tmp_path), env=env, text=True, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT)
         assert out.returncode != 0 and named in out.stdout, out.stdout[-800:]
+
+
+# ---- the spool transport: pilots that share the run directory ----------------------------------------
+
+def _pilots(run_dir, n, extra=(), env_each=None, command=None):
+    """Start n pilots on one directory.  env_each: one dict of extra environment per pilot."""
+    cmd, env = command or _command(run_dir, ["--transport", "spool", "--fleet", str(n), "--poll", "0.2"] + list(extra))
+    return [subprocess.Popen(cmd, env=dict(env, **((env_each or [{}] * n)[k])), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL) for k in range(n)]
+
+
+def _engines_of(run_dir):
+    """Process ids of engines working on this run directory, from their command lines."""
+    out = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
+    return [int(x.split()[0]) for x in out.split("\n") if run_dir in x and "fake_engine.py" in x and "rift-run" not in x]
+
+
+def _records(run_dir):
+    done = os.path.join(run_dir, "spool", "done")
+    return [json.load(open(os.path.join(done, f))) for f in sorted(os.listdir(done))]
+
+
+def test_pilots_sharing_a_directory_give_the_one_host_certificate(clean_run, tmp_path):
+    """Protects: a run divided among pilots has the proposals and the estimate of the same run
+    in one process; every lease is run once, by one pilot, and no key is written twice.
+    Oracle: metamorphic, against the one-process run with the same seed."""
+    run_dir = str(tmp_path / "three")
+    pilots = _pilots(run_dir, 3, env_each=[dict(LEDGER_FAKE_SLEEP="0.004")] * 3)
+    assert [p.wait(timeout=400) for p in pilots] == [0, 0, 0]
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["proposals"] == b["proposals"] and a["estimate"] == b["estimate"]
+    assert b["ledger"]["repeats"] == 0
+    recs = _records(run_dir)
+    leases = [f for f in os.listdir(os.path.join(run_dir, "leases")) if f.endswith(".json")]
+    assert len(recs) == len(leases) == b["ledger"]["shards"] and not any(r["killed"] or r["missing"] for r in recs)
+    assert len(set(r["pilot"] for r in recs)) >= 2
+    assert os.listdir(os.path.join(run_dir, "spool", "open")) == os.listdir(os.path.join(run_dir, "spool", "claimed")) == []
+    assert not os.path.exists(os.path.join(run_dir, "ctl", "tick.lock"))
+
+
+def test_a_pilot_that_vanishes_costs_no_point(clean_run, tmp_path):
+    """Protects: a pilot that dies with its engine and leaves no record is found by its
+    heartbeat; its lease is closed as stopped, no point gets a strike or a FAILED line, its
+    rows are kept, and the other pilot finishes the run with the same estimate.
+    Oracle: metamorphic, against the one-process run with the same seed."""
+    run_dir = str(tmp_path / "vanish")
+    victim, other = _pilots(run_dir, 2, ["--stale-after", "4"],
+                            env_each=[dict(LEDGER_FAKE_SLEEP="0.05"), dict(LEDGER_FAKE_SLEEP="0.002")])
+    mine = "-%d-" % victim.pid
+    for _ in range(600):                                   # until the slow pilot has claimed a lease
+        time.sleep(0.1)
+        claimed = os.path.join(run_dir, "spool", "claimed")
+        held = [f for f in (os.listdir(claimed) if os.path.isdir(claimed) else []) if mine in f]
+        if held and _engines_of(run_dir):
+            break
+    else:
+        pytest.fail("the slow pilot never claimed a lease")
+    lease = held[0].split(".")[0]
+    time.sleep(0.5)
+    victim.send_signal(signal.SIGKILL)
+    victim.wait()
+    out = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
+    for line in out.split("\n"):                          # a node that dies takes its engine along
+        if run_dir in line and lease + ".dat" in line and "fake_engine.py" in line:
+            try:
+                os.kill(int(line.split()[0]), signal.SIGKILL)
+            except OSError:
+                pass
+    assert other.wait(timeout=400) == 0
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["estimate"] == b["estimate"] and b["failed_rows"] == 0
+    recs = _records(run_dir)
+    assert [r["lease"] for r in recs if r.get("stale")] == [lease] and all(r["killed"] for r in recs if r.get("stale"))
+    state = json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))
+    assert state["strikes"] == {} and not state.get("defer")
+    assert all(r["status"] == "OK" for r in controller.Run(run_dir).ledger()[0].values())
+
+
+def test_a_pilot_told_to_stop_says_so_and_any_pilot_resumes(clean_run, tmp_path):
+    """Protects: on SIGTERM, which a scheduler sends before it removes a job, a pilot stops its
+    engine, records that it did, and exits with status 3; a later pilot finishes the run with
+    the same estimate, and the stop counted against no point.  Oracle: metamorphic."""
+    run_dir = str(tmp_path / "term")
+    (pilot,) = _pilots(run_dir, 1, env_each=[dict(LEDGER_FAKE_SLEEP="0.02")])
+    for _ in range(200):
+        time.sleep(0.1)
+        if _engines_of(run_dir):
+            break
+    pilot.send_signal(signal.SIGTERM)
+    assert pilot.wait(timeout=60) == 3
+    time.sleep(0.2)
+    assert _engines_of(run_dir) == []
+    recs = _records(run_dir)
+    assert [r["killed"] for r in recs if r["missing"]] == [True] and not any(r.get("stale") for r in recs)
+    (pilot,) = _pilots(run_dir, 1)
+    assert pilot.wait(timeout=400) == 0
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["estimate"] == b["estimate"]
+    assert json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))["strikes"] == {}
+
+
+def test_a_pilot_whose_engine_cannot_start_leaves_and_the_other_finishes(clean_run, tmp_path):
+    """Protects: a pilot on a node where the engine cannot start takes three leases at most and
+    leaves with status 6; it marks no point failed, its leases are given out again, and the
+    other pilot finishes the run.  A stale tick lock and a stale start lock left by dead
+    pilots do not stop a run.  Oracle: metamorphic, and analytic for the lease count."""
+    run_dir = str(tmp_path / "bad")
+    os.makedirs(os.path.join(run_dir, "ctl"))
+    for lock in (os.path.join(run_dir, "ctl", "tick.lock"), os.path.join(run_dir, "start.lock")):
+        open(lock, "w").write("a-dead-pilot")
+        os.utime(lock, (time.time() - 3600, time.time() - 3600))
+    bad, good = _pilots(run_dir, 2, env_each=[dict(LEDGER_FAKE_BROKEN="1"), dict(LEDGER_FAKE_SLEEP="0.003")])
+    assert bad.wait(timeout=400) == 6 and good.wait(timeout=400) == 0
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["estimate"] == b["estimate"] and b["failed_rows"] == 0
+    recs = _records(run_dir)
+    assert sum(r["status"] == 7 for r in recs) == inproc.BARREN_LIMIT
+    assert json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))["strikes"] == {}
+
+
+def test_an_engine_off_the_noloop_path_ends_every_pilot(tmp_path):
+    """Protects: under the spool transport too, an engine log line off the NoLoop path ends the
+    run for every pilot with exit status 5.  Oracle: analytic."""
+    run_dir = str(tmp_path / "off")
+    pilots = _pilots(run_dir, 2, env_each=[dict(LEDGER_FAKE_OFF_NOLOOP="1")] * 2)
+    assert [p.wait(timeout=120) for p in pilots] == [5, 5]
+    assert controller.Run(run_dir).head()["state"] == "FAILED"
+
+
+def test_a_tick_gives_no_second_lease_to_a_row_that_is_coming(tmp_path):
+    """Protects: a tick called while leases run writes leases only for rows no running lease
+    will write, and waits when there are none; a lease name is never given two contents; no
+    lease is cut below the stated size.  Oracle: analytic."""
+    run_dir = str(tmp_path / "run")
+    controller.init(run_dir, Box.from_json(fake_engine.BOX), seed=3, learn_per_stream=40)
+    run = controller.Run(run_dir)
+    assert controller.tick(run)["action"] == "again"
+    pl = run.plan(1, proposal.PriorProposal(run.box, 3), 40)
+    keys = [(1, int(s), int(i)) for s, i, ok in zip(pl["stream"], pl["index"], pl["ok"]) if ok]
+    assert controller.tick(run, 4, busy=keys)["action"] == "wait"
+    assert not [f for f in os.listdir(os.path.join(run_dir, "leases")) if f.endswith(".json")]
+    taken = os.path.join(run_dir, "leases", "lease-v01-n0000.dat")          # a name another tick took
+    open(taken, "w").write("another tick's lease\n")
+    act = controller.tick(run, 4, busy=keys[::2], min_lease_rows=30)
+    assert act["action"] == "run" and open(taken).read() == "another tick's lease\n"
+    got = [(1, s, i) for lease in act["leases"] for s, i in json.load(open(lease["keys"]))["keys"]]
+    assert sorted(got) == sorted(keys[1::2])
+    assert len(act["leases"]) == len(keys[1::2]) // 30 and all("n0000" not in lease["lease"] for lease in act["leases"])
+
+
+def test_a_point_that_breaks_the_engine_is_failed_under_pilots_too(tmp_path):
+    """Protects: with the real engine under two pilots, one point that kills the engine is
+    failed after two strikes, each with a row from the same launch, and the other points are
+    all evaluated.  Oracle: analytic (19 rows OK, that one FAILED)."""
+    cmd, env = _stub_command(tmp_path / "w")
+    assert run_bounded(cmd + ["--budget", "1"], env=env, cwd=str(tmp_path / "w")).returncode == 3     # plan only
+    command = _stub_command(tmp_path / "w", ["--transport", "spool", "--fleet", "2", "--min-lease-rows", "5", "--poll", "0.2"])
+    run = controller.Run(str(tmp_path / "w" / "ledger"))
+    pl = run.plan(1)
+    command[1]["STUB_ABORT_PRE"] = repr(float(pl["grid"][7, 0]))
+    pilots = [subprocess.Popen(command[0], env=command[1], cwd=str(tmp_path / "w"), stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL) for _ in range(2)]
+    assert [p.wait(timeout=400) for p in pilots] == [4, 4]          # the run stops by design after version 1
+    rows, _ = run.ledger()
+    bad = (1, int(pl["stream"][7]), int(pl["index"][7]))
+    assert len(rows) == 20 and rows[bad]["status"] == "FAILED"
+    assert sum(r["status"] == "OK" for r in rows.values()) == 19
+    assert sum("strike" in r for r in (json.loads(x) for x in open(run.p("ctl", "leases.jsonl")))) == 2

@@ -19,7 +19,7 @@ planned key again.  A tick reads the whole ledger and decides from the files alo
 
     learning version complete   fit the next proposal; it is frozen when the freeze rule holds
     frozen version complete     estimate over its rows; stop, or plan more draws
-    rows missing                write leases for them
+    rows missing                write leases for them, except for rows a running lease will write
 
 Version 1 is the prior on the box.  No earlier fit and no other run's product enters.
 """
@@ -27,6 +27,7 @@ import glob
 import hashlib
 import json
 import os
+import socket
 
 import numpy as np
 
@@ -48,7 +49,7 @@ CERT_TEXTS = ("reading", "note")
 
 
 def write_atomic(path, text):
-    tmp = "%s.tmp.%d" % (path, os.getpid())
+    tmp = "%s.tmp.%s.%d" % (path, socket.gethostname(), os.getpid())      # hosts that share the directory share pids
     with open(tmp, "w") as f:
         f.write(text)
         f.flush()
@@ -250,12 +251,17 @@ class Run:
         return "\n".join(self.cfg["grid_header"]) + "\n" + "".join(
             " ".join("%.18e" % v for v in [0.0, 0.0] + list(g)) + "\n" for g in grid_rows)
 
-    def write_leases(self, version, pl, missing, parts=1, defer=(), known_good=None):
-        """One lease per engine: the missing rows, split into `parts` contiguous pieces.
+    def write_leases(self, version, pl, missing, parts=1, defer=(), known_good=None, min_rows=1):
+        """One lease per engine: the missing rows, split into `parts` contiguous pieces of at
+        least `min_rows` rows.
         Keys in `defer` (version, stream, index) go last.  A lease that holds only such keys
         starts with plan row `known_good`, a key that already has a row: an engine that
         writes it again and then dies has shown that it works, so the death counts against
-        the key it died on.  The repeated row is not used."""
+        the key it died on.  The repeated row is not used.
+
+        A lease name is never given two contents: its grid file is made with an exclusive
+        create, so two ticks at once, which a shared filesystem cannot rule out, take
+        different names."""
         out = []
         k = len(glob.glob(self.p("leases", "lease-*.json")))
         todo = np.flatnonzero(missing)
@@ -263,13 +269,22 @@ class Run:
         if late:
             is_late = np.array([(int(pl["stream"][i]), int(pl["index"][i])) in late for i in todo])
             todo = np.concatenate([todo[~is_late], todo[is_late]])
-        for j in np.array_split(todo, max(1, min(int(parts), int(missing.sum())))):
+        for j in np.array_split(todo, max(1, min(int(parts), int(missing.sum()) // max(1, int(min_rows))))):
             if known_good is not None and late and all((int(pl["stream"][i]), int(pl["index"][i])) in late for i in j):
                 j = np.concatenate([[int(known_good)], j])
-            stem = "v%02d-n%04d" % (version, k)
-            k += 1
             text = self.lease_text(pl["grid"][j])
-            write_atomic(self.p("leases", "lease-%s.dat" % stem), text)
+            while True:
+                stem = "v%02d-n%04d" % (version, k)
+                k += 1
+                try:
+                    fd = os.open(self.p("leases", "lease-%s.dat" % stem), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                    break
+                except FileExistsError:
+                    continue
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
             write_atomic(self.p("leases", "lease-%s.json" % stem), canonical(dict(
                 version=version, seed=self.cfg["seed"], n_max_samples=self.cfg["n_max_samples"],
                 keys=[[int(pl["stream"][i]), int(pl["index"][i])] for i in j],
@@ -302,9 +317,13 @@ def fit_next(run, hist):
     return adapt.next_version(np.vstack(a), np.concatenate(ln_pl), props, run.cfg["seed"] + 1000 * len(props))
 
 
-def tick(run, engines=1, defer=()):
-    """One tick.  Returns the next action: again, run (with leases), done or failed.
-    `defer` lists keys the transport wants at the end of their lease."""
+def tick(run, engines=1, defer=(), busy=(), min_lease_rows=1, hold=False):
+    """One tick.  Returns the next action: again, run (with leases), wait, done or failed.
+    `defer` lists keys the transport wants at the end of their lease.  `busy` lists keys
+    (version, stream, index) that a lease still open or running will write: they get no
+    second lease, and while only such rows are missing the action is wait.  With `hold`
+    a complete version is not closed either: the transport has a launch whose record,
+    and so whose log, it has not read yet."""
     cfg = run.cfg
     for d in ("artifacts", "plans", "leases", "ledger"):
         os.makedirs(run.p(d), exist_ok=True)
@@ -326,9 +345,16 @@ def tick(run, engines=1, defer=()):
     cur = hist[-1]
     missing = cur["plan"]["ok"] & np.isnan(cur["lnl"])
     if missing.any():
+        coming = set((int(s), int(i)) for ver, s, i in busy if ver == v)
+        todo = missing & np.array([(int(s), int(i)) not in coming
+                                   for s, i in zip(cur["plan"]["stream"], cur["plan"]["index"])])
+        if not todo.any():
+            return dict(action="wait", ledger=stat, missing=int(missing.sum()))
         good = np.flatnonzero(cur["plan"]["ok"] & np.isfinite(cur["lnl"]))
         return dict(action="run", ledger=stat, leases=run.write_leases(
-            v, cur["plan"], missing, engines, defer, known_good=good[0] if len(good) else None))
+            v, cur["plan"], todo, engines, defer, known_good=good[0] if len(good) else None, min_rows=min_lease_rows))
+    if hold:
+        return dict(action="wait", ledger=stat, missing=0)
     if cur["kind"] == "learn":
         good = int(np.isfinite(cur["lnl"]).sum())
         bad = int((cur["plan"]["ok"] & ~np.isfinite(cur["lnl"])).sum())
