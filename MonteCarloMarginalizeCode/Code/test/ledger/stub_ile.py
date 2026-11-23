@@ -23,6 +23,13 @@ m1 in solar masses, as printed with repr; `all` means every point):
                             rejects, and the loop goes on
     STUB_EMPTY_FIRST=M1     the integrand is -inf on its first chunk, and the sampler reports a collapsed
                             live volume
+    STUB_CUDA_SAMPLER=M1    the integrand raises a CUDA error, on which the loop exits with status 62 as ILE does
+    STUB_NAN_RESULT=M1      analyze_event returns nan after the sampler returned
+    STUB_NO_SAMPLER=M1      analyze_event returns before it calls the sampler
+    STUB_EXIT0=M1           the script exits with status 0 inside analyze_event
+    STUB_CAUGHT_INSIDE=M1   analyze_event raises and catches an exception of its own, then goes on as usual
+    STUB_LOST_AFTER=N       with STUB_COUNT_FILE=PATH: once N points have finished, counted in that file over
+                            every process, each integrand call raises MemoryError, as after a lost device
 
 M1 may be a comma list.
 """
@@ -58,12 +65,34 @@ def hit(name, P):
     return want is not None and (want == "all" or repr(float(P.row[0])) in want.split(","))
 
 
+def finished(add=0):
+    """Points finished so far by every process that shares STUB_COUNT_FILE."""
+    path = os.environ.get("STUB_COUNT_FILE")
+    if not path:
+        return 0
+    n = (int(open(path).read() or 0) if os.path.exists(path) else 0) + add
+    if add:
+        with open(path, "w") as f:
+            f.write(str(n))
+    return n
+
+
 def analyze_event(P_list, indx_event):
     P = P_list[indx_event]
     if indx_event == SKIP:
         raise ValueError("no waveform for this point")
     if hit("STUB_ABORT_PRE", P):
         os.abort()
+    if hit("STUB_EXIT0", P):
+        sys.exit(0)
+    if hit("STUB_NO_SAMPLER", P):
+        return 0.0
+    if hit("STUB_CAUGHT_INSIDE", P):
+        try:
+            raise KeyError("a lookup ILE recovers from")
+        except KeyError:
+            pass
+    lost = "STUB_LOST_AFTER" in os.environ and finished() >= int(os.environ["STUB_LOST_AFTER"])
     offset = analytic(P.row) - 3 * np.log(np.sqrt(2 * np.pi) * WIDTH)
 
     calls = [0]
@@ -74,8 +103,10 @@ def analyze_event(P_list, indx_event):
             os.abort()
         if hit("STUB_RAISE_SAMPLER", P):
             raise FloatingPointError("the integrand failed")
-        if hit("STUB_GPU_SAMPLER", P):
+        if hit("STUB_GPU_SAMPLER", P) or lost:
             raise MemoryError("the device is gone")
+        if hit("STUB_CUDA_SAMPLER", P):
+            raise RuntimeError("CUDA error: an illegal memory access was encountered")
         if calls[0] == 1 and hit("STUB_EMPTY_FIRST", P):
             return np.full(len(xs[0]), -np.inf)
         return -0.5 * np.sum((np.array(xs).T - 0.5) ** 2, axis=1) / WIDTH ** 2 + offset
@@ -93,7 +124,8 @@ def analyze_event(P_list, indx_event):
             sampler.integrate(ln_f, *NAMES, **kw)
     if hit("STUB_REJECT_AFTER", P):
         raise ValueError("this event is being dropped rather than exported")
-    return float(out[0])
+    finished(add=1)
+    return float("nan") if hit("STUB_NAN_RESULT", P) else float(out[0])
 
 
 if __name__ == "__main__":
@@ -110,4 +142,6 @@ if __name__ == "__main__":
         except Exception as exc:
             if isinstance(exc, MemoryError):          # ILE re-raises what is_gpu_resource_error recognises
                 raise
+            if "CUDA" in str(exc):
+                sys.exit(62)
             print("  ===> FAILED ANALYSIS <==== ", exc)

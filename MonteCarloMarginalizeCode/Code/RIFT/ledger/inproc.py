@@ -9,21 +9,24 @@ After an engine exits, by what its shard and its in-flight file hold:
   killed by this supervisor        nothing is recorded; the next lease covers the missing rows
   every lease row has a line       nothing to do (the engine reports its own failed points)
   died on a key, engine known good a strike against that key; two strikes make it FAILED (L = 0)
-  anything else with rows missing  the engine is not working: no row is marked, and three such
-                                   launches in a row end the supervisor with exit status 6
+  anything else with rows missing  the engine is not working: no row is marked
+
+A launch is one round of engines, one per lease.  Three launches in a row in which no
+engine finished its lease or earned a strike end the supervisor with exit status 6.
 
 A point is marked failed only on evidence about that point.  The engine's own line is
-evidence.  A death while a key was in flight is evidence only if the engine is known to
-work: it wrote a row in the same launch, or the key already has a strike from a launch
-that did.  A key on which a launch died without that is moved to the end of the next
-lease, so the launch after shows whether the engine works on other points.  An engine
-that cannot start, has lost its GPU, or ends before its last point therefore never
-turns points into zeros.  An engine that writes no in-flight file gets no strikes.
-When only such keys are left, the controller puts a key that already has a row first
-in the lease, so that launch can still show the engine works.
+evidence.  A death while a key was in flight is evidence only if the engine wrote a row
+in the same launch, which shows that it works.  A key on which a launch died without
+that is moved to the end of the next lease, so the launch after shows whether the engine
+works on other points.  When only such keys are left, the controller puts a key that
+already has a row first in the lease, so that launch can still show the engine works.
+An engine that cannot start, has lost its GPU, or ends before its last point therefore
+never turns points into zeros: a lost device earns the key in flight one strike at most.
+An engine that writes no in-flight file gets no strikes.
 
 Engine logs are read for lines off the NoLoop path after each lease, and all of them
-again at every start: a supervisor ended in mid-lease never read its last logs.
+again at every start, compressed ones included: a supervisor ended in mid-lease never
+read its last logs.
 
 `chaos` kills engines on purpose, for tests: `engine=N` engine processes on alternate
 launches, each after a random delay between `lo` and `hi` seconds, or, with `rows=K`,
@@ -32,6 +35,7 @@ in ctl/chaos.jsonl.
 """
 import fcntl
 import glob
+import gzip
 import json
 import os
 import shlex
@@ -45,7 +49,7 @@ import numpy as np
 from . import controller
 
 EXIT_DONE, EXIT_BUDGET, EXIT_FAILED, EXIT_REDLINE, EXIT_ENGINE = 0, 3, 4, 5, 6
-BARREN_LIMIT = 3      # consecutive launches that leave rows missing with no point to blame
+BARREN_LIMIT = 3      # consecutive launches in which no engine finished its lease or earned a strike
 # Lines that mean an engine was not on the NoLoop likelihood (RIFT AGENTS.md, REDLINE).
 # `Override --gpu` is expected on a host without cupy once --force-xpy is given, which the engine requires.
 OFF_NOLOOP = ("this is the old vectorized code path not the xpy path", "NOT APPLIED -- this configuration cannot honour")
@@ -71,8 +75,9 @@ def _shard_keys(path):
 
 def _off_noloop(logf):
     try:
-        text = open(logf, errors="replace").read()
-    except OSError:
+        with (gzip.open if logf.endswith(".gz") else open)(logf, "rt", errors="replace") as f:
+            text = f.read()
+    except (OSError, EOFError):
         return 0
     return sum(text.count(s) for s in OFF_NOLOOP)
 
@@ -83,6 +88,13 @@ def _stop_off_noloop(run_dir, off):
     r.set_head(**dict(r.head() or {}, state="FAILED", reason="an engine left the NoLoop likelihood path"))
     print("ledger run: %d engine log lines show the likelihood off the NoLoop path; stopping" % off, flush=True)
     return EXIT_REDLINE
+
+
+def _chaos_kills(run_dir):
+    """Engine kills made on purpose so far.  ctl/chaos.jsonl is their one record, so a
+    supervisor that is itself killed cannot lose count of them."""
+    path = os.path.join(run_dir, "ctl", "chaos.jsonl")
+    return sum('"engine"' in line for line in open(path)) if os.path.exists(path) else 0
 
 
 def _reap_orphans(run_dir):
@@ -118,14 +130,14 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     except OSError:
         raise SystemExit("ledger run: another supervisor holds %s" % lock.name)
     _reap_orphans(run_dir)
-    off = sum(_off_noloop(f) for f in glob.glob(os.path.join(run_dir, "logs", "*.log")))
+    off = sum(_off_noloop(f) for f in glob.glob(os.path.join(run_dir, "logs", "*.log*")))
     if off and os.path.exists(os.path.join(run_dir, "HEAD.json")):
         return _stop_off_noloop(run_dir, off)
     t_end = time.time() + budget
     spec = dict(engine=0, seed=0, lo=60.0, hi=400.0, rows=0)
     spec.update({k: float(v) for k, v in (kv.split("=") for kv in chaos.split(",") if kv)})
     state_file = os.path.join(run_dir, "ctl", "supervisor_state.json")
-    state = json.load(open(state_file)) if os.path.exists(state_file) else dict(engine_kills=0, launches=0, strikes={})
+    state = json.load(open(state_file)) if os.path.exists(state_file) else dict(launches=0, strikes={})
     barren = 0
     rng = np.random.default_rng([int(spec["seed"]), state["launches"]])
     live, ours = [], set()        # running engines; pids this supervisor killed
@@ -156,7 +168,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 return EXIT_BUDGET
             state["launches"] += 1
             kill_at, kill_rows = None, None
-            if state["engine_kills"] < spec["engine"] and state["launches"] % 2 == 1:
+            if _chaos_kills(run_dir) < spec["engine"] and state["launches"] % 2 == 1:
                 if spec["rows"]:
                     kill_rows = int(spec["rows"])
                 else:
@@ -196,7 +208,6 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                             pass
                     if why == "chaos":
                         kill_at, kill_rows, deadline = None, None, t0 + left
-                        state["engine_kills"] += 1
                         lease, base = jobs[0][0], jobs[0][1]
                         jobs[0][4].wait()
                         have = _shard_keys(lease["shard"])
@@ -206,7 +217,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                         continue
                     break
                 time.sleep(0.05)
-            off = 0
+            off, worked, idle = 0, False, False
             for slot, (lease, base, logf, lf, eng) in enumerate(jobs):
                 eng.wait()
                 lf.close()
@@ -236,7 +247,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                     key = None                      # it died after that key's line was written
                 if not killed and missing:
                     name = "%d/%d/%d" % key if key is not None else None
-                    if key is not None and (have or state["strikes"].get(name)):
+                    if key is not None and have:        # it wrote a row first, so this engine works
                         state["strikes"][name] = state["strikes"].get(name, 0) + 1
                         rec["strike"] = name
                         if state["strikes"][name] >= 2:
@@ -244,24 +255,25 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                                 f.write(json.dumps(dict(v=key[0], s=key[1], i=key[2], status="FAILED", lnL=None,
                                                         reason="the engine died twice on this point")) + "\n")
                             rec["recorded_failed"] = 1
-                        barren = 0
+                        worked = True
                     else:
-                        barren += 1
+                        idle = True
                         rec["not_working"] = True
                         if key is not None and list(key) not in state.setdefault("defer", []):
                             state["defer"].append(list(key))
                 elif not killed:
-                    barren = 0
+                    worked = True
                 _log(run_dir, "leases.jsonl", rec)
+            barren = 0 if worked else barren + idle
             controller.write_atomic(state_file, json.dumps(state))
             if os.path.exists(os.path.join(run_dir, "ctl", "engines.json")):
                 os.remove(os.path.join(run_dir, "ctl", "engines.json"))
             if off:
                 return _stop_off_noloop(run_dir, off)
             if barren >= BARREN_LIMIT:
-                print("ledger run: %d engine launches in a row left lease rows without a line and gave no "
-                      "evidence against one point; the engine is not working, see %s.  No point was marked failed." % (
-                          barren, os.path.join(run_dir, "logs")), flush=True)
+                print("ledger run: in %d launches in a row no engine finished its lease or gave evidence "
+                      "against one point; the engine is not working, see %s.  These launches marked no point "
+                      "failed." % (barren, os.path.join(run_dir, "logs")), flush=True)
                 return EXIT_ENGINE
             if why == "budget":
                 print("ledger run: budget spent; the run resumes on the next start", flush=True)

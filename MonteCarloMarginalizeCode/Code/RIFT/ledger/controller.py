@@ -2,9 +2,10 @@
 
 A run directory holds
 
-    config.json                              seed, sizes, stop rule, prior box, grid header
+    config.json, config.sha256               seed, sizes, stop rule, prior box, grid header; fixed at the first start
+    engine.json, engine_history.jsonl        the engine command, and the hash of each version of it a start accepted
     artifacts/proposal-vNN-<sha16>.json      one proposal per version, never rewritten
-    plans/plan-vNN-iAAAAAA-iBBBBBB.dat       draws [A, B) of every stream of version NN
+    plans/plan-vNN-iAAAAAA-iBBBBBB.dat       draws [A, B) of every stream of version NN, and its .sha256
     HEAD.json                                state, current version, draws planned per stream
     leases/lease-vNN-nKKKK.{dat,json}        points for one engine process, and their keys
     ledger/shard-vNN-nKKKK*.jsonl            rows, one line per finished key
@@ -40,6 +41,10 @@ DEFAULTS = dict(seed=20261119, n_streams=4, learn_per_stream=375, frozen_per_str
 GRID_HEADER = ["# RIFT_HYPERPIPELINE_V1", "# lnL sigma_lnL " + " ".join(GRID_COLUMNS)]
 PLAN_COLUMNS = ("stream", "index", "ok", "ln_pq", "mc", "delta", "s1z", "s2z") + GRID_COLUMNS
 STATES_OVER = ("DONE", "FAILED")
+# The certificate's format.  Raise it when a field is added or a fixed text changes: `verify`
+# compares a certificate of another format on the fields it holds, and not on its texts.
+CERT_FORMAT = 2
+CERT_TEXTS = ("reading", "note")
 
 
 def write_atomic(path, text):
@@ -76,13 +81,39 @@ def init(path, box, grid_header=None, **overrides):
     if os.path.exists(os.path.join(path, "config.json")):
         raise FileExistsError("config.json exists in %s" % path)
     write_atomic(os.path.join(path, "config.json"), json.dumps(cfg, indent=1, sort_keys=True))
+    write_atomic(os.path.join(path, "config.sha256"), sha256_file(os.path.join(path, "config.json")) + "\n")
     return cfg
+
+
+def engine_history(path, accept_change=False, record=False):
+    """Hashes of engine.json, one per version of the file that a start accepted.  Rows do not
+    name the command that made them, so a run may not change its engine: with `record`, a
+    file that differs from the last accepted one ends the start, unless `accept_change`
+    says the new file gives the same likelihood (a moved run), and then it is added."""
+    log, engine = os.path.join(path, "engine_history.jsonl"), os.path.join(path, "engine.json")
+    seen = [json.loads(x)["sha256"] for x in open(log) if x.strip()] if os.path.exists(log) else []
+    now = sha256_file(engine) if os.path.exists(engine) else None
+    if not record or now is None or (seen and seen[-1] == now):
+        return seen
+    if seen and not accept_change:
+        raise SystemExit("rift-run: %s changed since this run last started.  Its rows do not record the command "
+                         "that made them, so one run cannot mix two engines.  If only paths changed (the run was "
+                         "moved), start once with --accept-engine-change; the certificate will list both." % engine)
+    with open(log, "a") as f:
+        f.write(json.dumps(dict(sha256=now)) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    return seen + [now]
 
 
 class Run:
     def __init__(self, path):
         self.path = path
         self.cfg = json.load(open(os.path.join(path, "config.json")))
+        fixed = os.path.join(path, "config.sha256")         # absent in a run made before the hash was recorded
+        if os.path.exists(fixed) and open(fixed).read().strip() != sha256_file(os.path.join(path, "config.json")):
+            raise SystemExit("%s was edited after the run began; a run's configuration is fixed at its first "
+                             "start, because its leases and its certificate both read it" % os.path.join(path, "config.json"))
         self.box = Box.from_json(self.cfg["box"])
 
     def p(self, *parts):
@@ -135,15 +166,21 @@ class Run:
                              + " ".join(repr(float(v)) for v in vals))
             name = self.p("plans", "plan-v%02d-i%06d-i%06d.dat" % (version, covered, per_stream))
             write_atomic(name, "\n".join(lines) + "\n")
+            write_atomic(name + ".sha256", sha256_file(name) + "\n")
             files.append(name)
         if not files:
             raise SystemExit("version %d has no plan" % version)
         parts = []
         for f in files:
             lo, hi = (int(x[1:]) for x in os.path.basename(f)[:-4].split("-")[2:4])
-            part = np.loadtxt(f, comments="#", ndmin=2)
+            try:
+                part = np.loadtxt(f, comments="#", ndmin=2)
+            except ValueError:
+                part = np.zeros((0, 0))
             want = np.repeat(np.arange(self.cfg["n_streams"]), hi - lo), np.tile(np.arange(lo, hi), self.cfg["n_streams"])
-            if part.shape != (len(want[0]), len(PLAN_COLUMNS)) or not (
+            # the hash is absent in a run made before it was recorded; the row check still holds there
+            cut = os.path.exists(f + ".sha256") and open(f + ".sha256").read().strip() != sha256_file(f)
+            if cut or part.shape != (len(want[0]), len(PLAN_COLUMNS)) or not (
                     np.array_equal(np.sort(part[:, 0] * 10 ** 9 + part[:, 1]), want[0] * 10 ** 9 + want[1])):
                 raise SystemExit("plan file %s does not hold draws [%d, %d) of %d streams; it was cut or edited"
                                  % (f, lo, hi, self.cfg["n_streams"]))
@@ -340,12 +377,13 @@ def certificate(run, hist, rows, stat):
     per_stream = int(len(cur["plan"]["ok"]) // cfg["n_streams"])
     res = estimator.frozen_estimate(cfg, cur["plan"], cur["lnl"])
     engine_file = run.p("engine.json")
-    res.update(version=v, per_stream=per_stream, draws=int(len(cur["plan"]["ok"])), ledger=stat,
+    res.update(format=CERT_FORMAT, version=v, per_stream=per_stream, draws=int(len(cur["plan"]["ok"])), ledger=stat,
                open_indices=int((cur["plan"]["ok"] & np.isnan(cur["lnl"])).sum()), certified=res["stop"],
                proposals=[os.path.basename(f) for f in sorted(glob.glob(run.p("artifacts", "proposal-v??-*.json")))],
                plans={os.path.basename(f): sha256_file(f) for f in run.plan_files(v)[0]},
                fits=[h["fit"] for h in hist if h["fit"]], config=cfg,
                engine_sha256=sha256_file(engine_file) if os.path.exists(engine_file) else None,
+               engine_history=engine_history(run.path),
                integrator=dict(n_max_samples=cfg["n_max_samples"], note=(
                    "each ln L is one Monte Carlo estimate at this sample count; ln Z and its "
                    "error do not include that estimate's bias")),
@@ -354,7 +392,9 @@ def certificate(run, hist, rows, stat):
                         "4% of certified rounds in simulation, for weight tails up to index 0.6.  A failed row has "
                         "weight zero and lowers ln Z by an amount that depends on the weight it would have had.  "
                         "A collapsed row is one whose extrinsic integral the sampler reported as collapsed: its "
-                        "ln L is a lower bound, and `collapsed` gives the share of the weight such rows carry."))
+                        "ln L is a lower bound, and `collapsed` gives the share of the weight such rows carry.  "
+                        "`engine_history` with more than one entry means the engine file changed during the run "
+                        "and a start accepted the change as giving the same likelihood."))
     tables = product_tables(run, cur, rows, v, res)
     return res, tables
 
@@ -406,10 +446,19 @@ def status(run):
     return out
 
 
+def _held_in(old, new):
+    """Every value `old` holds is the one `new` holds; fixed texts are not compared."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        return all(k in CERT_TEXTS or (k in new and _held_in(v, new[k])) for k, v in old.items())
+    return canonical(old) == canonical(new)
+
+
 def verify(run):
     """Refit each proposal from the ledger and the recorded plans; compare with the
     published artifact.  Also build the certificate and its two tables again from the same
-    files, and compare every field and both tables with what the directory holds."""
+    files, and compare every field and both tables with what the directory holds.  A
+    certificate of another format is compared on the fields it holds, texts apart, and the
+    fields it lacks are listed.  A finished run without a certificate does not verify."""
     arts, (rows, stat) = run.artifacts(), run.ledger()
     hist = load_history(run, arts, rows)
     out = dict(fits=[], certificate=None)
@@ -422,9 +471,14 @@ def verify(run):
         cert = json.load(open(run.p("certificate.json")))
         res, tables = certificate(run, hist, rows, stat)
         res = json.loads(canonical(res))
-        differs = sorted(k for k in set(res) | set(cert) if res.get(k) != cert.get(k))
+        if cert.get("format", 1) == CERT_FORMAT:
+            differs = sorted(k for k in set(res) | set(cert) if canonical(res.get(k)) != canonical(cert.get(k)))
+            skipped = []
+        else:
+            differs = sorted(k for k in cert if k not in CERT_TEXTS and not (k in res and _held_in(cert[k], res[k])))
+            skipped = sorted((set(res) - set(cert)) | (set(cert) & set(CERT_TEXTS)))
         out["certificate"] = dict(
-            same_result=not differs, differs=differs,
+            same_result=not differs, differs=differs, format=cert.get("format", 1), not_compared=skipped,
             lnZ_difference=res["estimate"]["lnZ"] - cert["estimate"]["lnZ"],
             n_eff_difference=res["estimate"]["n_eff"] - cert["estimate"]["n_eff"],
             plans_match={os.path.basename(f): sha256_file(f) == cert["plans"].get(os.path.basename(f))
@@ -432,6 +486,9 @@ def verify(run):
             tables_match={name: os.path.exists(run.p(name))
                           and sha256_file(run.p(name)) == hashlib.sha256(text.encode()).hexdigest()
                           for name, text in tables.items()})
+    elif (run.head() or {}).get("state") == "DONE":
+        out["certificate"] = dict(same_result=False, differs=["certificate.json is missing"], plans_match={},
+                                  tables_match={})
     return out
 
 

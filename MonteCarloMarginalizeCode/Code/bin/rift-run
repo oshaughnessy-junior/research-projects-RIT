@@ -13,8 +13,9 @@ DIR/certificate.json and DIR/posterior_samples.dat.
 
 Exit status: 0 certified; 3 time budget spent (start again to resume); 4 stopped without
 a certificate; 5 an engine left the NoLoop likelihood path; 6 the engine is not working
-(three launches in a row left rows missing and gave no evidence against one point).
-`verify` and `replay` exit 1 when what they recompute differs.
+(in three launches in a row no engine finished its lease or gave evidence against one
+point).  `verify`, `replay` and `replay-check` exit 1 when what they recompute differs;
+`verify` also when a finished run has no certificate.
 """
 import argparse
 import json
@@ -45,6 +46,9 @@ def parse():
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="configuration value at the first start (see RIFT.ledger.controller.DEFAULTS)")
     ap.add_argument("--chaos", default="", help="testing: engine=N kills N engines on purpose, after lo=SEC to hi=SEC (seed=S) or at rows=K lines")
+    ap.add_argument("--accept-engine-change", action="store_true",
+                    help="engine.json was edited since the last start and gives the same likelihood (a moved run); "
+                         "the certificate lists both versions")
     ap.add_argument("--replay-keys", type=int, default=64)
     return ap.parse_args()
 
@@ -104,6 +108,7 @@ def main():
         if not os.path.exists(os.path.join(opts.run_dir, "config.json")):
             first_start(opts)
         engine = load_engine(opts.run_dir)
+        controller.engine_history(opts.run_dir, accept_change=opts.accept_engine_change, record=True)
         gpus = [g for g in (opts.engine_gpus or "").split(",") if g]
         return inproc.run(os.path.abspath(opts.run_dir), engine["command"], cwd=engine["cwd"], engines=opts.engines,
                           gpus=gpus, budget=opts.budget, chaos=opts.chaos, cleanup=engine.get("cleanup"))
@@ -132,7 +137,9 @@ def main():
         print(json.dumps(out, indent=1))
         return 0 if out["keys"] == lease["n"] and out["identical"] == out["keys"] else 1
     elif opts.command == "replay-check":
-        print(json.dumps(controller.replay_check(run), indent=1))
+        out = controller.replay_check(run)
+        print(json.dumps(out, indent=1))
+        return 0 if out["keys"] and out["identical"] == out["keys"] else 1
     return 0
 
 

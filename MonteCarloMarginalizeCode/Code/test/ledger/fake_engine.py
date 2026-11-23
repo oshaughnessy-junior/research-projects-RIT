@@ -8,7 +8,7 @@ and the evidence is exactly 1.  Each row gets mean-one lognormal noise fixed by 
 as the real engine seeds its sampler by the key.  LEDGER_FAKE_SLEEP seconds pass per row
 so a test can kill the process inside a lease.  LEDGER_FAKE_UNKEYED=1 draws the noise
 from the clock: the mutant a kill test must catch.  LEDGER_FAKE_FAIL=f reports a fraction f
-of the keys as FAILED.
+of the keys as FAILED.  LEDGER_FAKE_COLLAPSED=f marks a fraction f of the rows as collapsed.
 """
 import json
 import os
@@ -55,6 +55,8 @@ def main():
             z = (loose or np.random.default_rng([meta["seed"], 77, ver, s, i])).standard_normal()
             row = dict(v=ver, s=s, i=i, status="OK", lnL=float(v + SIGMA * z - 0.5 * SIGMA ** 2), sigma=SIGMA,
                        point=[float(x) for x in g])
+            if np.random.default_rng([meta["seed"], 99, ver, s, i]).random() < float(os.environ.get("LEDGER_FAKE_COLLAPSED", "0")):
+                row["collapsed"] = True
             f.write(json.dumps(row) + "\n")
             f.flush()
 

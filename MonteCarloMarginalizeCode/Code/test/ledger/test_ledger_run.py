@@ -3,8 +3,10 @@
 fake_engine.py evaluates ln L = ln N(A; MU, COV) - ln p(A): the posterior of block A is
 that Gaussian and the evidence is 1.  No real likelihood is involved.
 """
+import gzip
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -255,6 +257,11 @@ def test_an_engine_that_cannot_start_stops_the_run(tmp_path):
     for _ in range(2):                       # nor do repeated starts
         assert run_bounded(cmd, env=env).returncode == 6
     assert controller.Run(run_dir).ledger()[0] == {}
+    run_dir = str(tmp_path / "broken4")      # three launches end the run, however many engines one launch has
+    cmd, env = _command(run_dir, ["--engines", "4"])
+    cmd[cmd.index("--engine-command") + 1] = "exit 7"
+    assert run_bounded(cmd, env=env).returncode == 6
+    assert len(open(os.path.join(run_dir, "ctl", "leases.jsonl")).readlines()) == 12
 
 
 def test_draws_differ_between_streams_and_between_versions():
@@ -486,6 +493,14 @@ def test_exit_statuses(tmp_path):
         f.write("some line\n" + inproc.OFF_NOLOOP[0] + "\n")
     assert run_bounded(cmd, env=env).returncode == 5
     assert controller.Run(run_dir).head()["state"] == "FAILED" and controller.Run(run_dir).ledger()[0] == {}
+    run_dir = str(tmp_path / "packed")       # the line is in the second of two logs, and that one is compressed
+    cmd, env = _command(run_dir)
+    assert run_bounded(cmd + ["--budget", "1"], env=env).returncode == 3
+    with open(os.path.join(run_dir, "logs", "lease-v01-n0000.log"), "w") as f:
+        f.write("some line\n")
+    with gzip.open(os.path.join(run_dir, "logs", "lease-v01-n0001.log.gz"), "wt") as f:
+        f.write("some line\n" + inproc.OFF_NOLOOP[1] + "\n")
+    assert run_bounded(cmd, env=env).returncode == 5
 
 
 def test_failed_evaluations_end_a_run_and_never_a_certificate(clean_run, tmp_path):
@@ -579,6 +594,16 @@ def test_the_engine_writes_keyed_rows_at_the_lease_sample_count(stub_run):
                          env=env, cwd=work, stdout=subprocess.PIPE, text=True)
     assert out.returncode == 0, out.stdout
     assert json.loads(out.stdout)["identical"] == 8
+    again = os.path.join(run_dir, "replay", "rows.jsonl")          # one replayed row differs: both commands say so
+    text = open(again).read()
+    lines = [json.loads(x) for x in text.split("\n") if x]
+    for field, value in (("lnL", lines[0]["lnL"] + 1.0), ("ntotal", lines[0]["ntotal"] + 1), ("collapsed", True)):
+        open(again, "w").write("\n".join(json.dumps(dict(x, **{field: value}) if n == 0 else x)
+                                         for n, x in enumerate(lines)) + "\n")
+        out = run_bounded([sys.executable, "-B", RIFT_RUN, "replay-check", "--run-dir", run_dir], env=env, cwd=work,
+                          stdout=subprocess.PIPE, text=True)
+        assert out.returncode == 1 and json.loads(out.stdout)["identical"] == 7, field
+    open(again, "w").write(text)
 
 
 def _engine_on_three_points(stub_run, tmp_path, flags=(), fault=None, row=None):
@@ -707,6 +732,32 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
     shutil.rmtree(str(tmp_path / "ok"))
 
 
+@pytest.mark.parametrize("fault, row, status, want", [
+    ("STUB_CUDA_SAMPLER", 1, 62, ["OK"]), ("STUB_CUDA_SAMPLER", 0, 62, []),
+    ("STUB_NAN_RESULT", 1, 0, ["OK", "FAILED", "OK"]), ("STUB_NAN_RESULT", 0, 0, ["FAILED", "OK", "OK"]),
+    ("STUB_NO_SAMPLER", 1, 0, ["OK", "FAILED", "OK"]), ("STUB_NO_SAMPLER", 0, 0, ["FAILED", "OK", "OK"]),
+    ("STUB_EXIT0", 1, 0, ["OK", "FAILED"]), ("STUB_EXIT0", 0, 0, ["FAILED"]),
+    ("STUB_CAUGHT_INSIDE", 0, 0, ["OK", "OK", "OK"]), ("STUB_CAUGHT_INSIDE", 1, 0, ["OK", "OK", "OK"])])
+def test_how_ile_leaves_a_point_decides_its_line(stub_run, tmp_path, fault, row, status, want):
+    """Protects: a point on which ILE exits with an error status gets no line and stays in
+    flight; a result that is not finite, a return without a sampler call, and an exit with
+    status 0 inside a point each give a FAILED line; an exception ILE catches inside the point
+    does not.  Each holds for the first point of a lease, which is followed by a trace function,
+    and for a later one.  Oracle: analytic."""
+    got, lines, shard = _engine_on_three_points(stub_run, tmp_path, fault=fault, row=row)
+    lines.sort(key=lambda x: x["lease_row"])
+    assert got == status and [x["status"] for x in lines] == want
+    assert [x["lease_row"] for x in lines] == list(range(len(want)))
+    if status:
+        assert json.load(open(shard + ".inflight"))["key"][1:] == json.load(open(str(tmp_path / "lease.json")))["keys"][row]
+    else:
+        assert not os.path.exists(shard + ".inflight")
+    reason = dict(STUB_NAN_RESULT="not finite", STUB_NO_SAMPLER="without a sampler result",
+                  STUB_EXIT0="without a sampler result").get(fault)
+    if reason:
+        assert reason in lines[row]["reason"]
+
+
 def _stub_command(work, extra=()):
     work.mkdir(exist_ok=True)
     (work / "args_ile.txt").write_text("X --manual-logarithm-offset 0 --time-marginalization --vectorized --gpu "
@@ -781,6 +832,130 @@ def test_an_engine_that_dies_on_every_point_marks_none(tmp_path, fault):
     assert run.ledger()[0] == {}
     leases = [json.loads(x) for x in open(run.p("ctl", "leases.jsonl"))]
     assert len(leases) == 6 and all(x.get("not_working") for x in leases)
+
+
+def test_a_device_lost_in_mid_run_fails_no_point(tmp_path):
+    """Protects: when the device goes after some points of a lease, the engine dies on every
+    point from then on, the run ends with exit 6 at each start, and no point is marked failed:
+    a strike needs a row from the same launch.  With the device back every point is evaluated.
+    Oracle: analytic (7 rows OK and none FAILED while it is lost; 20 OK after)."""
+    cmd, env = _stub_command(tmp_path / "w")
+    env.update(STUB_LOST_AFTER="7", STUB_COUNT_FILE=str(tmp_path / "count"))
+    run = None
+    for _ in range(2):
+        assert run_bounded(cmd, env=env, cwd=str(tmp_path / "w")).returncode == 6
+        run = controller.Run(str(tmp_path / "w" / "ledger"))
+        assert sorted(r["status"] for r in run.ledger()[0].values()) == ["OK"] * 7
+    leases = [json.loads(x) for x in open(run.p("ctl", "leases.jsonl"))]
+    assert sum("strike" in x for x in leases) == 1 and not any(x.get("recorded_failed") for x in leases)
+    del env["STUB_LOST_AFTER"]
+    assert run_bounded(cmd, env=env, cwd=str(tmp_path / "w")).returncode == 4
+    assert sorted(r["status"] for r in run.ledger()[0].values()) == ["OK"] * 20
+
+
+@pytest.fixture(scope="module")
+def changed_run(tmp_path_factory):
+    """A certified run whose engine file was edited between two starts, with some rows marked
+    collapsed.  Returns the directory and the exit status and output of the refused start."""
+    run_dir = str(tmp_path_factory.mktemp("ledger") / "changed")
+    cmd, env = _command(run_dir)
+    env["LEDGER_FAKE_COLLAPSED"] = "0.05"
+    assert run_bounded(cmd + ["--budget", "1"], env=env).returncode == 3
+    path = os.path.join(run_dir, "engine.json")
+    spec = json.load(open(path))
+    open(path, "w").write(json.dumps(dict(spec, command=spec["command"] + " ")))
+    refused = run_bounded(cmd, env=env, stderr=subprocess.PIPE, text=True)
+    assert run_bounded(cmd + ["--accept-engine-change"], env=env).returncode == 0
+    return run_dir, refused.returncode, refused.stderr
+
+
+def test_a_run_does_not_change_its_engine_unnoticed(changed_run, tmp_path):
+    """Protects: rows do not name the command that made them, so a start refuses an engine file
+    that changed since the last start; a change the user accepts is listed in the certificate;
+    and a configuration edited after the first start is refused.  Oracle: analytic."""
+    run_dir, status, message = changed_run
+    assert status not in (0, 3) and "--accept-engine-change" in message
+    cert = json.load(open(os.path.join(run_dir, "certificate.json")))
+    assert cert["certified"] and len(cert["engine_history"]) == 2 and cert["engine_history"][1] == cert["engine_sha256"]
+    assert controller.Run(run_dir).ledger()[0], "the refused start ran no engine, the accepted one did"
+    copy = str(tmp_path / "copy")
+    shutil.copytree(run_dir, copy)
+    cfg = json.load(open(os.path.join(copy, "config.json")))
+    open(os.path.join(copy, "config.json"), "w").write(json.dumps(dict(cfg, n_max_samples=1000), indent=1, sort_keys=True))
+    with pytest.raises(SystemExit) as err:
+        controller.Run(copy)
+    assert "edited after the run began" in str(err.value)
+    with pytest.raises(ValueError):
+        controller.init(str(tmp_path / "new"), Box.from_json(fake_engine.BOX), min_extension=0)
+
+
+def test_the_certificate_counts_collapsed_rows_of_the_frozen_round(changed_run):
+    """Protects: the certificate's count of collapsed rows and their share of the weight are
+    those of the frozen round's rows.  Oracle: differential, against a count and a weight sum
+    made here from the ledger and the plan."""
+    run_dir = changed_run[0]
+    run = controller.Run(run_dir)
+    cert = json.load(open(os.path.join(run_dir, "certificate.json")))
+    rows, pl = run.ledger()[0], run.plan(cert["version"])
+    ln_w, marked = [], []
+    for j in np.flatnonzero(pl["ok"]):
+        r = rows[(cert["version"], int(pl["stream"][j]), int(pl["index"][j]))]
+        ln_w.append(r["lnL"] - run.cfg["lnl_offset"] + pl["ln_pq"][j])
+        marked.append(bool(r.get("collapsed")))
+    w, marked = np.exp(np.array(ln_w) - max(ln_w)), np.array(marked)
+    assert cert["collapsed"]["rows"] == marked.sum() > 5
+    assert 0 < cert["collapsed"]["weight_share"] < 0.5
+    assert abs(cert["collapsed"]["weight_share"] / (w[marked].sum() / w.sum()) - 1) < 1e-9
+
+
+def test_verify_reads_an_older_certificate_and_refuses_a_damaged_run(clean_run, tmp_path):
+    """Protects: `rift-run verify` passes a certificate written before fields were added, on
+    the fields it holds, and still fails it when one of those is wrong; it fails a certificate
+    of the current format with a field too many or too few, and a finished run with no
+    certificate; a plan with bytes missing from its last number, or with one row in place of
+    another, is refused by name.  Oracle: analytic."""
+    run_dir = str(tmp_path / "copy")
+    shutil.copytree(clean_run, run_dir)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([CODE, os.environ.get("PYTHONPATH", "")]))
+    verify = [sys.executable, "-B", RIFT_RUN, "verify", "--run-dir", run_dir]
+    path = os.path.join(run_dir, "certificate.json")
+    cert = json.load(open(path))
+
+    def check(edited):
+        open(path, "w").write(json.dumps(edited))
+        out = run_bounded(verify, env=env, stdout=subprocess.PIPE, text=True)
+        open(path, "w").write(json.dumps(cert))
+        return out.returncode, json.loads(out.stdout)["certificate"]
+
+    assert check(cert)[0] == 0
+    old = {k: v for k, v in cert.items() if k not in ("format", "engine_history", "engine_sha256", "collapsed")}
+    old.update(reading="an earlier wording", products={k: v for k, v in cert["products"].items() if k != "sha256"})
+    status, said = check(old)
+    assert status == 0 and said["format"] == 1 and "engine_history" in said["not_compared"]
+    assert check(dict(old, draws=old["draws"] + 4))[0] == 1
+    assert check(dict(old, estimate=dict(old["estimate"], lnZ=old["estimate"]["lnZ"] + 0.01)))[0] == 1
+    assert check(dict(cert, extra=1))[0] == 1
+    assert check({k: v for k, v in cert.items() if k != "collapsed"})[0] == 1
+    os.rename(path, path + ".away")
+    assert run_bounded(verify, env=env, stdout=subprocess.DEVNULL).returncode == 1, "a finished run with no certificate"
+    os.rename(path + ".away", path)
+    plan = os.path.join(run_dir, "plans", sorted(cert["plans"])[-1])
+    text = open(plan).read()
+    for damaged, hashed in ((text[:-9] + "\n", True), (text[:-40], True), (text[:-40], False)):
+        open(plan, "w").write(damaged)
+        if not hashed:                                     # as in a run made before plan hashes were recorded
+            os.rename(plan + ".sha256", plan + ".away")
+        with pytest.raises(SystemExit) as err:
+            controller.Run(run_dir).plan(cert["version"])
+        assert "cut or edited" in str(err.value), (len(damaged), hashed)
+        if not hashed:
+            os.rename(plan + ".away", plan + ".sha256")
+    lines = text.split("\n")                 # one row in place of another, in a run made before plan hashes
+    open(plan, "w").write("\n".join(lines[:3] + [lines[2]] + lines[4:]))
+    os.rename(plan + ".sha256", plan + ".away")
+    with pytest.raises(SystemExit) as err:
+        controller.Run(run_dir).plan(cert["version"])
+    assert "cut or edited" in str(err.value)
 
 
 def test_reported_parameters_and_the_prior_density():
