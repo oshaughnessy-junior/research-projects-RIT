@@ -3,6 +3,7 @@
 fake_engine.py evaluates ln L = ln N(A; MU, COV) - ln p(A): the posterior of block A is
 that Gaussian and the evidence is 1.  No real likelihood is involved.
 """
+import glob
 import gzip
 import json
 import os
@@ -1042,9 +1043,30 @@ def _pilots(run_dir, n, extra=(), env_each=None, command=None):
 
 
 def _engines_of(run_dir):
-    """Process ids of engines working on this run directory, from their command lines."""
-    out = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
-    return [int(x.split()[0]) for x in out.split("\n") if run_dir in x and "fake_engine.py" in x and "rift-run" not in x]
+    """{process id: lease} of the engines of this run that are alive, from the claim lines of
+    its pilots' logs.  It does not read `ps`, whose output differs between systems."""
+    live = {}
+    for path in glob.glob(os.path.join(run_dir, "ctl", "pilots", "*.jsonl")):
+        for line in open(path):
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("event") == "claim":
+                try:
+                    os.kill(ev["pid"], 0)
+                except OSError:
+                    continue
+                live[ev["pid"]] = ev["lease"]
+    return live
+
+
+def _pilot_logs(run_dir):
+    """What each pilot did, for a failure message."""
+    out = {}
+    for path in glob.glob(os.path.join(run_dir, "ctl", "pilots", "*.jsonl")):
+        out[os.path.basename(path)[:-6]] = [json.loads(x).get("event") for x in open(path) if x.strip()][:12]
+    return out
 
 
 def _records(run_dir):
@@ -1086,18 +1108,19 @@ def test_a_pilot_that_vanishes_costs_no_point(clean_run, tmp_path):
         if held and _engines_of(run_dir):
             break
     else:
-        pytest.fail("the slow pilot never claimed a lease")
+        pytest.fail("the slow pilot never claimed a lease: its exit status is %r, pilots did %r" % (
+            victim.poll(), _pilot_logs(run_dir)))
     lease = held[0].split(".")[0]
     time.sleep(0.5)
+    engines = [pid for pid, name in _engines_of(run_dir).items() if name == lease]
+    assert len(engines) == 1
     victim.send_signal(signal.SIGKILL)
     victim.wait()
-    out = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
-    for line in out.split("\n"):                          # a node that dies takes its engine along
-        if run_dir in line and lease + ".dat" in line and "fake_engine.py" in line:
-            try:
-                os.kill(int(line.split()[0]), signal.SIGKILL)
-            except OSError:
-                pass
+    for pid in engines:                                    # a node that dies takes its engine along
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            pass
     assert other.wait(timeout=400) == 0
     a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
     assert a["estimate"] == b["estimate"] and b["failed_rows"] == 0
@@ -1118,10 +1141,12 @@ def test_a_pilot_told_to_stop_says_so_and_any_pilot_resumes(clean_run, tmp_path)
         time.sleep(0.1)
         if _engines_of(run_dir):
             break
+    else:
+        pytest.fail("the pilot started no engine: its exit status is %r, pilots did %r" % (pilot.poll(), _pilot_logs(run_dir)))
     pilot.send_signal(signal.SIGTERM)
     assert pilot.wait(timeout=60) == 3
     time.sleep(0.2)
-    assert _engines_of(run_dir) == []
+    assert _engines_of(run_dir) == {}
     recs = _records(run_dir)
     assert [r["killed"] for r in recs if r["missing"]] == [True] and not any(r.get("stale") for r in recs)
     (pilot,) = _pilots(run_dir, 1)

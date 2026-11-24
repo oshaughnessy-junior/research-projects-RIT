@@ -398,7 +398,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 eng = subprocess.Popen(cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT, start_new_session=True,
                                        cwd=cwd, env=env)
                 slots[slot] = dict(ticket=ticket, path=path, base=base, logf=logf, lf=lf, eng=eng, t0=time.time())
-                sp.event("claim", lease=base, rows=ticket["n"])
+                sp.event("claim", lease=base, rows=ticket["n"], pid=eng.pid)
                 busy = True
             if len(slots) < engines and sp.tick(fleet, min_lease_rows, cleanup) in ("run", "again", "done", "failed", "over"):
                 busy = True
