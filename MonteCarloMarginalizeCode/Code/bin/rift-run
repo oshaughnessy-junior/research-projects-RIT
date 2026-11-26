@@ -39,8 +39,8 @@ def parse():
                          "share --run-dir on a filesystem their hosts share")
     ap.add_argument("--fleet", type=int, default=1, help="spool: engine slots expected over all pilots; a version's "
                     "rows are cut into at least this many leases")
-    ap.add_argument("--stale-after", type=float, default=180.0, help="spool: seconds without a heartbeat after which "
-                    "another pilot closes a pilot's lease as stopped")
+    ap.add_argument("--stale-after", type=float, default=180.0, help="spool: seconds for which a pilot's card must stand still before "
+                    "another pilot closes its lease as stopped")
     ap.add_argument("--min-lease-rows", type=int, default=32, help="spool: no lease is cut smaller than this")
     ap.add_argument("--poll", type=float, default=2.0, help="spool: seconds between looks at the spool while idle")
     ap.add_argument("--ile-args-file", help="ILE argument line (pseudo_pipe args_ile.txt); read at the first start")

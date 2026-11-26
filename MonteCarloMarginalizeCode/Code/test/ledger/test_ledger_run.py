@@ -1131,6 +1131,82 @@ def test_a_pilot_that_vanishes_costs_no_point(clean_run, tmp_path):
     assert all(r["status"] == "OK" for r in controller.Run(run_dir).ledger()[0].values())
 
 
+def test_a_lease_is_judged_by_its_pilots_counter_and_never_by_a_file_time(tmp_path):
+    """Protects: a pilot on another host is judged by the content of its card.  With every file
+    time a day old, as when an NFS client keeps the times it sets to itself, a lease is live
+    while the card names it under a counter that advances.  It is closed once the watcher has
+    seen the counter stop, the card stop naming the lease, or no card, for stale_after seconds
+    of the watcher's own clock, and not before.  Oracle: analytic."""
+    run_dir, t = str(tmp_path / "run"), [5000.0]
+    watcher = spool.Spool(run_dir, "w", 90.0)
+    watcher.clock = lambda: t[0]
+    worker = spool.Spool(run_dir, "p", 90.0, card=dict(slots=3))
+    day_old = time.time() - 86400
+
+    def claimed(lease, pilot):
+        path = watcher.p("claimed", "%s.%s.json" % (lease, pilot))
+        open(path, "w").write("{}")
+        os.utime(path, (day_old, day_old))
+
+    def beat(leases, seconds):
+        worker.beat(leases)
+        os.utime(worker.card, (day_old, day_old))
+        t[0] += seconds
+
+    claimed("lease-a", "p")
+    for _ in range(40):                                    # 600 s of a live pilot whose file times stand still
+        beat(["lease-a"], 15.0)
+        assert not watcher.worth_a_tick(set())
+    assert watcher.live_slots() == 3
+    t[0] += 89.0                                           # the counter stops; the watcher has seen it still for 89 s
+    assert not watcher.worth_a_tick(set()) and watcher.live_slots() == 3
+    t[0] += 2.0
+    assert watcher.worth_a_tick(set()) and watcher.live_slots() == 0
+    assert watcher.idle(watcher.outstanding()[0]) == {"lease-a": 91.0}
+    beat(["lease-a"], 0.0)                                 # it moves again: live again
+    assert not watcher.worth_a_tick(set()) and watcher.live_slots() == 3
+
+    claimed("lease-b", "p")                                # a ticket its pilot's card never names
+    for _ in range(6):
+        beat(["lease-a"], 15.0)
+        assert not watcher.worth_a_tick(set())
+    beat(["lease-a"], 16.0)
+    idle = watcher.idle(watcher.outstanding()[0])
+    assert idle == {"lease-a": 0.0, "lease-b": 91.0} and watcher.worth_a_tick(set())
+
+    newcomer = spool.Spool(run_dir, "n", 90.0)             # a pilot that has just started has seen nothing
+    newcomer.clock = lambda: t[0]
+    claimed("lease-c", "gone")                             # a ticket of a pilot with no card
+    assert not newcomer.worth_a_tick(set())
+    t[0] += 91.0
+    assert newcomer.idle(newcomer.outstanding()[0]) == {"lease-a": 91.0, "lease-b": 91.0, "lease-c": 91.0}
+
+
+def test_a_lease_longer_than_stale_after_stays_with_its_living_pilot(tmp_path):
+    """Protects: a pilot whose engine runs keeps its card's counter moving and its lease named,
+    so that a free pilot that watches it for several times stale_after does not close the
+    lease.  Oracle: analytic (two leases, two records, none stale, no row twice)."""
+    run_dir = str(tmp_path / "long")
+    pilots = _pilots(run_dir, 2, ["--stale-after", "2"],
+                     env_each=[dict(LEDGER_FAKE_SLEEP="0.003"), dict(LEDGER_FAKE_SLEEP="0.016")])
+    done = os.path.join(run_dir, "spool", "done")
+    for _ in range(1200):
+        time.sleep(0.1)
+        if os.path.isdir(done) and len(os.listdir(done)) >= 2:
+            break
+    else:
+        pytest.fail("two leases did not end: pilots did %r" % _pilot_logs(run_dir))
+    for p in pilots:
+        p.send_signal(signal.SIGTERM)
+    for p in pilots:
+        p.wait(timeout=60)
+    recs = sorted(_records(run_dir), key=lambda r: r["lease"])[:2]
+    assert [r["lease"] for r in recs] == ["lease-v01-n0000", "lease-v01-n0001"]
+    assert not any(r.get("stale") or r["killed"] or r["missing"] for r in recs), recs
+    assert max(r["wall"] for r in recs) > 3 * 2.0 and len(set(r["pilot"] for r in recs)) == 2
+    assert controller.Run(run_dir).ledger()[1]["repeats"] == 0
+
+
 def test_a_pilot_told_to_stop_says_so_and_any_pilot_resumes(clean_run, tmp_path):
     """Protects: on SIGTERM, which a scheduler sends before it removes a job, a pilot stops its
     engine, records that it did, and exits with status 3; a later pilot finishes the run with

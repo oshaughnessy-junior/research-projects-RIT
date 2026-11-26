@@ -12,10 +12,10 @@ job.  There is no other process.  Each copy is a pilot with `engines` slots, and
 Files, all under the run directory:
 
     spool/open/<lease>.json             a ticket: the lease the controller wrote
-    spool/claimed/<lease>.<pilot>.json  the same ticket after one pilot renamed it; that pilot
-                                        keeps its modification time fresh while the engine runs
+    spool/claimed/<lease>.<pilot>.json  the same ticket after one pilot renamed it
     spool/done/<lease>.json             the record of the launch (inproc.lease_record)
-    spool/pilots/<pilot>.json           host and slots; its modification time is the heartbeat
+    spool/pilots/<pilot>.json           the pilot's card: host, slots, the leases its engines
+                                        hold, and a counter it raises while it lives
     ctl/tick.lock, start.lock           exclusive-create locks, broken when stale
     ctl/pilots/<pilot>.jsonl            what one pilot did: start, claims, engine ends, locks broken, exit
 
@@ -23,16 +23,22 @@ Rules.  A claim is one rename, and only its winner holds the new name.  A pilot 
 never judges: the pilot that holds the tick lock applies the one-host transport's rules
 (inproc.settle) to each record once.  A pilot the scheduler stops (SIGTERM) or whose budget
 ends stops its engines and says so in the record, which is evidence of nothing.  A pilot that
-dies without a record is found by its heartbeat: after `stale_after` seconds its lease is
-closed as stopped, its rows stay, and a record it writes later is ignored.  The tick gives
+dies without a record is found by its card.  A claimed lease is live while its pilot's card
+names it under a counter that advances.  A pilot that has watched that stay the same for
+`stale_after` seconds of its own clock closes the lease as stopped; its rows stay, and a
+record written later is ignored.  A pilot that has just started therefore closes nothing
+in its first `stale_after` seconds.  The tick gives
 no second lease to a row a running lease will write, and closes no version while a claimed
 lease has no record: the record carries what the engine's log said about the NoLoop path.
 A pilot whose leases end three times
 in a row with rows missing and no evidence against one point leaves with status 6, so a
 node with a bad device takes three leases at most.
 
-Nothing here uses flock, a process id of another host, or a signal to another pilot.  Ages
-are differences of modification times of files on the shared filesystem.
+Nothing here uses flock, a process id of another host, a signal to another pilot, or a
+clock of another host.  Nor does it read a file time that another pilot set: an NFS 4.2
+client can keep the times it sets on a file it created to itself, and at CIT on 2026-11-26
+no other node saw them, while the content of the file was current at every read.  The two
+locks compare times of creation, which every client sees.
 """
 import glob
 import json
@@ -142,8 +148,10 @@ def start_lock(run_dir, me=None):
 
 
 class Spool:
-    def __init__(self, run_dir, me, stale_after):
+    def __init__(self, run_dir, me, stale_after, card=None):
         self.run_dir, self.me, self.stale_after = run_dir, me, stale_after
+        self.about, self.count = dict(card or {}), 0     # what this pilot's card says of it; its counter
+        self.seen, self.clock = {}, time.monotonic       # {what was watched: (its value, when first seen)}
         for d in ("open", "claimed", "done", "pilots"):
             os.makedirs(self.p(d), exist_ok=True)
         os.makedirs(os.path.join(run_dir, "ctl", "pilots"), exist_ok=True)
@@ -160,17 +168,47 @@ class Spool:
             _log(self.run_dir, os.path.join("pilots", self.me + ".jsonl"), dict(self.lock.broken.pop(), event="lock broken"))
         _log(self.run_dir, os.path.join("pilots", self.me + ".jsonl"), dict(fields, event=what))
 
-    def beat(self, paths=()):
-        for path in (self.card,) + tuple(paths):
-            try:
-                os.utime(path, None)
-            except OSError:
-                pass
+    def beat(self, leases=()):
+        """Write this pilot's card again, naming the leases its engines hold, with the counter one higher."""
+        self.count += 1
+        try:
+            controller.write_atomic(self.card, json.dumps(dict(self.about, leases=sorted(leases), beat=self.count)))
+        except OSError:
+            pass
 
-    def now(self):
-        """The filesystem's time: the modification time of a file this pilot has just touched."""
-        self.beat()
-        return os.stat(self.card).st_mtime
+    def unchanged(self, what, value):
+        """Seconds of this pilot's own clock for which it has seen `what` hold `value`."""
+        now = self.clock()
+        if what not in self.seen or self.seen[what][0] != value:
+            self.seen[what] = (value, now)
+        return now - self.seen[what][1]
+
+    def idle(self, out):
+        """{lease: seconds} for the claimed tickets of `out` (see outstanding): for how long this
+        pilot has seen no sign of life for the lease.  The sign is the counter of the card of
+        the pilot that claimed it, while that card names the lease."""
+        cards, ages = {}, {}
+        for base, (path, pilot) in sorted(out.items()):
+            if pilot is None:
+                continue
+            if pilot not in cards:
+                cards[pilot] = read_json(self.p("pilots", pilot + ".json")) or {}
+            card = cards[pilot]
+            ages[base] = self.unchanged(("lease", base, pilot), card.get("beat") if base in card.get("leases", ()) else None)
+        for what in [w for w in self.seen if w[0] == "lease" and w[1] not in ages]:
+            del self.seen[what]
+        return ages
+
+    def live_slots(self):
+        """Engine slots of the pilots whose counter this pilot has seen advance within stale_after."""
+        slots, names = 0, self.names("pilots")
+        for name in names:
+            card = read_json(self.p("pilots", name))
+            if card and self.unchanged(("card", name), card.get("beat")) <= self.stale_after:
+                slots += int(card.get("slots", 1))
+        for what in [w for w in self.seen if w[0] == "card" and w[1] not in names]:
+            del self.seen[what]
+        return slots
 
     def names(self, d):
         return sorted(n for n in os.listdir(self.p(d)) if n.endswith(".json"))
@@ -189,7 +227,6 @@ class Spool:
             ticket = read_json(dst)
             if ticket is None:
                 continue
-            self.beat([dst])               # a rename keeps the ticket's old time; the heartbeat starts now
             return ticket, dst
         return None
 
@@ -208,14 +245,7 @@ class Spool:
         out, done = self.outstanding()
         if done - settled or not out:
             return True
-        now = self.now()
-        for path, pilot in out.values():
-            try:
-                if pilot is not None and now - os.stat(path).st_mtime > self.stale_after:
-                    return True
-            except OSError:
-                return True
-        return False
+        return any(age > self.stale_after for age in self.idle(out).values())
 
     def tick(self, fleet, min_lease_rows, cleanup=None):
         """One tick under the lock.  Returns the controller's action, "over" after an engine log
@@ -229,15 +259,9 @@ class Spool:
             state.setdefault("strikes", {})
             settled = state.setdefault("settled", [])
             out, done = self.outstanding()
-            now = self.now()
-            # leases whose pilot stopped beating: closed as stopped, which is evidence of nothing
-            for base, (path, pilot) in sorted(out.items()):
-                if pilot is None:
-                    continue
-                try:
-                    age = now - os.stat(path).st_mtime
-                except OSError:
-                    continue
+            # leases with no sign of life: closed as stopped, which is evidence of nothing
+            for base, age in sorted(self.idle(out).items()):
+                path, pilot = out[base]
                 ticket = read_json(path)
                 if age > self.stale_after and ticket is not None:
                     rec = lease_record(ticket, base, os.path.join(self.run_dir, "logs", base + ".log"), None, True, age, cleanup)
@@ -273,15 +297,7 @@ class Spool:
                     continue
                 running += pilot is not None
                 busy.extend((ticket["version"], s, i) for s, i in meta["keys"])
-            slots = 0
-            for name in self.names("pilots"):
-                card = read_json(self.p("pilots", name))
-                try:
-                    if card and now - os.stat(self.p("pilots", name)).st_mtime <= self.stale_after:
-                        slots += int(card.get("slots", 1))
-                except OSError:
-                    pass
-            parts = max(int(fleet), slots - running, 1)
+            parts = max(int(fleet), self.live_slots() - running, 1)
             stale_tickets = [path for path, pilot in out.values() if pilot is None]
             while True:
                 act = controller.tick(controller.Run(self.run_dir), parts, defer=state.get("defer", []), busy=busy,
@@ -311,8 +327,8 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     engine slots expected over all pilots: a version's rows are cut into at least that many
     leases, and a pilot that arrives late finds the ones not yet claimed."""
     me = pilot_id()
-    sp = Spool(run_dir, me, stale_after)
-    controller.write_atomic(sp.card, json.dumps(dict(host=socket.gethostname(), slots=int(engines), pid=os.getpid())))
+    sp = Spool(run_dir, me, stale_after, card=dict(host=socket.gethostname(), slots=int(engines), pid=os.getpid()))
+    sp.beat()
     sp.event("start", host=socket.gethostname(), slots=int(engines), fleet=int(fleet), stale_after=stale_after)
 
     def leave(status):
@@ -323,7 +339,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
         return _stop_off_noloop(run_dir, off)
     t_end = time.time() + budget
     slots = {}                # slot -> dict(ticket, path, base, logf, lf, eng, t0)
-    stopping, barren, last_beat = [False], 0, 0.0
+    stopping, barren, last_beat = [False], 0, None
 
     def on_term(signum, frame):
         stopping[0] = True
@@ -353,9 +369,10 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     old = signal.signal(signal.SIGTERM, on_term)
     try:
         while True:
-            if time.time() - last_beat > stale_after / 6.0:
-                sp.beat([job["path"] for job in slots.values()])
-                last_beat = time.time()
+            if last_beat is None or time.monotonic() - last_beat > stale_after / 6.0:
+                sp.beat(job["base"] for job in slots.values())
+                sp.idle(sp.outstanding()[0])      # a pilot with no free slot watches the others too
+                last_beat = time.monotonic()
             for slot in [s for s, job in slots.items() if job["eng"].poll() is not None]:
                 finish(slot, False)
             head = read_json(os.path.join(run_dir, "HEAD.json"))
@@ -398,6 +415,7 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 eng = subprocess.Popen(cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT, start_new_session=True,
                                        cwd=cwd, env=env)
                 slots[slot] = dict(ticket=ticket, path=path, base=base, logf=logf, lf=lf, eng=eng, t0=time.time())
+                sp.beat(job["base"] for job in slots.values())      # the card names the lease from now on
                 sp.event("claim", lease=base, rows=ticket["n"], pid=eng.pid)
                 busy = True
             if len(slots) < engines and sp.tick(fleet, min_lease_rows, cleanup) in ("run", "again", "done", "failed", "over"):
