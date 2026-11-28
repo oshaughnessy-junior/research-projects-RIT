@@ -135,7 +135,12 @@ class Run:
         return sha
 
     def head(self):
-        return json.load(open(self.p("HEAD.json"))) if os.path.exists(self.p("HEAD.json")) else None
+        """HEAD.json, or None if the run directory does not list it.  Whether it exists is read
+        from a listing, never by asking for the name: on a shared filesystem a host that asked
+        before another host wrote the file can be told for most of a minute that it is absent
+        (RIFT/ledger/spool.py), and a tick that believed that would write HEAD again from the
+        last artifact, over a run that had been stopped."""
+        return json.load(open(self.p("HEAD.json"))) if "HEAD.json" in os.listdir(self.path) else None
 
     def set_head(self, **kw):
         write_atomic(self.p("HEAD.json"), canonical(kw))

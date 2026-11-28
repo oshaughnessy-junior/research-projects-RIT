@@ -17,6 +17,7 @@ Files, all under the run directory:
     spool/pilots/<pilot>.json           the pilot's card: host, slots, the leases its engines
                                         hold, and a counter it raises while it lives
     ctl/tick.lock, start.lock           exclusive-create locks, broken when stale
+    <lock>.gate                         held for the instant in which a lock is broken or released
     ctl/pilots/<pilot>.jsonl            what one pilot did: start, claims, engine ends, locks broken, exit
 
 Rules.  A claim is one rename, and only its winner holds the new name.  A pilot records and
@@ -29,7 +30,12 @@ names it under a counter that advances.  A pilot that has watched that stay the 
 record written later is ignored.  A pilot that has just started therefore closes nothing
 in its first `stale_after` seconds.  The tick gives
 no second lease to a row a running lease will write, and closes no version while a claimed
-lease has no record: the record carries what the engine's log said about the NoLoop path.
+lease has no record or a record is unread: the record carries what the engine's log said
+about the NoLoop path.  Every tick counts the lines off that path over every record, and
+stops the run before it writes anything else, so the stop does not depend on the tick that
+first read the record.  A record, like a lock, is written under another name and linked, so
+its name never shows without its content.  A launch that ended on SIGTERM was stopped,
+whether the signal reached the pilot first or its engine.
 A pilot whose leases end three times
 in a row with rows missing and no evidence against one point leaves with status 6, so a
 node with a bad device takes three leases at most.
@@ -38,8 +44,13 @@ Nothing here uses flock, a process id of another host, a signal to another pilot
 clock of another host.  Nor does it read a file time that another pilot set: an NFS 4.2
 client can keep the times it sets on a file it created to itself, and at CIT on 2026-11-26
 no other node saw them, while the content of the file was current at every read.  The two
-locks compare times of creation, which every client sees.
+locks compare times of creation, which every client sees.  Nor does it ask by name whether a
+file exists that another pilot may have made: a client there that asked for a name before
+the file existed did not find it for most of a minute afterwards, while a listing of the
+directory was current.  HEAD.json and the state file are looked for in a listing, and one
+that is listed and cannot be read is never taken as absent.
 """
+import errno
 import glob
 import json
 import os
@@ -55,19 +66,30 @@ from .inproc import (BARREN_LIMIT, EXIT_BUDGET, EXIT_DONE, EXIT_ENGINE, EXIT_FAI
                      _stop_off_noloop, lease_record, settle)
 
 LOCK_STALE = 120.0        # seconds; a tick takes a few
+IO_ERRORS = 10            # passes of a pilot's loop in a row that may end on an OSError
 
 
 def create_exclusive(path, text):
-    """Create `path` holding `text` unless it exists.  True if this call made it."""
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    except FileExistsError:
-        return False
-    with os.fdopen(fd, "w") as f:
+    """Create `path` holding `text` unless it exists.  True if this call made it.  The text is
+    written under another name and linked, so `path` is never seen without its content: a
+    pilot killed in this call leaves no empty record and no lock without a holder's name."""
+    tmp = "%s.new.%s.%d" % (path, socket.gethostname(), os.getpid())
+    with open(tmp, "w") as f:
         f.write(text)
         f.flush()
         os.fsync(f.fileno())
-    return True
+    try:
+        os.link(tmp, path)
+        return True
+    except FileExistsError:
+        return False
+    except OSError as err:
+        if err.errno in (errno.EPERM, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise SystemExit("ledger run: %s is on a filesystem with no hard links, which the spool "
+                             "transport needs" % path)
+        return os.stat(tmp).st_nlink == 2         # the link was made and its reply was lost
+    finally:
+        os.remove(tmp)
 
 
 def read_json(path):
@@ -78,20 +100,38 @@ def read_json(path):
         return None
 
 
+def listed_json(path):
+    """(listed, content) of a JSON file another host may have made.  Whether it exists is read
+    from a listing of its directory (see the module text).  (True, None) is a file this host
+    cannot read yet; it is not an absent one."""
+    d, name = os.path.split(path)
+    try:
+        if name not in os.listdir(d):
+            return False, None
+    except FileNotFoundError:
+        return False, None
+    return True, read_json(path)
+
+
 class Lock:
     """An exclusive-create lock file.  One older than `stale` seconds, by the filesystem's
-    own times, is taken to belong to a dead holder and is removed by whoever renames it."""
+    own times, is taken to belong to a dead holder and is removed.  A lock is broken, and
+    released, only by the pilot that holds its gate, `<lock>.gate`, and a breaker measures the
+    age again there.  So of two pilots that found one lock stale, the second finds the
+    first's new lock and leaves it; and a holder whose lock was broken while it ran does not
+    remove the lock that replaced it.  A gate left by a pilot that died in that instant is
+    removed when it is stale in its turn."""
 
     def __init__(self, path, me, stale=LOCK_STALE):
         self.path, self.me, self.stale = path, me, stale
         self.broken = []          # stale locks this holder removed
 
-    def age(self):
+    def age(self, path=None):
         probe = "%s.probe.%s" % (self.path, self.me)
         try:
             with open(probe, "w"):
                 pass
-            return os.stat(probe).st_mtime - os.stat(self.path).st_mtime
+            return os.stat(probe).st_mtime - os.stat(path or self.path).st_mtime
         except OSError:
             return None
         finally:
@@ -100,20 +140,53 @@ class Lock:
             except OSError:
                 pass
 
+    def gate(self):
+        """Take the gate.  Returns its path, or None if another pilot holds it."""
+        gate = self.path + ".gate"
+        if create_exclusive(gate, self.me):
+            return gate
+        age = self.age(gate)
+        if age is not None and age > self.stale:
+            try:
+                os.remove(gate)                   # its holder died; the next call takes it
+            except OSError:
+                pass
+        return None
+
+    def ungate(self, gate):
+        if gate is not None:
+            try:
+                os.remove(gate)
+            except OSError:
+                pass
+
     def take(self):
         if create_exclusive(self.path, self.me):
             return True
         age = self.age()
-        if age is not None and age > self.stale:
-            grave = "%s.stale.%s" % (self.path, self.me)
-            try:
-                os.rename(self.path, grave)
-                os.remove(grave)
-            except OSError:
+        if age is None or age <= self.stale:
+            return False
+        gate = self.gate()
+        if gate is None:
+            return False
+        try:
+            age = self.age()                      # again: by now it may be the lock of the pilot that broke it
+            if age is None or age <= self.stale:
                 return False
+            os.remove(self.path)
             self.broken.append(dict(lock=os.path.basename(self.path), age=age))
             return create_exclusive(self.path, self.me)
-        return False
+        except OSError:
+            return False
+        finally:
+            self.ungate(gate)
+
+    def held(self):
+        """Does the lock still name this holder?  It does not once another pilot broke it."""
+        try:
+            return open(self.path).read() == self.me
+        except OSError:
+            return False
 
     def wait(self, timeout=600.0, pause=0.5):
         t_end = time.time() + timeout
@@ -124,11 +197,19 @@ class Lock:
         return self
 
     def release(self):
+        gate = None
+        for _ in range(40):                       # two seconds at most; then without the gate
+            gate = self.gate()
+            if gate is not None:
+                break
+            time.sleep(0.05)
         try:
-            if open(self.path).read() == self.me:
+            if self.held():
                 os.remove(self.path)
         except OSError:
             pass
+        finally:
+            self.ungate(gate)
 
     def __enter__(self):
         return self
@@ -251,11 +332,17 @@ class Spool:
         """One tick under the lock.  Returns the controller's action, "over" after an engine log
         off the NoLoop path, or None when there was nothing to do or another pilot holds the lock."""
         state_file = os.path.join(self.run_dir, "ctl", "supervisor_state.json")
-        state = read_json(state_file) or {}
-        if not self.worth_a_tick(set(state.get("settled", []))) or not self.lock.take():
+        head_file = os.path.join(self.run_dir, "HEAD.json")
+        listed, state = listed_json(state_file)
+        if listed and state is None:
+            return None
+        if not self.worth_a_tick(set((state or {}).get("settled", []))) or not self.lock.take():
             return None
         try:
-            state = read_json(state_file) or dict(launches=0, strikes={})
+            listed, state = listed_json(state_file)
+            if (listed and state is None) or listed_json(head_file) == (True, None):
+                return None                       # a file this host cannot read yet is not an absent one
+            state = state or dict(launches=0, strikes={})
             state.setdefault("strikes", {})
             settled = state.setdefault("settled", [])
             out, done = self.outstanding()
@@ -267,14 +354,16 @@ class Spool:
                     rec = lease_record(ticket, base, os.path.join(self.run_dir, "logs", base + ".log"), None, True, age, cleanup)
                     rec.update(pilot=pilot, stale=True)
                     create_exclusive(self.p("done", base + ".json"), json.dumps(rec))
-            # records not yet settled, each once
+            # records not yet settled, each once; lines off the NoLoop path over every record
             off = 0
             for name in self.names("done"):
                 base = name[:-5]
                 rec = read_json(self.p("done", name))
-                if base in settled or rec is None:
+                if rec is None:
                     continue
                 off += rec.get("off_noloop", 0)
+                if base in settled:
+                    continue
                 settle(state, rec)
                 settled.append(base)
                 _log(self.run_dir, "leases.jsonl", rec)
@@ -283,12 +372,17 @@ class Spool:
                         os.remove(path)
                     except OSError:
                         pass
+            if not self.lock.held():
+                self.event("lock lost")
+                return None
+            if off:
+                _stop_off_noloop(self.run_dir, off)       # first: a ticker that dies after this line leaves the run stopped
             controller.write_atomic(state_file, json.dumps(state))
             if off:
-                _stop_off_noloop(self.run_dir, off)
                 return "over"
             # rows a lease still open or running will write get no second lease
-            out, _ = self.outstanding()
+            out, done = self.outstanding()
+            unread = done - set(settled)                  # a record that landed during this tick, or could not be read
             busy, running = [], 0
             for base, (path, pilot) in out.items():
                 ticket = read_json(path)
@@ -301,7 +395,7 @@ class Spool:
             stale_tickets = [path for path, pilot in out.values() if pilot is None]
             while True:
                 act = controller.tick(controller.Run(self.run_dir), parts, defer=state.get("defer", []), busy=busy,
-                                      min_lease_rows=min_lease_rows, hold=running > 0)
+                                      min_lease_rows=min_lease_rows, hold=running > 0 or bool(unread))
                 _log(self.run_dir, "ticks.jsonl", dict({k: v for k, v in act.items() if k != "leases"}, pilot=self.me))
                 if act["action"] in ("again", "done", "failed"):
                     # the version closed with every row in: a ticket still open would only repeat rows
@@ -313,6 +407,9 @@ class Spool:
                     stale_tickets, busy = [], []
                 if act["action"] != "again":
                     break
+            if act.get("leases") and not self.lock.held():
+                self.event("lock lost")
+                return None                               # leases with no ticket: their rows are leased again
             for lease in act.get("leases", []):
                 base = os.path.basename(lease["lease"])[:-4]
                 controller.write_atomic(self.p("open", base + ".json"), json.dumps(dict(lease, base=base)))
@@ -335,31 +432,34 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
         sp.event("exit", status=status)
         return status
     off = sum(_off_noloop(f) for f in glob.glob(os.path.join(run_dir, "logs", "*.log*")))
-    if off and os.path.exists(os.path.join(run_dir, "HEAD.json")):
+    if off and listed_json(os.path.join(run_dir, "HEAD.json"))[0]:
         return _stop_off_noloop(run_dir, off)
     t_end = time.time() + budget
     slots = {}                # slot -> dict(ticket, path, base, logf, lf, eng, t0)
-    stopping, barren, last_beat = [False], 0, None
+    stopping, barren, last_beat, errors = [False], 0, None, 0
 
     def on_term(signum, frame):
         stopping[0] = True
 
     def finish(slot, stopped):
         nonlocal barren
-        job = slots.pop(slot)
+        job = slots[slot]                         # it leaves `slots` once its record is written
         if stopped and job["eng"].poll() is None:
+            job["stopped"] = True
             try:
                 os.killpg(job["eng"].pid, signal.SIGKILL)
             except OSError:
                 pass
-        else:
-            stopped = False                       # it had ended by itself before this pilot stopped it
         job["eng"].wait()
+        # Stopped by this pilot, or by the SIGTERM that stops a whole job: a scheduler may signal
+        # the engine as well as the pilot, and either may notice first.  Any other end is the engine's own.
+        stopped = job.get("stopped", False) or job["eng"].returncode in (-signal.SIGTERM, 128 + signal.SIGTERM)
         job["lf"].close()
         rec = lease_record(job["ticket"], job["base"], job["logf"], job["eng"].returncode, stopped,
                            time.time() - job["t0"], cleanup)
         rec.update(pilot=me, host=socket.gethostname())
         kept = create_exclusive(sp.p("done", job["base"] + ".json"), json.dumps(rec))   # a record of a lease closed as stale stays
+        del slots[slot]
         sp.event("engine ended", lease=job["base"], status=rec["status"], stopped=bool(stopped), rows=rec["rows"],
                  missing=rec["missing"], recorded=kept)
         if not stopped:
@@ -369,58 +469,74 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
     old = signal.signal(signal.SIGTERM, on_term)
     try:
         while True:
-            if last_beat is None or time.monotonic() - last_beat > stale_after / 6.0:
-                sp.beat(job["base"] for job in slots.values())
-                sp.idle(sp.outstanding()[0])      # a pilot with no free slot watches the others too
-                last_beat = time.monotonic()
-            for slot in [s for s, job in slots.items() if job["eng"].poll() is not None]:
-                finish(slot, False)
-            head = read_json(os.path.join(run_dir, "HEAD.json"))
-            over = head is not None and head["state"] in controller.STATES_OVER
-            if over or stopping[0] or t_end - time.time() < min_left:
-                for slot in list(slots):
-                    finish(slot, True)
-                if over:
-                    print("ledger run %s" % head["state"].lower(), flush=True)
-                    if head["state"] == "DONE":
-                        return leave(EXIT_DONE)
-                    return leave(EXIT_REDLINE if "NoLoop" in head.get("reason", "") else EXIT_FAILED)
-                print("ledger run: this pilot's budget is spent or it was told to stop; the run resumes "
-                      "with any pilot", flush=True)
-                return leave(EXIT_BUDGET)
-            if barren >= BARREN_LIMIT:
-                if not slots:
-                    print("ledger run: %d leases in a row ended on this pilot with rows missing and no evidence "
-                          "against one point; its engine is not working, see %s.  It marked no point failed." % (
-                              barren, os.path.join(run_dir, "logs")), flush=True)
-                    return leave(EXIT_ENGINE)
-                time.sleep(poll)
-                continue
-            busy = False
-            while len(slots) < engines:
-                got = sp.claim()
-                if got is None:
-                    break
-                ticket, path = got
-                slot = min(set(range(int(engines))) - set(slots))
-                base = ticket["base"]
-                logf = os.path.join(run_dir, "logs", base + ".log")
-                cmd = engine_command.format(lease=shlex.quote(ticket["lease"]), keys=shlex.quote(ticket["keys"]),
-                                            shard=shlex.quote(ticket["shard"]), n=ticket["n"], log=shlex.quote(logf),
-                                            base=base)
-                env = dict(os.environ)
-                if gpus:
-                    env["CUDA_VISIBLE_DEVICES"] = str(gpus[slot % len(gpus)])
-                lf = open(logf, "ab")
-                eng = subprocess.Popen(cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT, start_new_session=True,
-                                       cwd=cwd, env=env)
-                slots[slot] = dict(ticket=ticket, path=path, base=base, logf=logf, lf=lf, eng=eng, t0=time.time())
-                sp.beat(job["base"] for job in slots.values())      # the card names the lease from now on
-                sp.event("claim", lease=base, rows=ticket["n"], pid=eng.pid)
-                busy = True
-            if len(slots) < engines and sp.tick(fleet, min_lease_rows, cleanup) in ("run", "again", "done", "failed", "over"):
-                busy = True
-            if not busy:
+            try:
+                if last_beat is None or time.monotonic() - last_beat > stale_after / 6.0:
+                    sp.beat(job["base"] for job in slots.values())
+                    sp.idle(sp.outstanding()[0])      # a pilot with no free slot watches the others too
+                    last_beat = time.monotonic()
+                for slot in [s for s, job in slots.items() if job["eng"].poll() is not None]:
+                    finish(slot, False)
+                head = listed_json(os.path.join(run_dir, "HEAD.json"))[1]
+                over = head is not None and head["state"] in controller.STATES_OVER
+                if over or stopping[0] or t_end - time.time() < min_left:
+                    for slot in list(slots):
+                        finish(slot, True)
+                    if over:
+                        print("ledger run %s" % head["state"].lower(), flush=True)
+                        if head["state"] == "DONE":
+                            return leave(EXIT_DONE)
+                        return leave(EXIT_REDLINE if "NoLoop" in head.get("reason", "") else EXIT_FAILED)
+                    print("ledger run: this pilot's budget is spent or it was told to stop; the run resumes "
+                          "with any pilot", flush=True)
+                    return leave(EXIT_BUDGET)
+                if barren >= BARREN_LIMIT:
+                    if not slots:
+                        print("ledger run: %d leases in a row ended on this pilot with rows missing and no evidence "
+                              "against one point; its engine is not working, see %s.  It marked no point failed." % (
+                                  barren, os.path.join(run_dir, "logs")), flush=True)
+                        return leave(EXIT_ENGINE)
+                    time.sleep(poll)
+                    continue
+                busy = False
+                while len(slots) < engines:
+                    got = sp.claim()
+                    if got is None:
+                        break
+                    ticket, path = got
+                    slot = min(set(range(int(engines))) - set(slots))
+                    base = ticket["base"]
+                    logf = os.path.join(run_dir, "logs", base + ".log")
+                    cmd = engine_command.format(lease=shlex.quote(ticket["lease"]), keys=shlex.quote(ticket["keys"]),
+                                                shard=shlex.quote(ticket["shard"]), n=ticket["n"], log=shlex.quote(logf),
+                                                base=base)
+                    env = dict(os.environ)
+                    if gpus:
+                        env["CUDA_VISIBLE_DEVICES"] = str(gpus[slot % len(gpus)])
+                    try:
+                        lf = open(logf, "ab")
+                        eng = subprocess.Popen(cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT,
+                                               start_new_session=True, cwd=cwd, env=env)
+                    except OSError as err:        # not a pass to make again: each would take one more lease
+                        raise SystemExit("ledger run: this pilot cannot start an engine: %s" % err)
+                    slots[slot] = dict(ticket=ticket, path=path, base=base, logf=logf, lf=lf, eng=eng, t0=time.time())
+                    sp.beat(job["base"] for job in slots.values())      # the card names the lease from now on
+                    sp.event("claim", lease=base, rows=ticket["n"], pid=eng.pid)
+                    busy = True
+                if len(slots) < engines and sp.tick(fleet, min_lease_rows, cleanup) in ("run", "again", "done", "failed", "over"):
+                    busy = True
+                if not busy:
+                    time.sleep(poll)
+                errors = 0
+            except OSError as err:
+                # A listing or a read that failed: nothing was read this pass.  Each step of a pass
+                # can be made again, so the pilot keeps its engines and looks again.
+                errors += 1
+                try:
+                    sp.event("io error", error=repr(err), passes=errors)
+                except OSError:
+                    pass
+                if errors >= IO_ERRORS:
+                    raise
                 time.sleep(poll)
     finally:
         for job in slots.values():                # an exception in this pilot: its engines do not outlive it

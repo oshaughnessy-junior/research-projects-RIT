@@ -1220,6 +1220,8 @@ if ((opts.ledger_run or opts.ledger_run_args)
         "pseudo_pipe: --ledger-run requires --pipeline-builder Hyperpipe")
 if opts.ledger_run_args and not opts.ledger_run:
     raise SystemExit("pseudo_pipe: --ledger-run-args requires --ledger-run")
+if opts.ledger_run_pilots != 1 and not opts.ledger_run:
+    raise SystemExit("pseudo_pipe: --ledger-run-pilots requires --ledger-run")
 
 if (opts.terminal_stage_extra_file
         and opts.pipeline_builder != "Hyperpipe"):
@@ -3976,7 +3978,8 @@ if opts.pipeline_builder == "Hyperpipe":
             "name": "ledger_run",
             "kind": "command-v1",
             "exe": shutil.which("rift-run") or "rift-run",
-            "instances": [{"pilot": k} for k in range(ledger_pilots)],
+            # one pilot is the one-host run, built as it was before pilots existed
+            **({"instances": [{"pilot": k} for k in range(ledger_pilots)]} if ledger_pilots > 1 else {}),
             "args": " ".join([
                 "--transport inproc" if ledger_pilots == 1 else
                 "--transport spool --fleet {}".format(ledger_pilots),

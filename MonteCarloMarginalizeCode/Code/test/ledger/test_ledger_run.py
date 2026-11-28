@@ -3,6 +3,7 @@
 fake_engine.py evaluates ln L = ln N(A; MU, COV) - ln p(A): the posterior of block A is
 that Gaussian and the evidence is 1.  No real likelihood is involved.
 """
+import contextlib
 import glob
 import gzip
 import json
@@ -713,7 +714,8 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
     out = build("ok", ["--pipeline-builder", "Hyperpipe", "--ile-sampler-method", "AV", "--ledger-run-args", "--budget 600"])
     assert out.returncode == 0, out.stdout[-3000:]
     run = tmp_path / "ok"
-    assert [x["name"] for x in json.load(open(run / "terminal_stage_specs.json"))["stages"]] == ["ledger_run"]
+    (stage,) = json.load(open(run / "terminal_stage_specs.json"))["stages"]
+    assert stage["name"] == "ledger_run" and "instances" not in stage      # one pilot: the stage as it was without pilots
     nodes = [x for x in open(run / "marginalize_hyperparameters_local.sh").read().split("\n")
              if x.startswith(("run_unit ", "run_node "))]
     assert len(nodes) == 1 and "TERMINAL_ledger_run" in nodes[0]
@@ -740,6 +742,9 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
              "--ledger-run requires --pipeline-builder Hyperpipe")):
         out = build(name, extra)
         assert out.returncode != 0 and named in out.stdout, (name, out.stdout[-1500:])
+    out = run_bounded([x for x in base if x != "--ledger-run"] + ["--use-rundir", str(tmp_path / "r5"), "--ledger-run-pilots", "3"],
+                      cwd=str(tmp_path), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert out.returncode != 0 and "--ledger-run-pilots requires --ledger-run" in out.stdout, out.stdout[-1500:]
     shutil.rmtree(str(tmp_path / "ok"))
 
 
@@ -1299,3 +1304,235 @@ def test_a_point_that_breaks_the_engine_is_failed_under_pilots_too(tmp_path):
     assert len(rows) == 20 and rows[bad]["status"] == "FAILED"
     assert sum(r["status"] == "OK" for r in rows.values()) == 19
     assert sum("strike" in r for r in (json.loads(x) for x in open(run.p("ctl", "leases.jsonl")))) == 2
+
+
+# ---- review of 2026-11-27: records, the NoLoop stop, files of other hosts, stops, locks ----
+
+def _two_leases(tmp_path):
+    """A run whose first version is out as two open tickets, and two pilots that have started no engine."""
+    run_dir = str(tmp_path / "run")
+    controller.init(run_dir, Box.from_json(fake_engine.BOX), seed=3, learn_per_stream=40)
+    a, b = (spool.Spool(run_dir, name, 90.0, card=dict(slots=1)) for name in ("a", "b"))
+    a.beat()
+    b.beat()
+    assert a.tick(2, 32) == "run" and len(a.names("open")) == 2
+    return run_dir, a, b
+
+
+def _engine_here(run_dir, ticket, off_noloop=False):
+    """fake_engine on one lease, in this process; what it prints is the engine's log."""
+    logf = os.path.join(run_dir, "logs", ticket["base"] + ".log")
+    argv, env = sys.argv, dict(os.environ)
+    sys.argv = ["fake_engine.py", ticket["lease"], ticket["keys"], ticket["shard"]]
+    os.environ.pop("LEDGER_FAKE_OFF_NOLOOP", None)
+    if off_noloop:
+        os.environ["LEDGER_FAKE_OFF_NOLOOP"] = "1"
+    try:
+        with open(logf, "w") as log, contextlib.redirect_stdout(log):
+            fake_engine.main()
+    finally:
+        sys.argv = argv
+        os.environ.clear()
+        os.environ.update(env)
+    return logf
+
+
+def _record(sp, run_dir, ticket, status=0, killed=False):
+    """What a pilot writes when its engine ends (spool.run)."""
+    logf = os.path.join(run_dir, "logs", ticket["base"] + ".log")
+    rec = dict(inproc.lease_record(ticket, ticket["base"], logf, status, killed, 1.0), pilot=sp.me)
+    assert spool.create_exclusive(sp.p("done", ticket["base"] + ".json"), json.dumps(rec))
+    return rec
+
+
+def test_a_stopped_launch_is_evidence_of_nothing():
+    """Protects: a launch that its supervisor or pilot stopped, or that was closed as stale,
+    charges no strike and puts no key last, whatever it left behind; the same launch ended by
+    itself charges one strike.  Oracle: analytic."""
+    rec = dict(killed=True, missing=3, rows=5, in_flight=[1, 0, 7], shard="shard-x.jsonl")
+    state = dict(strikes={})
+    assert inproc.settle(state, dict(rec)) is None and state == dict(strikes={})
+    assert inproc.settle(state, dict(rec, killed=False)) == "worked" and state["strikes"] == {"1/0/7": 1}
+
+
+@pytest.mark.parametrize("case", ["stopped", "landing", "settled"])
+def test_a_line_off_the_noloop_path_stops_the_run_whichever_tick_reads_it(tmp_path, monkeypatch, case):
+    """Protects: no version closes on the rows of an engine off the NoLoop path.  The record that
+    carries the line may be of a launch that was stopped; it may land while a tick runs, after
+    that tick listed the records; or a ticker may have died after it wrote the record as
+    settled and before it stopped the run.  Each time the run is FAILED with one proposal
+    version, and a tick that cannot yet read a record closes nothing.  Oracle: analytic."""
+    run_dir, a, b = _two_leases(tmp_path)
+    (ta, _), (tb, _) = a.claim(), b.claim()
+    a.beat([ta["base"]])
+    b.beat([tb["base"]])
+    _engine_here(run_dir, ta)
+    _engine_here(run_dir, tb, off_noloop=True)             # every row of version 1 is in; b's log has the line
+    _record(a, run_dir, ta)
+    a.beat([])
+    state_file = os.path.join(run_dir, "ctl", "supervisor_state.json")
+    if case == "stopped":
+        assert _record(b, run_dir, tb, status=-9, killed=True)["off_noloop"] == 1
+    elif case == "settled":
+        _record(b, run_dir, tb)
+        controller.write_atomic(state_file, json.dumps(dict(launches=0, strikes={}, settled=[ta["base"], tb["base"]])))
+    else:
+        write = controller.write_atomic
+
+        def landing(path, text):                           # the state is written between the two listings of done/
+            if path == state_file and tb["base"] + ".json" not in os.listdir(b.p("done")):
+                _record(b, run_dir, tb)
+            return write(path, text)
+        monkeypatch.setattr(controller, "write_atomic", landing)
+    acts = [a.tick(2, 32)]
+    if case == "landing":
+        assert acts == ["wait"]
+        acts.append(a.tick(2, 32))
+    assert acts[-1] == "over" and controller.Run(run_dir).head()["state"] == "FAILED"
+    assert len(os.listdir(os.path.join(run_dir, "artifacts"))) == 1
+
+
+def test_a_tick_settles_a_record_once_and_leases_no_row_of_an_open_ticket(tmp_path, monkeypatch):
+    """Protects: a pilot that read the state before another pilot's tick settles nothing that
+    tick settled; and the rows of a ticket nobody has claimed are not leased again.
+    Oracle: analytic (one line for the record, one strike, every missing row in one open ticket)."""
+    run_dir, a, b = _two_leases(tmp_path)
+    ta, _ = a.claim()                                       # the other ticket stays open
+    (other,) = [spool.read_json(a.p("open", n)) for n in a.names("open")]
+    a.beat([ta["base"]])
+    keys = [tuple(k) for k in json.load(open(ta["keys"]))["keys"]]
+    _engine_here(run_dir, ta)
+    lines = open(ta["shard"]).read().split("\n")
+    open(ta["shard"], "w").write("\n".join(lines[:5]) + "\n")       # the engine died on its sixth point
+    json.dump(dict(key=[1] + list(keys[5])), open(ta["shard"] + ".inflight", "w"))
+    assert _record(a, run_dir, ta, status=1)["in_flight"] == [1] + list(keys[5])
+    a.beat([])
+    worth = a.worth_a_tick
+
+    def b_ticks_first(settled):                             # after a read the state and before it has the lock
+        assert b.tick(2, 32) == "run"
+        return worth(settled)
+    monkeypatch.setattr(a, "worth_a_tick", b_ticks_first)
+    assert a.tick(2, 32) == "wait"
+    assert len(open(os.path.join(run_dir, "ctl", "leases.jsonl")).read().splitlines()) == 1
+    state = json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))
+    assert state["strikes"] == {"1/%d/%d" % keys[5]: 1}
+    out = [tuple(k) for n in a.names("open") for k in json.load(open(spool.read_json(a.p("open", n))["keys"]))["keys"]]
+    assert len(out) == len(set(out))
+    assert set(out) == (set(keys[5:]) | set(tuple(k) for k in json.load(open(other["keys"]))["keys"]))
+
+
+def test_head_is_looked_for_in_a_listing_and_never_taken_as_absent(tmp_path, monkeypatch):
+    """Protects: a host that is told HEAD.json does not exist, as an NFS client is for most of
+    a minute when it asked for the name before another host wrote the file, neither writes
+    HEAD again over a run that was stopped nor loses the version when it stops the run; and a
+    HEAD that is listed and cannot be read ends the tick with nothing written.  Oracle: analytic."""
+    run_dir, a, b = _two_leases(tmp_path)
+    run = controller.Run(run_dir)
+    head_file, exists = run.p("HEAD.json"), os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda path: False if path == head_file else exists(path))
+    inproc._stop_off_noloop(run_dir, 1)
+    stopped = json.load(open(head_file))
+    assert stopped["state"] == "FAILED" and stopped["version"] == 1
+    for name in a.names("open"):
+        os.remove(a.p("open", name))                        # nothing outstanding: a free pilot takes the tick
+    assert a.tick(2, 32) == "failed" and json.load(open(head_file)) == stopped
+    read = spool.read_json
+    monkeypatch.setattr(spool, "read_json", lambda path: None if path == head_file else read(path))
+    assert a.tick(2, 32) is None and json.load(open(head_file)) == stopped
+    assert "tick.lock" not in os.listdir(os.path.join(run_dir, "ctl"))
+
+
+def test_a_pilot_reads_old_logs_at_its_start_and_makes_a_failed_pass_again(tmp_path, monkeypatch):
+    """Protects: a pilot that starts on a run whose logs hold a line off the NoLoop path stops
+    the run with status 5, whether or not a record carries the line; and a pass of a pilot's
+    loop that ends on an OSError, as a listing on a shared filesystem can, is made again, a
+    stated number of times at most.  Oracle: analytic."""
+    run_dir, a, b = _two_leases(tmp_path)
+    run = controller.Run(run_dir)
+    run.set_head(**dict(run.head(), state="DONE"))
+    names, fails, floor = spool.Spool.names, [2], [0]
+
+    def flaky(self, d):
+        if fails[0]:
+            fails[0] -= 1
+            assert fails[0] >= floor[0], "a pilot made a failed pass again without limit"
+            raise OSError("Stale file handle")
+        return names(self, d)
+    monkeypatch.setattr(spool.Spool, "names", flaky)
+    assert spool.run(run_dir, "false", poll=0.01) == inproc.EXIT_DONE and fails == [0]
+    fails[0], floor[0] = 10 ** 6, 10 ** 6 - 3 * spool.IO_ERRORS
+    with pytest.raises(OSError):
+        spool.run(run_dir, "false", poll=0.01)
+    assert fails[0] == 10 ** 6 - spool.IO_ERRORS
+    monkeypatch.setattr(spool.Spool, "names", names)
+    run.set_head(**dict(run.head(), state="LEARN"))
+    open(os.path.join(run_dir, "logs", "lease-of-a-dead-pilot.log"), "w").write(" %s\n" % inproc.OFF_NOLOOP[0])
+    assert spool.run(run_dir, "false", poll=0.01) == inproc.EXIT_REDLINE and run.head()["state"] == "FAILED"
+
+
+def test_a_stop_that_reaches_the_engine_first_is_still_a_stop(tmp_path):
+    """Protects: when the SIGTERM that stops a job reaches the engine before its pilot has been
+    told, as when a scheduler signals every process of the job, the launch is recorded as
+    stopped and counts against no point and no pilot.  Oracle: analytic."""
+    run_dir = str(tmp_path / "job")
+    (pilot,) = _pilots(run_dir, 1, env_each=[dict(LEDGER_FAKE_SLEEP="0.05")])
+    for _ in range(200):
+        time.sleep(0.1)
+        if _engines_of(run_dir):
+            break
+    else:
+        pytest.fail("the pilot started no engine: its exit status is %r, pilots did %r" % (pilot.poll(), _pilot_logs(run_dir)))
+    (pid,) = _engines_of(run_dir)
+    os.killpg(pid, signal.SIGTERM)                          # the engine is its own process group
+    time.sleep(1.0)                                         # the pilot finds it ended, in a pass in which nobody told it to stop
+    pilot.send_signal(signal.SIGTERM)
+    assert pilot.wait(timeout=60) == 3
+    recs = _records(run_dir)
+    assert recs and all(r["killed"] for r in recs), recs
+    assert any(r["status"] in (-signal.SIGTERM, 128 + signal.SIGTERM) for r in recs), recs
+    state = spool.read_json(os.path.join(run_dir, "ctl", "supervisor_state.json")) or {}
+    assert state.get("strikes", {}) == {} and not state.get("defer")
+
+
+def test_a_lock_goes_to_one_pilot_and_a_name_never_shows_without_its_content(tmp_path, monkeypatch):
+    """Protects: of two pilots that both found a lock stale, one takes it; a holder that
+    releases its lock removes no lock that is another's, also when its own was broken while
+    it looked; and a record or lock is linked into place whole.  Oracle: analytic."""
+    path, hour_ago = str(tmp_path / "tick.lock"), time.time() - 3600
+    open(path, "w").write("a-dead-pilot")
+    os.utime(path, (hour_ago, hour_ago))
+    b, c = spool.Lock(path, "B"), spool.Lock(path, "C")
+    age, first = c.age, []
+
+    def b_breaks_it_meanwhile(p=None):                      # C has measured the age and has not acted on it yet
+        measured = age(p)
+        if not first:
+            first.append(b.take())
+        return measured
+    monkeypatch.setattr(c, "age", b_breaks_it_meanwhile)
+    assert not c.take() and first == [True] and open(path).read() == "B"
+    c.release()
+    assert open(path).read() == "B"                         # C does not hold it and leaves it
+
+    monkeypatch.setattr(c, "age", age)
+    held, took = b.held, []
+
+    def c_breaks_it_meanwhile():                            # B has read its own name in the lock and not yet removed it
+        mine = held()
+        os.utime(path, (hour_ago, hour_ago))
+        took.append(c.take())
+        return mine
+    monkeypatch.setattr(b, "held", c_breaks_it_meanwhile)
+    b.release()
+    assert took == [False] and not os.path.exists(path) and sorted(os.listdir(str(tmp_path))) == []
+
+    record, link, seen = str(tmp_path / "lease.json"), os.link, []
+
+    def linked(src, dst):
+        seen.append((open(src).read(), os.path.exists(dst)))
+        return link(src, dst)
+    monkeypatch.setattr(os, "link", linked)
+    assert spool.create_exclusive(record, "whole") and not spool.create_exclusive(record, "another")
+    assert seen == [("whole", False), ("another", True)] and open(record).read() == "whole"
+    assert os.listdir(str(tmp_path)) == ["lease.json"]

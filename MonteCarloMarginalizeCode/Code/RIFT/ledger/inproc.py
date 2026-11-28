@@ -110,7 +110,7 @@ def lease_record(lease, base, logf, status, killed, wall, cleanup=None):
             key = tuple(json.load(open(flight))["key"])
             if (key[1], key[2]) not in have:          # else it ended after that key's line was written
                 rec["in_flight"] = list(key)
-        except (ValueError, KeyError, TypeError, IndexError):
+        except (OSError, ValueError, KeyError, TypeError, IndexError):     # OSError: a live engine removed it meanwhile
             pass
         try:
             os.remove(flight)
