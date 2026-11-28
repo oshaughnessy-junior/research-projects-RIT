@@ -532,6 +532,7 @@ parser.add_argument("--pipeline-builder",default=None,choices=["BasicIteration",
 parser.add_argument("--hyperpipe-eos-post-condor-commands", default=None, help="JSON native runtime/resource policy for Hyperpipe posterior and prior workers; transport/placement keys are reserved")
 parser.add_argument("--terminal-stage-extra-file",default=None,type=str,help="Path to a user terminal-stage manifest (version 1, same schema as the generated terminal_stage_specs.json) whose stages are appended to the ones this pipeline generates. Its stages may name generated stages in depends_on; see RIFT.misc.terminal_stage_products for the stable stage names and the file each writes. Relative paths resolve against the run directory. Requires --pipeline-builder Hyperpipe.")
 parser.add_argument("--ledger-run",action='store_true',help="Replace the iteration loop by one ledger run (RIFT/ledger/DESIGN_ledger_run.md): the workflow has no iterations and one terminal stage, ledger_run, which runs rift-run on this run directory's ILE arguments and on the prior of the last posterior argument line. It writes ledger/certificate.json and ledger/posterior_samples.dat. Requires --pipeline-builder Hyperpipe and --ile-sampler-method AV; one prior is implemented and rift-run refuses the rest when it starts.")
+parser.add_argument("--ledger-run-pilots",default=1,type=int,help="Under --ledger-run, the number of jobs that share the run (RIFT/ledger/spool.py): the stage becomes that many nodes, each a pilot with one GPU, on a run directory their hosts must share. The default, 1, is one job that is the whole run.")
 parser.add_argument("--ledger-run-args",default="",type=str,help="Extra arguments for rift-run under --ledger-run, as one string (for example '--budget 3300 --engines 2').")
 parser.add_argument("--use-ile-subdags",action='store_true',help="Use ILE subdag system (new)")
 parser.add_argument("--bilby-ini-file",default=None,type=str,help="Pass ini file for parsing. Intended to use for calibration reweighting. Full path recommended")
@@ -1147,8 +1148,10 @@ if opts.pipeline_builder == "Hyperpipe":
         (opts.ledger_run and opts.ile_zero_likelihood_data_free,
          "--ledger-run with --ile-zero-likelihood-data-free"),
         (opts.ledger_run and opts.use_osg,
-         "--ledger-run with --use-osg (the in-process transport runs its "
-         "engines on one host)"),
+         "--ledger-run with --use-osg (a ledger run's engines need the run "
+         "directory on a filesystem they share)"),
+        (opts.ledger_run_pilots < 1 or (opts.ledger_run_pilots > 1 and not opts.ledger_run),
+         "--ledger-run-pilots needs --ledger-run and a count of at least 1"),
     ]
     for active, label in _hyperpipe_feature_checks:
         if active:
@@ -1217,6 +1220,8 @@ if ((opts.ledger_run or opts.ledger_run_args)
         "pseudo_pipe: --ledger-run requires --pipeline-builder Hyperpipe")
 if opts.ledger_run_args and not opts.ledger_run:
     raise SystemExit("pseudo_pipe: --ledger-run-args requires --ledger-run")
+if opts.ledger_run_pilots != 1 and not opts.ledger_run:
+    raise SystemExit("pseudo_pipe: --ledger-run-pilots requires --ledger-run")
 
 if (opts.terminal_stage_extra_file
         and opts.pipeline_builder != "Hyperpipe"):
@@ -3965,12 +3970,19 @@ if opts.pipeline_builder == "Hyperpipe":
         # It keeps its whole state under ledger/, so a retry resumes the run.
         ledger_log_dir = os.path.abspath("ledger_logs")
         os.makedirs(ledger_log_dir, exist_ok=True)
+        # With several pilots the stage is that many nodes of one command.  Each
+        # is a whole pilot (RIFT/ledger/spool.py): they divide the run through
+        # files under ledger/, and a pilot that is retried rejoins it.
+        ledger_pilots = int(opts.ledger_run_pilots)
         terminal_stages.append({
             "name": "ledger_run",
             "kind": "command-v1",
             "exe": shutil.which("rift-run") or "rift-run",
+            # one pilot is the one-host run, built as it was before pilots existed
+            **({"instances": [{"pilot": k} for k in range(ledger_pilots)]} if ledger_pilots > 1 else {}),
             "args": " ".join([
-                "--transport inproc",
+                "--transport inproc" if ledger_pilots == 1 else
+                "--transport spool --fleet {}".format(ledger_pilots),
                 "--run-dir", os.path.abspath("ledger"),
                 "--ile-args-file", os.path.abspath("args_ile.txt"),
                 "--prior-args-file", os.path.abspath("args_cip_list.txt"),

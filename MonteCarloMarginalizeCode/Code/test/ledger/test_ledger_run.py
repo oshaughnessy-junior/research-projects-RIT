@@ -3,6 +3,8 @@
 fake_engine.py evaluates ln L = ln N(A; MU, COV) - ln p(A): the posterior of block A is
 that Gaussian and the evidence is 1.  No real likelihood is involved.
 """
+import contextlib
+import glob
 import gzip
 import json
 import os
@@ -23,7 +25,7 @@ sys.path.insert(0, CODE)
 
 import fake_engine  # noqa: E402
 import stub_ile  # noqa: E402
-from RIFT.ledger import controller, engine, estimator, inproc, proposal, rundir  # noqa: E402
+from RIFT.ledger import controller, engine, estimator, inproc, proposal, rundir, spool  # noqa: E402
 from RIFT.ledger.space import Box, summaries, to_grid  # noqa: E402
 
 SIZES = ["--set", "seed=7", "--set", "learn_per_stream=250", "--set", "frozen_per_stream=250", "--set", "target_n_eff=500"]
@@ -712,14 +714,25 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
     out = build("ok", ["--pipeline-builder", "Hyperpipe", "--ile-sampler-method", "AV", "--ledger-run-args", "--budget 600"])
     assert out.returncode == 0, out.stdout[-3000:]
     run = tmp_path / "ok"
-    assert [x["name"] for x in json.load(open(run / "terminal_stage_specs.json"))["stages"]] == ["ledger_run"]
+    (stage,) = json.load(open(run / "terminal_stage_specs.json"))["stages"]
+    assert stage["name"] == "ledger_run" and "instances" not in stage      # one pilot: the stage as it was without pilots
     nodes = [x for x in open(run / "marginalize_hyperparameters_local.sh").read().split("\n")
              if x.startswith(("run_unit ", "run_node "))]
     assert len(nodes) == 1 and "TERMINAL_ledger_run" in nodes[0]
     assert "--budget" in open(run / "TERMINAL_ledger_run.sub").read()
+    assert "--transport inproc" in open(run / "TERMINAL_ledger_run.sub").read().replace('"', "")
     rundir.check_ile_tokens(rundir.read_args_line(str(run / "args_ile.txt")), ILE_EXE)
     rundir.box_from_cip_tokens(rundir.read_args_line(str(run / "args_cip_list.txt")))
     rundir.grid_header(str(run / "proposed-grid.dat"))
+    out = build("pilots", ["--pipeline-builder", "Hyperpipe", "--ile-sampler-method", "AV", "--ledger-run-pilots", "3"])
+    assert out.returncode == 0, out.stdout[-3000:]
+    run = tmp_path / "pilots"                      # three nodes of one command, each a pilot of the same run
+    nodes = [x for x in open(run / "marginalize_hyperparameters_local.sh").read().split("\n")
+             if x.startswith(("run_unit ", "run_node "))]
+    assert len(nodes) == 3 and all("TERMINAL_ledger_run" in x for x in nodes)
+    assert "--transport spool --fleet 3" in open(run / "TERMINAL_ledger_run.sub").read().replace('"', "")
+    shutil.rmtree(str(run))
+    run = tmp_path / "ok"
     for name, extra, named in (
             ("r1", ["--pipeline-builder", "Hyperpipe"], "--ledger-run without --ile-sampler-method AV"),
             ("r2", ["--pipeline-builder", "Hyperpipe", "--ile-sampler-method", "AV", "--add-extrinsic",
@@ -729,6 +742,9 @@ def test_pseudo_pipe_builds_the_stage_and_refuses_what_it_cannot_run(tmp_path):
              "--ledger-run requires --pipeline-builder Hyperpipe")):
         out = build(name, extra)
         assert out.returncode != 0 and named in out.stdout, (name, out.stdout[-1500:])
+    out = run_bounded([x for x in base if x != "--ledger-run"] + ["--use-rundir", str(tmp_path / "r5"), "--ledger-run-pilots", "3"],
+                      cwd=str(tmp_path), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert out.returncode != 0 and "--ledger-run-pilots requires --ledger-run" in out.stdout, out.stdout[-1500:]
     shutil.rmtree(str(tmp_path / "ok"))
 
 
@@ -1020,3 +1036,503 @@ def test_the_builder_accepts_zero_iterations_only_for_terminal_stages(tmp_path):
         out = run_bounded(base + extra, cwd=str(tmp_path), env=env, text=True, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT)
         assert out.returncode != 0 and named in out.stdout, out.stdout[-800:]
+
+
+# ---- the spool transport: pilots that share the run directory ----------------------------------------
+
+def _pilots(run_dir, n, extra=(), env_each=None, command=None):
+    """Start n pilots on one directory.  env_each: one dict of extra environment per pilot."""
+    cmd, env = command or _command(run_dir, ["--transport", "spool", "--fleet", str(n), "--poll", "0.2"] + list(extra))
+    return [subprocess.Popen(cmd, env=dict(env, **((env_each or [{}] * n)[k])), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL) for k in range(n)]
+
+
+def _engines_of(run_dir):
+    """{process id: lease} of the engines of this run that are alive, from the claim lines of
+    its pilots' logs.  It does not read `ps`, whose output differs between systems."""
+    live = {}
+    for path in glob.glob(os.path.join(run_dir, "ctl", "pilots", "*.jsonl")):
+        for line in open(path):
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("event") == "claim":
+                try:
+                    os.kill(ev["pid"], 0)
+                except OSError:
+                    continue
+                live[ev["pid"]] = ev["lease"]
+    return live
+
+
+def _pilot_logs(run_dir):
+    """What each pilot did, for a failure message."""
+    out = {}
+    for path in glob.glob(os.path.join(run_dir, "ctl", "pilots", "*.jsonl")):
+        out[os.path.basename(path)[:-6]] = [json.loads(x).get("event") for x in open(path) if x.strip()][:12]
+    return out
+
+
+def _records(run_dir):
+    done = os.path.join(run_dir, "spool", "done")
+    return [json.load(open(os.path.join(done, f))) for f in sorted(os.listdir(done))]
+
+
+def test_pilots_sharing_a_directory_give_the_one_host_certificate(clean_run, tmp_path):
+    """Protects: a run divided among pilots has the proposals and the estimate of the same run
+    in one process; every lease is run once, by one pilot, and no key is written twice.
+    Oracle: metamorphic, against the one-process run with the same seed."""
+    run_dir = str(tmp_path / "three")
+    pilots = _pilots(run_dir, 3, env_each=[dict(LEDGER_FAKE_SLEEP="0.004")] * 3)
+    assert [p.wait(timeout=400) for p in pilots] == [0, 0, 0]
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["proposals"] == b["proposals"] and a["estimate"] == b["estimate"]
+    assert b["ledger"]["repeats"] == 0
+    recs = _records(run_dir)
+    leases = [f for f in os.listdir(os.path.join(run_dir, "leases")) if f.endswith(".json")]
+    assert len(recs) == len(leases) == b["ledger"]["shards"] and not any(r["killed"] or r["missing"] for r in recs)
+    assert len(set(r["pilot"] for r in recs)) >= 2
+    assert os.listdir(os.path.join(run_dir, "spool", "open")) == os.listdir(os.path.join(run_dir, "spool", "claimed")) == []
+    assert not os.path.exists(os.path.join(run_dir, "ctl", "tick.lock"))
+
+
+def test_a_pilot_that_vanishes_costs_no_point(clean_run, tmp_path):
+    """Protects: a pilot that dies with its engine and leaves no record is found by its
+    heartbeat; its lease is closed as stopped, no point gets a strike or a FAILED line, its
+    rows are kept, and the other pilot finishes the run with the same estimate.
+    Oracle: metamorphic, against the one-process run with the same seed."""
+    run_dir = str(tmp_path / "vanish")
+    victim, other = _pilots(run_dir, 2, ["--stale-after", "4"],
+                            env_each=[dict(LEDGER_FAKE_SLEEP="0.05"), dict(LEDGER_FAKE_SLEEP="0.002")])
+    mine = "-%d-" % victim.pid
+    for _ in range(600):                                   # until the slow pilot has claimed a lease
+        time.sleep(0.1)
+        claimed = os.path.join(run_dir, "spool", "claimed")
+        held = [f for f in (os.listdir(claimed) if os.path.isdir(claimed) else []) if mine in f]
+        if held and _engines_of(run_dir):
+            break
+    else:
+        pytest.fail("the slow pilot never claimed a lease: its exit status is %r, pilots did %r" % (
+            victim.poll(), _pilot_logs(run_dir)))
+    lease = held[0].split(".")[0]
+    time.sleep(0.5)
+    engines = [pid for pid, name in _engines_of(run_dir).items() if name == lease]
+    assert len(engines) == 1
+    victim.send_signal(signal.SIGKILL)
+    victim.wait()
+    for pid in engines:                                    # a node that dies takes its engine along
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    assert other.wait(timeout=400) == 0
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["estimate"] == b["estimate"] and b["failed_rows"] == 0
+    recs = _records(run_dir)
+    assert [r["lease"] for r in recs if r.get("stale")] == [lease] and all(r["killed"] for r in recs if r.get("stale"))
+    state = json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))
+    assert state["strikes"] == {} and not state.get("defer")
+    assert all(r["status"] == "OK" for r in controller.Run(run_dir).ledger()[0].values())
+
+
+def test_a_lease_is_judged_by_its_pilots_counter_and_never_by_a_file_time(tmp_path):
+    """Protects: a pilot on another host is judged by the content of its card.  With every file
+    time a day old, as when an NFS client keeps the times it sets to itself, a lease is live
+    while the card names it under a counter that advances.  It is closed once the watcher has
+    seen the counter stop, the card stop naming the lease, or no card, for stale_after seconds
+    of the watcher's own clock, and not before.  Oracle: analytic."""
+    run_dir, t = str(tmp_path / "run"), [5000.0]
+    watcher = spool.Spool(run_dir, "w", 90.0)
+    watcher.clock = lambda: t[0]
+    worker = spool.Spool(run_dir, "p", 90.0, card=dict(slots=3))
+    day_old = time.time() - 86400
+
+    def claimed(lease, pilot):
+        path = watcher.p("claimed", "%s.%s.json" % (lease, pilot))
+        open(path, "w").write("{}")
+        os.utime(path, (day_old, day_old))
+
+    def beat(leases, seconds):
+        worker.beat(leases)
+        os.utime(worker.card, (day_old, day_old))
+        t[0] += seconds
+
+    claimed("lease-a", "p")
+    for _ in range(40):                                    # 600 s of a live pilot whose file times stand still
+        beat(["lease-a"], 15.0)
+        assert not watcher.worth_a_tick(set())
+    assert watcher.live_slots() == 3
+    t[0] += 89.0                                           # the counter stops; the watcher has seen it still for 89 s
+    assert not watcher.worth_a_tick(set()) and watcher.live_slots() == 3
+    t[0] += 2.0
+    assert watcher.worth_a_tick(set()) and watcher.live_slots() == 0
+    assert watcher.idle(watcher.outstanding()[0]) == {"lease-a": 91.0}
+    beat(["lease-a"], 0.0)                                 # it moves again: live again
+    assert not watcher.worth_a_tick(set()) and watcher.live_slots() == 3
+
+    claimed("lease-b", "p")                                # a ticket its pilot's card never names
+    for _ in range(6):
+        beat(["lease-a"], 15.0)
+        assert not watcher.worth_a_tick(set())
+    beat(["lease-a"], 16.0)
+    idle = watcher.idle(watcher.outstanding()[0])
+    assert idle == {"lease-a": 0.0, "lease-b": 91.0} and watcher.worth_a_tick(set())
+
+    newcomer = spool.Spool(run_dir, "n", 90.0)             # a pilot that has just started has seen nothing
+    newcomer.clock = lambda: t[0]
+    claimed("lease-c", "gone")                             # a ticket of a pilot with no card
+    assert not newcomer.worth_a_tick(set())
+    t[0] += 91.0
+    assert newcomer.idle(newcomer.outstanding()[0]) == {"lease-a": 91.0, "lease-b": 91.0, "lease-c": 91.0}
+
+
+def test_a_lease_longer_than_stale_after_stays_with_its_living_pilot(tmp_path):
+    """Protects: a pilot whose engine runs keeps its card's counter moving and its lease named,
+    so that a free pilot that watches it for several times stale_after does not close the
+    lease.  Oracle: analytic (two leases, two records, none stale, no row twice)."""
+    run_dir = str(tmp_path / "long")
+    pilots = _pilots(run_dir, 2, ["--stale-after", "2"],
+                     env_each=[dict(LEDGER_FAKE_SLEEP="0.003"), dict(LEDGER_FAKE_SLEEP="0.016")])
+    done = os.path.join(run_dir, "spool", "done")
+    for _ in range(1200):
+        time.sleep(0.1)
+        if os.path.isdir(done) and len(os.listdir(done)) >= 2:
+            break
+    else:
+        pytest.fail("two leases did not end: pilots did %r" % _pilot_logs(run_dir))
+    for p in pilots:
+        p.send_signal(signal.SIGTERM)
+    for p in pilots:
+        p.wait(timeout=60)
+    recs = sorted(_records(run_dir), key=lambda r: r["lease"])[:2]
+    assert [r["lease"] for r in recs] == ["lease-v01-n0000", "lease-v01-n0001"]
+    assert not any(r.get("stale") or r["killed"] or r["missing"] for r in recs), recs
+    assert max(r["wall"] for r in recs) > 3 * 2.0 and len(set(r["pilot"] for r in recs)) == 2
+    assert controller.Run(run_dir).ledger()[1]["repeats"] == 0
+
+
+def test_a_pilot_told_to_stop_says_so_and_any_pilot_resumes(clean_run, tmp_path):
+    """Protects: on SIGTERM, which a scheduler sends before it removes a job, a pilot stops its
+    engine, records that it did, and exits with status 3; a later pilot finishes the run with
+    the same estimate, and the stop counted against no point.  Oracle: metamorphic."""
+    run_dir = str(tmp_path / "term")
+    (pilot,) = _pilots(run_dir, 1, env_each=[dict(LEDGER_FAKE_SLEEP="0.02")])
+    for _ in range(200):
+        time.sleep(0.1)
+        if _engines_of(run_dir):
+            break
+    else:
+        pytest.fail("the pilot started no engine: its exit status is %r, pilots did %r" % (pilot.poll(), _pilot_logs(run_dir)))
+    pilot.send_signal(signal.SIGTERM)
+    assert pilot.wait(timeout=60) == 3
+    time.sleep(0.2)
+    assert _engines_of(run_dir) == {}
+    recs = _records(run_dir)
+    assert [r["killed"] for r in recs if r["missing"]] == [True] and not any(r.get("stale") for r in recs)
+    (pilot,) = _pilots(run_dir, 1)
+    assert pilot.wait(timeout=400) == 0
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["estimate"] == b["estimate"]
+    assert json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))["strikes"] == {}
+
+
+def test_a_pilot_whose_engine_cannot_start_leaves_and_the_other_finishes(clean_run, tmp_path):
+    """Protects: a pilot on a node where the engine cannot start takes three leases at most and
+    leaves with status 6; it marks no point failed, its leases are given out again, and the
+    other pilot finishes the run.  A stale tick lock and a stale start lock left by dead
+    pilots do not stop a run.  Oracle: metamorphic, and analytic for the lease count."""
+    run_dir = str(tmp_path / "bad")
+    os.makedirs(os.path.join(run_dir, "ctl"))
+    for lock in (os.path.join(run_dir, "ctl", "tick.lock"), os.path.join(run_dir, "start.lock")):
+        open(lock, "w").write("a-dead-pilot")
+        os.utime(lock, (time.time() - 3600, time.time() - 3600))
+    bad, good = _pilots(run_dir, 2, env_each=[dict(LEDGER_FAKE_BROKEN="1"), dict(LEDGER_FAKE_SLEEP="0.003")])
+    assert bad.wait(timeout=400) == 6 and good.wait(timeout=400) == 0
+    a, b = (json.load(open(os.path.join(d, "certificate.json"))) for d in (clean_run, run_dir))
+    assert a["estimate"] == b["estimate"] and b["failed_rows"] == 0
+    recs = _records(run_dir)
+    assert sum(r["status"] == 7 for r in recs) == inproc.BARREN_LIMIT
+    assert json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))["strikes"] == {}
+
+
+def test_an_engine_off_the_noloop_path_ends_every_pilot(tmp_path):
+    """Protects: under the spool transport too, an engine log line off the NoLoop path ends the
+    run for every pilot with exit status 5.  Oracle: analytic."""
+    run_dir = str(tmp_path / "off")
+    pilots = _pilots(run_dir, 2, env_each=[dict(LEDGER_FAKE_OFF_NOLOOP="1")] * 2)
+    assert [p.wait(timeout=120) for p in pilots] == [5, 5]
+    assert controller.Run(run_dir).head()["state"] == "FAILED"
+
+
+def test_a_tick_gives_no_second_lease_to_a_row_that_is_coming(tmp_path):
+    """Protects: a tick called while leases run writes leases only for rows no running lease
+    will write, and waits when there are none; a lease name is never given two contents; no
+    lease is cut below the stated size.  Oracle: analytic."""
+    run_dir = str(tmp_path / "run")
+    controller.init(run_dir, Box.from_json(fake_engine.BOX), seed=3, learn_per_stream=40)
+    run = controller.Run(run_dir)
+    assert controller.tick(run)["action"] == "again"
+    pl = run.plan(1, proposal.PriorProposal(run.box, 3), 40)
+    keys = [(1, int(s), int(i)) for s, i, ok in zip(pl["stream"], pl["index"], pl["ok"]) if ok]
+    assert controller.tick(run, 4, busy=keys)["action"] == "wait"
+    assert not [f for f in os.listdir(os.path.join(run_dir, "leases")) if f.endswith(".json")]
+    taken = os.path.join(run_dir, "leases", "lease-v01-n0000.dat")          # a name another tick took
+    open(taken, "w").write("another tick's lease\n")
+    act = controller.tick(run, 4, busy=keys[::2], min_lease_rows=30)
+    assert act["action"] == "run" and open(taken).read() == "another tick's lease\n"
+    got = [(1, s, i) for lease in act["leases"] for s, i in json.load(open(lease["keys"]))["keys"]]
+    assert sorted(got) == sorted(keys[1::2])
+    assert len(act["leases"]) == len(keys[1::2]) // 30 and all("n0000" not in lease["lease"] for lease in act["leases"])
+
+
+def test_a_point_that_breaks_the_engine_is_failed_under_pilots_too(tmp_path):
+    """Protects: with the real engine under two pilots, one point that kills the engine is
+    failed after two strikes, each with a row from the same launch, and the other points are
+    all evaluated.  Oracle: analytic (19 rows OK, that one FAILED)."""
+    cmd, env = _stub_command(tmp_path / "w")
+    assert run_bounded(cmd + ["--budget", "1"], env=env, cwd=str(tmp_path / "w")).returncode == 3     # plan only
+    command = _stub_command(tmp_path / "w", ["--transport", "spool", "--fleet", "2", "--min-lease-rows", "5", "--poll", "0.2"])
+    run = controller.Run(str(tmp_path / "w" / "ledger"))
+    pl = run.plan(1)
+    command[1]["STUB_ABORT_PRE"] = repr(float(pl["grid"][7, 0]))
+    pilots = [subprocess.Popen(command[0], env=command[1], cwd=str(tmp_path / "w"), stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL) for _ in range(2)]
+    assert [p.wait(timeout=400) for p in pilots] == [4, 4]          # the run stops by design after version 1
+    rows, _ = run.ledger()
+    bad = (1, int(pl["stream"][7]), int(pl["index"][7]))
+    assert len(rows) == 20 and rows[bad]["status"] == "FAILED"
+    assert sum(r["status"] == "OK" for r in rows.values()) == 19
+    assert sum("strike" in r for r in (json.loads(x) for x in open(run.p("ctl", "leases.jsonl")))) == 2
+
+
+# ---- review of 2026-11-27: records, the NoLoop stop, files of other hosts, stops, locks ----
+
+def _two_leases(tmp_path):
+    """A run whose first version is out as two open tickets, and two pilots that have started no engine."""
+    run_dir = str(tmp_path / "run")
+    controller.init(run_dir, Box.from_json(fake_engine.BOX), seed=3, learn_per_stream=40)
+    a, b = (spool.Spool(run_dir, name, 90.0, card=dict(slots=1)) for name in ("a", "b"))
+    a.beat()
+    b.beat()
+    assert a.tick(2, 32) == "run" and len(a.names("open")) == 2
+    return run_dir, a, b
+
+
+def _engine_here(run_dir, ticket, off_noloop=False):
+    """fake_engine on one lease, in this process; what it prints is the engine's log."""
+    logf = os.path.join(run_dir, "logs", ticket["base"] + ".log")
+    argv, env = sys.argv, dict(os.environ)
+    sys.argv = ["fake_engine.py", ticket["lease"], ticket["keys"], ticket["shard"]]
+    os.environ.pop("LEDGER_FAKE_OFF_NOLOOP", None)
+    if off_noloop:
+        os.environ["LEDGER_FAKE_OFF_NOLOOP"] = "1"
+    try:
+        with open(logf, "w") as log, contextlib.redirect_stdout(log):
+            fake_engine.main()
+    finally:
+        sys.argv = argv
+        os.environ.clear()
+        os.environ.update(env)
+    return logf
+
+
+def _record(sp, run_dir, ticket, status=0, killed=False):
+    """What a pilot writes when its engine ends (spool.run)."""
+    logf = os.path.join(run_dir, "logs", ticket["base"] + ".log")
+    rec = dict(inproc.lease_record(ticket, ticket["base"], logf, status, killed, 1.0), pilot=sp.me)
+    assert spool.create_exclusive(sp.p("done", ticket["base"] + ".json"), json.dumps(rec))
+    return rec
+
+
+def test_a_stopped_launch_is_evidence_of_nothing():
+    """Protects: a launch that its supervisor or pilot stopped, or that was closed as stale,
+    charges no strike and puts no key last, whatever it left behind; the same launch ended by
+    itself charges one strike.  Oracle: analytic."""
+    rec = dict(killed=True, missing=3, rows=5, in_flight=[1, 0, 7], shard="shard-x.jsonl")
+    state = dict(strikes={})
+    assert inproc.settle(state, dict(rec)) is None and state == dict(strikes={})
+    assert inproc.settle(state, dict(rec, killed=False)) == "worked" and state["strikes"] == {"1/0/7": 1}
+
+
+@pytest.mark.parametrize("case", ["stopped", "landing", "settled"])
+def test_a_line_off_the_noloop_path_stops_the_run_whichever_tick_reads_it(tmp_path, monkeypatch, case):
+    """Protects: no version closes on the rows of an engine off the NoLoop path.  The record that
+    carries the line may be of a launch that was stopped; it may land while a tick runs, after
+    that tick listed the records; or a ticker may have died after it wrote the record as
+    settled and before it stopped the run.  Each time the run is FAILED with one proposal
+    version, and a tick that cannot yet read a record closes nothing.  Oracle: analytic."""
+    run_dir, a, b = _two_leases(tmp_path)
+    (ta, _), (tb, _) = a.claim(), b.claim()
+    a.beat([ta["base"]])
+    b.beat([tb["base"]])
+    _engine_here(run_dir, ta)
+    _engine_here(run_dir, tb, off_noloop=True)             # every row of version 1 is in; b's log has the line
+    _record(a, run_dir, ta)
+    a.beat([])
+    state_file = os.path.join(run_dir, "ctl", "supervisor_state.json")
+    if case == "stopped":
+        assert _record(b, run_dir, tb, status=-9, killed=True)["off_noloop"] == 1
+    elif case == "settled":
+        _record(b, run_dir, tb)
+        controller.write_atomic(state_file, json.dumps(dict(launches=0, strikes={}, settled=[ta["base"], tb["base"]])))
+    else:
+        write = controller.write_atomic
+
+        def landing(path, text):                           # the state is written between the two listings of done/
+            if path == state_file and tb["base"] + ".json" not in os.listdir(b.p("done")):
+                _record(b, run_dir, tb)
+            return write(path, text)
+        monkeypatch.setattr(controller, "write_atomic", landing)
+    acts = [a.tick(2, 32)]
+    if case == "landing":
+        assert acts == ["wait"]
+        acts.append(a.tick(2, 32))
+    assert acts[-1] == "over" and controller.Run(run_dir).head()["state"] == "FAILED"
+    assert len(os.listdir(os.path.join(run_dir, "artifacts"))) == 1
+
+
+def test_a_tick_settles_a_record_once_and_leases_no_row_of_an_open_ticket(tmp_path, monkeypatch):
+    """Protects: a pilot that read the state before another pilot's tick settles nothing that
+    tick settled; and the rows of a ticket nobody has claimed are not leased again.
+    Oracle: analytic (one line for the record, one strike, every missing row in one open ticket)."""
+    run_dir, a, b = _two_leases(tmp_path)
+    ta, _ = a.claim()                                       # the other ticket stays open
+    (other,) = [spool.read_json(a.p("open", n)) for n in a.names("open")]
+    a.beat([ta["base"]])
+    keys = [tuple(k) for k in json.load(open(ta["keys"]))["keys"]]
+    _engine_here(run_dir, ta)
+    lines = open(ta["shard"]).read().split("\n")
+    open(ta["shard"], "w").write("\n".join(lines[:5]) + "\n")       # the engine died on its sixth point
+    json.dump(dict(key=[1] + list(keys[5])), open(ta["shard"] + ".inflight", "w"))
+    assert _record(a, run_dir, ta, status=1)["in_flight"] == [1] + list(keys[5])
+    a.beat([])
+    worth = a.worth_a_tick
+
+    def b_ticks_first(settled):                             # after a read the state and before it has the lock
+        assert b.tick(2, 32) == "run"
+        return worth(settled)
+    monkeypatch.setattr(a, "worth_a_tick", b_ticks_first)
+    assert a.tick(2, 32) == "wait"
+    assert len(open(os.path.join(run_dir, "ctl", "leases.jsonl")).read().splitlines()) == 1
+    state = json.load(open(os.path.join(run_dir, "ctl", "supervisor_state.json")))
+    assert state["strikes"] == {"1/%d/%d" % keys[5]: 1}
+    out = [tuple(k) for n in a.names("open") for k in json.load(open(spool.read_json(a.p("open", n))["keys"]))["keys"]]
+    assert len(out) == len(set(out))
+    assert set(out) == (set(keys[5:]) | set(tuple(k) for k in json.load(open(other["keys"]))["keys"]))
+
+
+def test_head_is_looked_for_in_a_listing_and_never_taken_as_absent(tmp_path, monkeypatch):
+    """Protects: a host that is told HEAD.json does not exist, as an NFS client is for most of
+    a minute when it asked for the name before another host wrote the file, neither writes
+    HEAD again over a run that was stopped nor loses the version when it stops the run; and a
+    HEAD that is listed and cannot be read ends the tick with nothing written.  Oracle: analytic."""
+    run_dir, a, b = _two_leases(tmp_path)
+    run = controller.Run(run_dir)
+    head_file, exists = run.p("HEAD.json"), os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda path: False if path == head_file else exists(path))
+    inproc._stop_off_noloop(run_dir, 1)
+    stopped = json.load(open(head_file))
+    assert stopped["state"] == "FAILED" and stopped["version"] == 1
+    for name in a.names("open"):
+        os.remove(a.p("open", name))                        # nothing outstanding: a free pilot takes the tick
+    assert a.tick(2, 32) == "failed" and json.load(open(head_file)) == stopped
+    read = spool.read_json
+    monkeypatch.setattr(spool, "read_json", lambda path: None if path == head_file else read(path))
+    assert a.tick(2, 32) is None and json.load(open(head_file)) == stopped
+    assert "tick.lock" not in os.listdir(os.path.join(run_dir, "ctl"))
+
+
+def test_a_pilot_reads_old_logs_at_its_start_and_makes_a_failed_pass_again(tmp_path, monkeypatch):
+    """Protects: a pilot that starts on a run whose logs hold a line off the NoLoop path stops
+    the run with status 5, whether or not a record carries the line; and a pass of a pilot's
+    loop that ends on an OSError, as a listing on a shared filesystem can, is made again, a
+    stated number of times at most.  Oracle: analytic."""
+    run_dir, a, b = _two_leases(tmp_path)
+    run = controller.Run(run_dir)
+    run.set_head(**dict(run.head(), state="DONE"))
+    names, fails, floor = spool.Spool.names, [2], [0]
+
+    def flaky(self, d):
+        if fails[0]:
+            fails[0] -= 1
+            assert fails[0] >= floor[0], "a pilot made a failed pass again without limit"
+            raise OSError("Stale file handle")
+        return names(self, d)
+    monkeypatch.setattr(spool.Spool, "names", flaky)
+    assert spool.run(run_dir, "false", poll=0.01) == inproc.EXIT_DONE and fails == [0]
+    fails[0], floor[0] = 10 ** 6, 10 ** 6 - 3 * spool.IO_ERRORS
+    with pytest.raises(OSError):
+        spool.run(run_dir, "false", poll=0.01)
+    assert fails[0] == 10 ** 6 - spool.IO_ERRORS
+    monkeypatch.setattr(spool.Spool, "names", names)
+    run.set_head(**dict(run.head(), state="LEARN"))
+    open(os.path.join(run_dir, "logs", "lease-of-a-dead-pilot.log"), "w").write(" %s\n" % inproc.OFF_NOLOOP[0])
+    assert spool.run(run_dir, "false", poll=0.01) == inproc.EXIT_REDLINE and run.head()["state"] == "FAILED"
+
+
+def test_a_stop_that_reaches_the_engine_first_is_still_a_stop(tmp_path):
+    """Protects: when the SIGTERM that stops a job reaches the engine before its pilot has been
+    told, as when a scheduler signals every process of the job, the launch is recorded as
+    stopped and counts against no point and no pilot.  Oracle: analytic."""
+    run_dir = str(tmp_path / "job")
+    (pilot,) = _pilots(run_dir, 1, env_each=[dict(LEDGER_FAKE_SLEEP="0.05")])
+    for _ in range(200):
+        time.sleep(0.1)
+        if _engines_of(run_dir):
+            break
+    else:
+        pytest.fail("the pilot started no engine: its exit status is %r, pilots did %r" % (pilot.poll(), _pilot_logs(run_dir)))
+    (pid,) = _engines_of(run_dir)
+    os.killpg(pid, signal.SIGTERM)                          # the engine is its own process group
+    time.sleep(1.0)                                         # the pilot finds it ended, in a pass in which nobody told it to stop
+    pilot.send_signal(signal.SIGTERM)
+    assert pilot.wait(timeout=60) == 3
+    recs = _records(run_dir)
+    assert recs and all(r["killed"] for r in recs), recs
+    assert any(r["status"] in (-signal.SIGTERM, 128 + signal.SIGTERM) for r in recs), recs
+    state = spool.read_json(os.path.join(run_dir, "ctl", "supervisor_state.json")) or {}
+    assert state.get("strikes", {}) == {} and not state.get("defer")
+
+
+def test_a_lock_goes_to_one_pilot_and_a_name_never_shows_without_its_content(tmp_path, monkeypatch):
+    """Protects: of two pilots that both found a lock stale, one takes it; a holder that
+    releases its lock removes no lock that is another's, also when its own was broken while
+    it looked; and a record or lock is linked into place whole.  Oracle: analytic."""
+    path, hour_ago = str(tmp_path / "tick.lock"), time.time() - 3600
+    open(path, "w").write("a-dead-pilot")
+    os.utime(path, (hour_ago, hour_ago))
+    b, c = spool.Lock(path, "B"), spool.Lock(path, "C")
+    age, first = c.age, []
+
+    def b_breaks_it_meanwhile(p=None):                      # C has measured the age and has not acted on it yet
+        measured = age(p)
+        if not first:
+            first.append(b.take())
+        return measured
+    monkeypatch.setattr(c, "age", b_breaks_it_meanwhile)
+    assert not c.take() and first == [True] and open(path).read() == "B"
+    c.release()
+    assert open(path).read() == "B"                         # C does not hold it and leaves it
+
+    monkeypatch.setattr(c, "age", age)
+    held, took = b.held, []
+
+    def c_breaks_it_meanwhile():                            # B has read its own name in the lock and not yet removed it
+        mine = held()
+        os.utime(path, (hour_ago, hour_ago))
+        took.append(c.take())
+        return mine
+    monkeypatch.setattr(b, "held", c_breaks_it_meanwhile)
+    b.release()
+    assert took == [False] and not os.path.exists(path) and sorted(os.listdir(str(tmp_path))) == []
+
+    record, link, seen = str(tmp_path / "lease.json"), os.link, []
+
+    def linked(src, dst):
+        seen.append((open(src).read(), os.path.exists(dst)))
+        return link(src, dst)
+    monkeypatch.setattr(os, "link", linked)
+    assert spool.create_exclusive(record, "whole") and not spool.create_exclusive(record, "another")
+    assert seen == [("whole", False), ("another", True)] and open(record).read() == "whole"
+    assert os.listdir(str(tmp_path)) == ["lease.json"]

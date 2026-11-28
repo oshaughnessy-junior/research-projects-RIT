@@ -9,6 +9,7 @@ as the real engine seeds its sampler by the key.  LEDGER_FAKE_SLEEP seconds pass
 so a test can kill the process inside a lease.  LEDGER_FAKE_UNKEYED=1 draws the noise
 from the clock: the mutant a kill test must catch.  LEDGER_FAKE_FAIL=f reports a fraction f
 of the keys as FAILED.  LEDGER_FAKE_COLLAPSED=f marks a fraction f of the rows as collapsed.
+LEDGER_FAKE_BROKEN=1 exits with status 7 before any row, as an engine on a bad node does.
 """
 import json
 import os
@@ -35,6 +36,8 @@ def ln_like(box, grid):
 
 
 def main():
+    if os.environ.get("LEDGER_FAKE_BROKEN"):
+        sys.exit(7)
     lease, keys, shard = sys.argv[1:4]
     meta = json.load(open(keys))
     grid = np.loadtxt(lease, comments="#", ndmin=2)[:, 2:]

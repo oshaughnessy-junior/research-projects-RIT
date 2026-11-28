@@ -90,6 +90,61 @@ def _stop_off_noloop(run_dir, off):
     return EXIT_REDLINE
 
 
+def lease_record(lease, base, logf, status, killed, wall, cleanup=None):
+    """What one engine launch left, read where the engine ran: rows written, rows missing,
+    the key in flight when it ended, and log lines off the NoLoop path.  Removes the
+    in-flight file and, by the glob template `cleanup`, the engine's own output files."""
+    have = _shard_keys(lease["shard"])
+    keys = [tuple(k) for k in json.load(open(lease["keys"]))["keys"]]
+    rec = dict(lease=base, shard=lease["shard"], rows=len(have), missing=sum(k not in have for k in keys), status=status,
+               killed=bool(killed), wall=wall, off_noloop=_off_noloop(logf), in_flight=None)
+    if cleanup:
+        for f in glob.glob(cleanup.format(base=base)):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    flight = lease["shard"] + ".inflight"
+    if os.path.exists(flight):
+        try:
+            key = tuple(json.load(open(flight))["key"])
+            if (key[1], key[2]) not in have:          # else it ended after that key's line was written
+                rec["in_flight"] = list(key)
+        except (OSError, ValueError, KeyError, TypeError, IndexError):     # OSError: a live engine removed it meanwhile
+            pass
+        try:
+            os.remove(flight)
+        except OSError:
+            pass
+    return rec
+
+
+def settle(state, rec):
+    """Apply one launch's record to the supervisor state, by the rules in the module text.
+    Returns "worked" (the lease was finished, or the launch earned a strike), "idle" (rows
+    missing and no evidence against one point) or None (the launch was stopped by its
+    supervisor, which is evidence of nothing).  Two strikes write the key's FAILED line."""
+    if rec["killed"]:
+        return None
+    if not rec["missing"]:
+        return "worked"
+    key = rec.get("in_flight")
+    if key is not None and rec["rows"]:               # it wrote a row first, so this engine works
+        name = "%d/%d/%d" % tuple(key)
+        state["strikes"][name] = state["strikes"].get(name, 0) + 1
+        rec["strike"] = name
+        if state["strikes"][name] >= 2:
+            with open(rec["shard"][:-6] + "-ctl.jsonl", "a") as f:
+                f.write(json.dumps(dict(v=key[0], s=key[1], i=key[2], status="FAILED", lnL=None,
+                                        reason="the engine died twice on this point")) + "\n")
+            rec["recorded_failed"] = 1
+        return "worked"
+    rec["not_working"] = True
+    if key is not None and list(key) not in state.setdefault("defer", []):
+        state["defer"].append(list(key))
+    return "idle"
+
+
 def _chaos_kills(run_dir):
     """Engine kills made on purpose so far.  ctl/chaos.jsonl is their one record, so a
     supervisor that is itself killed cannot lose count of them."""
@@ -222,47 +277,10 @@ def run(run_dir, engine_command, cwd=None, engines=1, gpus=None, budget=float("i
                 eng.wait()
                 lf.close()
                 live.remove(eng)
-                have = _shard_keys(lease["shard"])
-                keys = [tuple(k) for k in json.load(open(lease["keys"]))["keys"]]
-                missing = [k for k in keys if k not in have]
-                killed = eng.pid in ours
-                rec = dict(lease=base, rows=len(have), missing=len(missing), status=eng.returncode,
-                           killed=bool(killed), wall=time.time() - t0, off_noloop=_off_noloop(logf))
+                rec = lease_record(lease, base, logf, eng.returncode, eng.pid in ours, time.time() - t0, cleanup)
                 off += rec["off_noloop"]
-                if cleanup:
-                    for f in glob.glob(cleanup.format(base=base)):
-                        try:
-                            os.remove(f)
-                        except OSError:
-                            pass
-                flight = lease["shard"] + ".inflight"
-                key = None
-                if os.path.exists(flight):
-                    try:
-                        key = tuple(json.load(open(flight))["key"])
-                    except (ValueError, KeyError, TypeError):
-                        pass
-                    os.remove(flight)
-                if key is not None and (key[1], key[2]) in have:
-                    key = None                      # it died after that key's line was written
-                if not killed and missing:
-                    name = "%d/%d/%d" % key if key is not None else None
-                    if key is not None and have:        # it wrote a row first, so this engine works
-                        state["strikes"][name] = state["strikes"].get(name, 0) + 1
-                        rec["strike"] = name
-                        if state["strikes"][name] >= 2:
-                            with open(lease["shard"][:-6] + "-ctl.jsonl", "a") as f:
-                                f.write(json.dumps(dict(v=key[0], s=key[1], i=key[2], status="FAILED", lnL=None,
-                                                        reason="the engine died twice on this point")) + "\n")
-                            rec["recorded_failed"] = 1
-                        worked = True
-                    else:
-                        idle = True
-                        rec["not_working"] = True
-                        if key is not None and list(key) not in state.setdefault("defer", []):
-                            state["defer"].append(list(key))
-                elif not killed:
-                    worked = True
+                outcome = settle(state, rec)
+                worked, idle = worked or outcome == "worked", idle or outcome == "idle"
                 _log(run_dir, "leases.jsonl", rec)
             barren = 0 if worked else barren + idle
             controller.write_atomic(state_file, json.dumps(state))
